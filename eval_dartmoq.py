@@ -306,7 +306,7 @@ def load_model(model_path):
 
 if __name__ == '__main__':
     import argparse
-    from datautils import *
+    from data_utils import *
 
     parser = argparse.ArgumentParser()
 

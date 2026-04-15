@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import transformers
-from datautils import *
+from data_utils import *
 import time
 
 def simple_sft(model, tokenizer, args, epoch = 1):

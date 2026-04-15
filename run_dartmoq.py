@@ -28,7 +28,7 @@ def save_results(file_name, results):
 
 if __name__ == '__main__':
     import argparse
-    from datautils import *
+    from data_utils import *
 
     parser = argparse.ArgumentParser()
 
@@ -43,9 +43,6 @@ if __name__ == '__main__':
     )
     parser.add_argument(        '--nsamples', type=int, default=128,
         help='Number of Fine-tuning data for CMoE.'
-    )
-    parser.add_argument(        '--new-eval', action='store_true',
-        help='Whether to use the new PTB and C4 eval.'
     )
     parser.add_argument(        '--extra-lr',
         type=float, default=0.001, 
