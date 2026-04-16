@@ -79,8 +79,9 @@ if __name__ == '__main__':
     parser.add_argument(        '--prefix', type=str, default=None,
         help='Prefix the results folder if needed.'
     )
-    parser.add_argument(        '--quant-scheme', type=str, default=None,
-        help='Quantization scheme like a8s4m3221.'
+    parser.add_argument(        '--quant-scheme', 
+        type=str, default=None,
+        help='Quantization scheme like fix_scheme like a8s4m3221 or global scheme like global.'
     )
     parser.add_argument(        '--rank-mode', 
         type=str, default="quant_outlier",

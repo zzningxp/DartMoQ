@@ -11,63 +11,9 @@ from eval_dartmoq import cmoe_ppl_eval
 DEV = torch.device('cuda:0')
 
 @torch.no_grad()
-def reconstruct_moe_from_dense(model, layer, layer_idx, inps, n_experts, n_activated, slice_expert_num, device, args):
+def reconstruct_moe_from_existing(model, layer, layer_idx, inps, n_experts, n_activated, slice_expert_num, ori_activated, device, args):
 
-    if args.rank_mode == "activation":
-        analyze_sparsity = 0.1
-        rates = analyze_neuron_activations(layer.mlp.act_fn, inps, layer.mlp.gate_proj.weight, layer.mlp.up_proj.weight, sparsity=analyze_sparsity)
-    elif args.rank_mode == "quant_outlier":
-        rates = analyze_quant_outlier(layer, layer_idx, inps, n_experts // slice_expert_num, if_dense=True, save_path=f"plot/_quant_outlier_{layer_idx}.png")
-        rates = rates[0]
-    elif args.rank_mode == "random":
-        rates = torch.randn(layer.mlp.intermediate_size, device=device)
-    elif args.rank_mode == "neuron_index":
-        rates = torch.arange(layer.mlp.intermediate_size, device=device)
-    else:
-        assert False, f"Unknown rank mode: {args.rank_mode}"
-
-    expert_groups, representative_indices = construct_experts_by_rates(
-        rates,
-        num_experts = slice_expert_num,
-        num_shared_experts = 0,
-    )
-    
-    experts = nn.ModuleList()
-    total_neurons_processed = 0
-    scaling_factor = slice_expert_num
-
-    new_intermediate_size = layer.mlp.intermediate_size // slice_expert_num
-    expert_groups = expert_groups[1:]
-    for ii, group_indices in enumerate(expert_groups):
-        expert_mlp = LlamaMLP(layer.mlp.hidden_size, new_intermediate_size)
-
-        with torch.no_grad():
-            group_indices_tensor = torch.tensor(group_indices, dtype=torch.long, device=device)
-            
-            expert_mlp.gate_proj.weight.data = layer.mlp.gate_proj.weight[group_indices_tensor, :]
-            expert_mlp.up_proj.weight.data = layer.mlp.up_proj.weight[group_indices_tensor, :]
-            expert_mlp.down_proj.weight.data = layer.mlp.down_proj.weight[:, group_indices_tensor] * scaling_factor
-            
-        experts.append(expert_mlp)
-        new_expert_intermediate_size = expert_mlp.up_proj.weight.shape[0]
-        total_neurons_processed += new_expert_intermediate_size
-        # print(ii, scaling_factor, new_expert_intermediate_size, expert_mlp.gate_proj.weight.shape, expert_mlp.up_proj.weight.shape, expert_mlp.down_proj.weight.shape)
-    
-    router = Router(layer.mlp.hidden_size, slice_expert_num, n_activated).to(device)
-    router.gate.weight.data = torch.ones(slice_expert_num, layer.mlp.hidden_size).to(torch.bfloat16).to(device)
-    router.classifier = None
-    # init router gate to 1，and make all experts are activated
-
-    # MoE
-    moe = MoE(layer.mlp.hidden_size, new_intermediate_size, slice_expert_num, 0, n_activated).to(device)
-    moe.gate = router
-    moe.experts = experts
-    moe.shared_experts = None
-
-    return moe
-
-@torch.no_grad()
-def reconstruct_moe_from_existing(model, layer, layer_idx, inps, n_experts, n_activated, slice_expert_num, device, args):
+    expert_activation_rates = analyze_experts_activation(layer, layer_idx, inps, ori_activated) #, save_path="plot/{layer_idx}_experts_activation.png")
 
     ori_expert_num = len(layer.mlp.experts)
     new_expert_num = ori_expert_num * slice_expert_num 
@@ -90,6 +36,7 @@ def reconstruct_moe_from_existing(model, layer, layer_idx, inps, n_experts, n_ac
     if args.rank_mode == "quant_outlier":
         all_rates = analyze_quant_outlier(layer, layer_idx, inps, n_experts // slice_expert_num, if_dense=False, save_path=None)
 
+    all_new_expert_rates = []
     for expert_idx, expert in enumerate(layer.mlp.experts):
         ori_gate_proj_weights = expert.gate_proj.weight
         ori_up_proj_weights = expert.up_proj.weight
@@ -108,7 +55,7 @@ def reconstruct_moe_from_existing(model, layer, layer_idx, inps, n_experts, n_ac
         else:
             assert False, f"Unknown rank mode: {args.rank_mode}"
         
-        expert_groups, representative_indices = construct_experts_by_rates(
+        expert_groups, expert_rates = construct_experts_by_rates(
             rates,
             num_experts = slice_expert_num,
             num_shared_experts = 0,
@@ -116,6 +63,10 @@ def reconstruct_moe_from_existing(model, layer, layer_idx, inps, n_experts, n_ac
         
         lowrank_sparsity = 0
         expert_groups = expert_groups[1:]
+        print(expert_rates)
+        _rates = [e * expert_activation_rates[expert_idx] for e in expert_rates[1:]]
+        all_new_expert_rates.extend(_rates)
+
         # Create new experts for this original expert
         for ii, group_indices in enumerate(expert_groups):
             n_neurons = len(group_indices)
@@ -150,101 +101,12 @@ def reconstruct_moe_from_existing(model, layer, layer_idx, inps, n_experts, n_ac
     if hasattr(layer.mlp, 'shared_experts'):
         moe.shared_experts = layer.mlp.shared_experts
 
-    return moe
-
-### unused:
-@torch.no_grad()
-def reconstruct_moe_harddrop(model, layer, hidden_states, n_experts, n_activated, slice_expert_num, if_quantized, device, args):
-
-    ori_expert_num = len(layer.mlp.experts)
-    drop_expert_nums = torch.ones(ori_expert_num, dtype=torch.int)
-
-    drop_expert_nums = drop_expert_nums.to(device)
-
-    avg_drop_expert_num = 1
-    new_expert_num = ori_expert_num * (slice_expert_num - avg_drop_expert_num) 
-    scaling_factor = slice_expert_num - avg_drop_expert_num
-    sparsity = 0.1
-
-    if if_quantized:
-        ori_router_gate = layer.mlp.gate.compressor.decompress_module(layer.mlp.gate)
-    else:
-        ori_router_gate = layer.mlp.gate.weight
-    new_router = nn.Linear(model.config.hidden_size, new_expert_num, dtype=ori_router_gate.dtype, bias=False).to(device)
-    all_new_experts = nn.ModuleList()
-
-    total_neurons_processed = 0
-    gate_start_idx = 0
-    calib_size = 8
-    calib_hidden_states = hidden_states[:8]
-
-    for expert_idx, expert in enumerate(layer.mlp.experts):
-        if if_quantized:
-            ori_gate_proj_weights = expert.gate_proj.compressor.decompress_module(expert.gate_proj)
-            ori_up_proj_weights = expert.up_proj.compressor.decompress_module(expert.up_proj)
-            ori_down_proj_weights = expert.down_proj.compressor.decompress_module(expert.down_proj)
-        else:
-            ori_gate_proj_weights = expert.gate_proj.weight
-            ori_up_proj_weights = expert.up_proj.weight
-            ori_down_proj_weights = expert.down_proj.weight
-
-        # print(f"\nProcessing original expert {expert_idx} / {ori_expert_num}")
-
-        # print(f"Expert {expert_idx} scores shape: {expert_scores.shape}")
-        rates = analyze_neuron_activations(expert.act_fn, hidden_states, ori_gate_proj_weights, ori_up_proj_weights, sparsity=sparsity)
-
-        expert_groups, representative_indices = construct_experts_by_rates(
-            rates,
-            num_experts = slice_expert_num,
-            num_shared_experts = 0,
-        )
-
-        drop_expert_num = drop_expert_nums[expert_idx] * avg_drop_expert_num
-        remain_expert_num = slice_expert_num - drop_expert_num
-
-        expert_groups = expert_groups[1:remain_expert_num + 1]
-        # Create new experts for this original expert
-        for ii, group_indices in enumerate(expert_groups):
-            expert_mlp = expert.__class__(model.config).to(device)
-            
-            with torch.no_grad():
-                gate_proj_weights = []
-                up_proj_weights = []
-                down_proj_weights = []
-
-                for global_idx in group_indices:
-                    gate_proj_weights.append(ori_gate_proj_weights[global_idx, :])
-                    up_proj_weights.append(ori_up_proj_weights[global_idx, :])
-                    down_proj_weights.append(ori_down_proj_weights[:, global_idx] * scaling_factor)
-
-                expert_mlp.gate_proj.weight.data = torch.stack(gate_proj_weights)
-                expert_mlp.up_proj.weight.data = torch.stack(up_proj_weights)
-                expert_mlp.down_proj.weight.data = torch.stack(down_proj_weights, dim=1)
-
-            all_new_experts.append(expert_mlp)
-            total_neurons_processed += len(group_indices)
-
-        expanded_gate = ori_router_gate.data[expert_idx, :].unsqueeze(0).repeat(remain_expert_num, 1).to(device)
-
-        new_router.weight.data[gate_start_idx: gate_start_idx + remain_expert_num, :] = expanded_gate
-        gate_start_idx += remain_expert_num
-
-    model.config.intermediate_size = all_new_experts[0].up_proj.weight.shape[0]
-    model.config.num_experts = new_expert_num
-    model.config.num_experts_per_tok = n_activated
-    # print(model.config.intermediate_size, model.config.num_experts, model.config.num_experts_per_tok)
-
-    moe = layer.mlp
-    moe.num_experts = len(all_new_experts)
-    moe.top_k = n_activated
-    moe.gate = new_router
-    moe.experts = all_new_experts
-
-    return moe
+    print("all_new_expert_rates:", len(all_new_expert_rates))
+    return moe, all_new_expert_rates
 
 @torch.no_grad()
 def construct_moe(model, moe_model_flag, layer, layer_idx, inp, attention_mask, position_ids, position_embeddings, 
-                                n_experts, n_activated, slice_expert_num, n_shared, args):
+                                n_experts, n_activated, slice_expert_num, n_shared, ori_activated, args):
     
     modeltype = model.config.model_type
     batchsize = inp.shape[0]
@@ -287,28 +149,72 @@ def construct_moe(model, moe_model_flag, layer, layer_idx, inp, attention_mask, 
     hidden_states = layer.post_attention_layernorm(hidden_states)
 
     # print(hidden_states.shape)
+    is_moe_layer = hasattr(layer.mlp, 'gate') or hasattr(layer.mlp, 'experts') ## some moe model has no expert layer in the first few layers,
     
+    all_new_expert_rates = None
     if moe_model_flag:
-        if hasattr(layer.mlp, 'gate') or hasattr(layer.mlp, 'experts'):        
-            moe = reconstruct_moe_from_existing(model, layer, layer_idx, hidden_states, n_experts, n_activated, slice_expert_num, device, args)
+        if is_moe_layer:
+            moe, all_new_expert_rates = reconstruct_moe_from_existing(model, layer, layer_idx, hidden_states, n_experts, n_activated, slice_expert_num, ori_activated, device, args)
             layer.mlp = moe
     else:
-        moe = reconstruct_moe_from_dense(model, layer, layer_idx, hidden_states, n_experts, n_activated, slice_expert_num, device, args)
-        layer.mlp = moe
+        # moe = reconstruct_moe_from_dense(model, layer, layer_idx, hidden_states, n_experts, n_activated, slice_expert_num, device, args)
+        # layer.mlp = moe
+        assert False, "Dense model is not supported"
     
     gc.collect()
     torch.cuda.empty_cache()
 
-    # print(layer)
-    if_quant_layer = True
-    if_quant_attn = True
+    if args.quant_scheme == "global":
+        qscheme = {}
+        qscheme['attn'] = [8]
+        qscheme['share'] = [4]
+        qscheme['expert'] = []
+        
+        print(all_new_expert_rates)
+        if all_new_expert_rates is not None:
+            _, sorted_index = torch.sort(torch.tensor(all_new_expert_rates))
+            high_ratio = 0.25
+            low_ratio = 1 - high_ratio
+            qscheme['expert'] = [[0] * slice_expert_num for i in range(n_experts // slice_expert_num)]
+            for i, idx in enumerate(sorted_index):
+                if i < int(n_experts * low_ratio):
+                    bit = 2
+                else:
+                    bit = 4
+                # print(idx, all_new_expert_rates[idx])
+                xi = int(idx // slice_expert_num)
+                xj = int(idx % slice_expert_num)
+                qscheme['expert'][xi][xj] = bit
 
-    if if_quant_layer:
-        quant_layer_mix_precision(layer, layer_idx, if_quant_attn, slice_expert_num, 
-                    hidden_states_inorm, hidden_states, attention_mask, position_ids, position_embeddings, 
-                    args)
-        gc.collect()
-        torch.cuda.empty_cache()
+        print("global quant expert scheme:", qscheme['expert'])
+    else:
+        # args.quant_scheme should lik "a8s4m3221"
+        qscheme_str = args.quant_scheme
+        qscheme = {}
+        qscheme['attn'] = [8]
+        qscheme['share'] = [4]
+        qscheme['expert'] = [2, 2, 2, 2, 2, 2, 2, 2]
+        if qscheme_str is not None:
+            try:
+                # sample: "a8s4m3221", "a8s4m33222222"
+                match = re.search(r'a(\d)s(\d)m(\d+)', qscheme_str)
+                aa = match.group(1)
+                ss = match.group(2)
+                ee = match.group(3)
+                qscheme['attn'] = [int(aa)]
+                qscheme['share'] = [int(ss)]
+                qscheme['expert'] = [[int(e) for e in ee] for i in range(n_experts // slice_expert_num)]
+                print(qscheme['expert'])
+                
+            except:
+                print(f"Quant scheme {qscheme_str} is not valid.")
+    
+    if_quant_attn = True
+    quant_layer_mix_precision(layer, layer_idx, if_quant_attn, slice_expert_num, 
+                hidden_states_inorm, hidden_states, attention_mask, position_ids, position_embeddings, 
+                qscheme)
+    gc.collect()
+    torch.cuda.empty_cache()
     
     print(hidden_states.shape)
     tick0 = time.time()
@@ -396,6 +302,7 @@ def cmoe_sequential(model, tokenizer, dataloader, args):
             assert slice_expert_num * model.config.n_routed_experts == args.nexperts, "n_experts must be multiple of existing expert num"
             model.config.n_routed_experts = args.nexperts
 
+        ori_num_experts_per_tok = model.config.num_experts_per_tok
         model.config.num_experts_per_tok = args.nactivated
         if hasattr(model.config, 'moe_intermediate_size'): ## DeepSeek-V1-MoE-16B
             model.config.moe_intermediate_size = model.config.moe_intermediate_size // slice_expert_num
@@ -422,6 +329,7 @@ def cmoe_sequential(model, tokenizer, dataloader, args):
             n_activated = args.nactivated,
             slice_expert_num = slice_expert_num,
             n_shared = args.nshared,
+            ori_activated = ori_num_experts_per_tok,
             args = args
         )
 
