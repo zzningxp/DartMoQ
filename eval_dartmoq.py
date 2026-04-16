@@ -126,12 +126,12 @@ def get_olmoe(model_path):
     return model
 
 def get_deepseek_moe_16b(model_path):
-    from transformers import DeepseekForCausalLM
+    # from transformers import DeepseekForCausalLM
     tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
     tokenizer.pad_token = tokenizer.eos_token
 
     device_map = "auto"
-    model = DeepseekForCausalLM.from_pretrained(
+    model = AutoModelForCausalLM.from_pretrained(
         model_path,
         torch_dtype=torch.bfloat16,
         low_cpu_mem_usage=True,
@@ -143,6 +143,7 @@ def get_deepseek_moe_16b(model_path):
     # model.seqlen = 4096
 
     return model, tokenizer
+
 def get_deepseek_v2_lite(model_path):
 
     tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
@@ -280,8 +281,7 @@ def load_model(model_path):
         model = get_olmoe(model_path)
         tokenizer = AutoTokenizer.from_pretrained(model_path)
     elif "deepseek-moe-16b" in model_path.lower():
-        model = get_deepseek_moe_16b(model_path)
-        tokenizer = AutoTokenizer.from_pretrained(model_path)
+        model, tokenizer = get_deepseek_moe_16b(model_path)
     elif 'deepseek-v2-lite' in model_path.lower():
         model, tokenizer = get_deepseek_v2_lite(model_path)
     elif 'llama' in model_path.lower():

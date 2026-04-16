@@ -411,6 +411,7 @@ def quant_layer_mix_precision(layer, layer_idx, quant_attn, slice_expert_num,
                 else:
                     match = re.search(r'mlp\.experts\.(\d+)', name)
                     expert_id = int(match.group(1)) if match else -1  ## shared expert id is -1
+                    # print(expert_id, slice_expert_num)
                     if expert_id == -1:
                         bit = qscheme['share']
                         gptq[name].quantizer.configure(bit[0], perchannel=True, sym=sym, mse=False)

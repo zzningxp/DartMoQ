@@ -63,7 +63,7 @@ def reconstruct_moe_from_existing(model, layer, layer_idx, inps, n_experts, n_ac
         
         lowrank_sparsity = 0
         expert_groups = expert_groups[1:]
-        print(expert_rates)
+        # print(expert_rates)
         _rates = [e * expert_activation_rates[expert_idx] for e in expert_rates[1:]]
         all_new_expert_rates.extend(_rates)
 
@@ -170,7 +170,7 @@ def construct_moe(model, moe_model_flag, layer, layer_idx, inp, attention_mask, 
         qscheme['share'] = [4]
         qscheme['expert'] = []
         
-        print(all_new_expert_rates)
+        # print(all_new_expert_rates)
         if all_new_expert_rates is not None:
             _, sorted_index = torch.sort(torch.tensor(all_new_expert_rates))
             high_ratio = 0.25
@@ -193,7 +193,7 @@ def construct_moe(model, moe_model_flag, layer, layer_idx, inp, attention_mask, 
         qscheme = {}
         qscheme['attn'] = [8]
         qscheme['share'] = [4]
-        qscheme['expert'] = [2, 2, 2, 2, 2, 2, 2, 2]
+        # qscheme['expert'] = [2, 2, 2, 2, 2, 2, 2, 2]
         if qscheme_str is not None:
             try:
                 # sample: "a8s4m3221", "a8s4m33222222"
@@ -205,9 +205,8 @@ def construct_moe(model, moe_model_flag, layer, layer_idx, inp, attention_mask, 
                 qscheme['share'] = [int(ss)]
                 qscheme['expert'] = [[int(e) for e in ee] for i in range(n_experts // slice_expert_num)]
                 print(qscheme['expert'])
-                
             except:
-                print(f"Quant scheme {qscheme_str} is not valid.")
+                assert False, f"Quant scheme {qscheme_str} is not valid."
     
     if_quant_attn = True
     quant_layer_mix_precision(layer, layer_idx, if_quant_attn, slice_expert_num, 
