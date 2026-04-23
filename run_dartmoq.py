@@ -70,8 +70,8 @@ if __name__ == '__main__':
         type=str, default="quant_outlier",
         help='Rank mode for MoE reconstruction. activation|quant_outlier|random|neuron_index'
     )
-    parser.add_argument(        '--move-layer-to-cpu-after-quant', action='store_true', default=False,
-        help='Whether to move quant layers to CPU after quantization.'
+    parser.add_argument(        '--standby-layer-cpu', action='store_true', default=False,
+        help='Whether to move quant layers to CPU before and after quantization.' 
     )
 
     args = parser.parse_args()

@@ -89,7 +89,12 @@ def get_llama(model):
     # torch.nn.init.uniform_ = skip
     # torch.nn.init.normal_ = skip
     from transformers import LlamaForCausalLM
-    model = LlamaForCausalLM.from_pretrained(model, torch_dtype=torch.bfloat16, low_cpu_mem_usage=True, device_map = 'auto')
+    model = LlamaForCausalLM.from_pretrained(
+        model, 
+        torch_dtype=torch.bfloat16, 
+        low_cpu_mem_usage=True, 
+        device_map = "auto"
+    )
     model.seqlen = 2048
     # model.seqlen = 4096
     return model
@@ -103,7 +108,12 @@ def get_llava(model):
 
     from llava.model import LlavaLlamaForCausalLM
 
-    model = LlavaLlamaForCausalLM.from_pretrained(model, torch_dtype=torch.bfloat16, low_cpu_mem_usage=True, device_map = 'auto')
+    model = LlavaLlamaForCausalLM.from_pretrained(
+        model, 
+        torch_dtype=torch.bfloat16, 
+        low_cpu_mem_usage=True, 
+        device_map = "auto"
+    )
     model.seqlen = 2048
     # model.seqlen = 4096
 
@@ -113,12 +123,13 @@ def get_olmoe(model_path):
     from transformers import OlmoeForCausalLM
 
     # model = OlmoeForCausalLM.from_pretrained(model, torch_dtype=torch.bfloat16, low_cpu_mem_usage=True, device_map = 'auto')
-    print(model_path)
+    # print(model_path)
+    device_map = "auto"
     model = AutoModelForCausalLM.from_pretrained(
         model_path, 
         torch_dtype=torch.bfloat16, 
         low_cpu_mem_usage=True, 
-        device_map = "auto"
+        device_map = device_map
     )
 
     model.seqlen = 2048
@@ -165,11 +176,12 @@ def get_deepseek_v2_lite(model_path):
 def get_qwen3_moe(model_path):
     from transformers import Qwen3MoeForCausalLM
 
+    device_map = "auto"
     model = Qwen3MoeForCausalLM.from_pretrained(
         model_path,
         torch_dtype=torch.bfloat16,
         low_cpu_mem_usage=True,
-        device_map = "auto",
+        device_map = device_map,
         trust_remote_code=True
     )
 
@@ -180,15 +192,14 @@ def get_qwen3_moe(model_path):
 
 def get_qwen3_30b_a3b(model_path):
     from transformers import Qwen3MoeForCausalLM
-
     # device_map = {
     #             "model.embed_tokens": "cuda:0",
     #             "model.rotary_emb": "cuda:0",
     #             **{
-    #                 f"model.layers.{k}": 0 for k in range(0, 16)
+    #                 f"model.layers.{k}": "cuda:0" for k in range(0, 16)
     #             },
     #             **{
-    #                 f"model.layers.{k}": 1 for k in range(16, 32)
+    #                 f"model.layers.{k}": "cuda:1" for k in range(16, 32)
     #             },
     #             **{
     #                 f"model.layers.{k}": "cpu" for k in range(32, 48)
@@ -196,25 +207,15 @@ def get_qwen3_30b_a3b(model_path):
     #             "model.norm": "cpu",
     #             "lm_head": "cpu",
     #         }
+    # print(device_map)
+    device_map = 'auto'
     model = Qwen3MoeForCausalLM.from_pretrained(
         model_path,
         torch_dtype=torch.bfloat16,
         low_cpu_mem_usage=True,
-        device_map = "auto",
+        device_map = device_map,
         trust_remote_code=True
     )
-
-    # "model.layers.47.self_attn.q_proj.weight, "
-    # "model.layers.47.self_attn.k_proj.weight, "
-    # "model.layers.47.self_attn.v_proj.weight, "
-    # "model.layers.47.self_attn.o_proj.weight, "
-    # "model.layers.47.self_attn.q_norm.weight, "
-    # "model.layers.47.self_attn.k_norm.weight, "
-    # "model.layers.47.mlp.gate.weight, "
-    # "model.layers.47.mlp.experts.0.gate_proj.weight,"
-    # "model.layers.47.mlp.experts.0.up_proj.weight,"
-    # "model.layers.47.mlp.experts.0.down_proj.weight,"
-    # 128 experts active 8, NO shared experts
 
     model.seqlen = 2048
     # model.seqlen = 4096
@@ -224,11 +225,12 @@ def get_qwen3_30b_a3b(model_path):
 def get_qwen3(model_path):
     from transformers import Qwen3ForCausalLM
 
+    device_map = "auto"
     model = Qwen3ForCausalLM.from_pretrained(
         model_path,
         torch_dtype=torch.bfloat16,
         low_cpu_mem_usage=True,
-        device_map='auto',
+        device_map=device_map,
         trust_remote_code=True
     )
 
@@ -240,11 +242,12 @@ def get_qwen3(model_path):
 def get_moonlight(model_path):
     from transformers import DeepseekV3ForCausalLM
 
+    device_map = "auto"
     model = DeepseekV3ForCausalLM.from_pretrained(
         model_path,
         torch_dtype=torch.bfloat16,
         low_cpu_mem_usage=True,
-        device_map='auto',
+        device_map=device_map,
         trust_remote_code=True
     )
 
@@ -260,11 +263,12 @@ def get_auto(model_path):
         trust_remote_code=True
     )
 
+    device_map = "auto"
     model = AutoModelForCausalLM.from_pretrained(
         model_path,
         torch_dtype=torch.bfloat16,
         low_cpu_mem_usage=True,
-        device_map='auto',
+        device_map=device_map,
         use_safetensors=True,
         trust_remote_code=True
     )
@@ -328,6 +332,9 @@ if __name__ == '__main__':
     if not args.eval_zero:
         print("Loading model: ", args.model.lower())
         model, tokenizer = load_model(args.model)
+
+        # for name, param in model.named_parameters():
+        #     print(f"{name:<40} → {param.device}")
 
         print("model: ", args.model)
         # print(model)

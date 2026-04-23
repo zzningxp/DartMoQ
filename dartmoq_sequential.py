@@ -263,6 +263,9 @@ def cmoe_sequential(model, tokenizer, dataloader, args):
     print(inps.shape)
     cache = {'i': 0, 'attention_mask': None, 'position_ids': None, 'position_embeddings': None}
 
+    if args.standby_layer_cpu:
+        model.model.embed_tokens = model.model.embed_tokens.to(DEV)
+
     class Catcher(nn.Module):
         def __init__(self, module):
             super().__init__()
@@ -332,9 +335,24 @@ def cmoe_sequential(model, tokenizer, dataloader, args):
     
     inps = inps.squeeze(1)
 
-    layer_rank_list = []
-
+    if args.standby_layer_cpu:
+        layers_device = []
+        for layer_idx, layer in enumerate(model.model.layers):
+            dev = next(layer.parameters()).device
+            layers_device.append(dev)
+            # print(layer_idx, dev)
+            if dev.type == 'cuda':
+                layer = layer.to('cpu')
+        for i in range(torch.cuda.device_count()):
+            force_release_inactive_splits(device=i)
+            print(f"CUDA {i} Allocated: {torch.cuda.memory_allocated(device=i) / 1024**3:.2f} GB")
+            print(f"CUDA {i} Reserved: {torch.cuda.memory_reserved(device=i) / 1024**3:.2f} GB")       
+        print(layers_device)
+    
     for layer_idx, layer in tqdm(enumerate(layers), desc = 'Carving MoE layers...'):
+        if args.standby_layer_cpu:
+            layer = layer.to(layers_device[layer_idx])
+
         moe_out = construct_moe(model,
             moe_model_flag,
             layer, 
@@ -353,9 +371,7 @@ def cmoe_sequential(model, tokenizer, dataloader, args):
 
         inps = moe_out
 
-        if args.move_layer_to_cpu_after_quant:
-            layer_rank_list.append(next(layer.parameters()).device)
-            print(f"Layer {layer_idx}", layer_rank_list[-1])
+        if args.standby_layer_cpu:
             layer = layer.to('cpu')
 
         for i in range(torch.cuda.device_count()):
@@ -366,12 +382,18 @@ def cmoe_sequential(model, tokenizer, dataloader, args):
         
     print("MoE carving done. Moving layers to GPU for evaluation...")
 
-    if args.move_layer_to_cpu_after_quant:
+    if args.standby_layer_cpu:
+        for i in range(torch.cuda.device_count()):
+            force_release_inactive_splits(device=i)
         for layer_idx, layer in enumerate(model.model.layers):
-            layer = layer.to(layer_rank_list[layer_idx])
-            # for i in range(torch.cuda.device_count()):
-            #     print(f"layer {layer_idx} CUDA {i} Allocated: {torch.cuda.memory_allocated(device=i) / 1024**3:.2f} GB")
-            #     print(f"layer {layer_idx} CUDA {i} Reserved: {torch.cuda.memory_reserved(device=i) / 1024**3:.2f} GB")
+            if layers_device[layer_idx].type == 'cuda':
+                layer = layer.to(layers_device[layer_idx])
+            for i in range(torch.cuda.device_count()):
+                print(f"layer {layer_idx} CUDA {i} Allocated: {torch.cuda.memory_allocated(device=i) / 1024**3:.2f} GB")
+                print(f"layer {layer_idx} CUDA {i} Reserved: {torch.cuda.memory_reserved(device=i) / 1024**3:.2f} GB")
+        
+        # for name, param in model.named_parameters():
+        #     print(f"{name:<40} → {param.device}")
 
     # print('Training_free_ppl:')
     pre_ppl = []
