@@ -8,7 +8,7 @@ import torch.nn.functional as F
 import matplotlib.pyplot as plt
 
 import numpy as np
-from tqdm import tqdm
+
 from typing import Optional, Tuple, List
 import re
 import time
@@ -269,7 +269,7 @@ def analyze_quant_outlier(layer, layer_idx, hidden_states, ori_expert_num, if_de
     nsample = hidden_states.shape[0]
 
     gptq = {}
-    wbits = 8
+    wbits = 2
     groupsize = 128
     act_order = True
     static_groups = False

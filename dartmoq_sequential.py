@@ -13,7 +13,8 @@ DEV = torch.device('cuda:0')
 @torch.no_grad()
 def reconstruct_moe_from_existing(model, layer, layer_idx, inps, n_experts, n_activated, slice_expert_num, ori_activated, device, args):
 
-    expert_activation_rates = analyze_experts_activation(layer, layer_idx, inps, ori_activated, model.config.model_type) #, save_path="plot/{layer_idx}_experts_activation.png")
+    if args.quant_scheme == "global":
+        expert_activation_rates = analyze_experts_activation(layer, layer_idx, inps, ori_activated, model.config.model_type) #, save_path="plot/{layer_idx}_experts_activation.png")
 
     ori_expert_num = len(layer.mlp.experts)
     new_expert_num = ori_expert_num * slice_expert_num 
@@ -61,8 +62,11 @@ def reconstruct_moe_from_existing(model, layer, layer_idx, inps, n_experts, n_ac
         )
         
         expert_groups = expert_groups[1:]
-        _rates = [e * expert_activation_rates[expert_idx] for e in expert_rates[1:]]
-        all_new_expert_rates.extend(_rates)
+        if args.quant_scheme == "global":
+            _rates = [e * expert_activation_rates[expert_idx] for e in expert_rates[1:]]
+            all_new_expert_rates.extend(_rates)
+        else:
+            all_new_expert_rates.extend(expert_rates[1:])
 
         # Create new experts for this original expert
         for ii, group_indices in enumerate(expert_groups):
@@ -349,7 +353,7 @@ def cmoe_sequential(model, tokenizer, dataloader, args):
             print(f"CUDA {i} Reserved: {torch.cuda.memory_reserved(device=i) / 1024**3:.2f} GB")       
         print(layers_device)
     
-    for layer_idx, layer in tqdm(enumerate(layers), desc = 'Carving MoE layers...'):
+    for layer_idx, layer in enumerate(layers):
         if args.standby_layer_cpu:
             layer = layer.to(layers_device[layer_idx])
 

@@ -5,12 +5,6 @@ import time
 import torch
 import torch.nn as nn
 
-from tqdm import *
-
-import os 
-
-import copy
-
 from dartmoq_utils import *
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
@@ -55,7 +49,8 @@ def cmoe_ppl_eval(model, testloader, eval_set, args):
     # 
     # print(model)
     nlls = []
-    for i in tqdm(range(nsamples), desc='Evaluating...'):
+
+    for i in range(nsamples):
         batch = testenc[:, (i * model.seqlen):((i + 1) * model.seqlen)].to(DEV)
         target_ids = batch.clone()
 
