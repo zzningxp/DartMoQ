@@ -404,7 +404,7 @@ def cmoe_sequential(model, tokenizer, dataloader, args):
 
     # print('Training_free_ppl:')
     pre_ppl = []
-    datasets = ['wikitext2', 'c4-new']
+    datasets = ['wikitext2', 'c4']
     for dataset in datasets:
         dataloader, testloader = get_loaders(
             dataset, seed=args.seed, tokenizer=tokenizer, seqlen=model.seqlen

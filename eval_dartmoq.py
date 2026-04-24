@@ -362,12 +362,12 @@ if __name__ == '__main__':
         # print(model)
         # print(model.config)
         ppl = []
-        datasets = ['wikitext2', 'c4-new']
-        # datasets = ['wikitext2', ]
+        datasets = ['wikitext2', 'c4']
         for dataset in datasets:
             dataloader, testloader = get_loaders(
                 dataset, nsamples=args.val_samples, seed=args.seed, tokenizer=tokenizer, seqlen=model.seqlen
             )
+
             print(dataset)
             eval_set = dataset
             ppl_i = cmoe_ppl_eval(model, testloader, eval_set, args)
