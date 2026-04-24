@@ -12,7 +12,7 @@ import copy
 from dartmoq_utils import *
 from dartmoq_sequential import *
 # from sft_utils import simple_sft
-from eval_dartmoq import cmoe_ppl_eval, load_model
+from eval_dartmoq import eval_zero_shot, load_model
 
 def save_results(file_name, results):
     if results is not str:
@@ -103,6 +103,12 @@ if __name__ == '__main__':
         print(carved_model)
         carved_model.save_pretrained(carved_save_dir)
         tokenizer.save_pretrained(carved_save_dir)
+
+    if args.eval_zero:
+        task_list = ["arc_challenge", "arc_easy", "piqa", "boolq", "winogrande", "sciq", "mnli", "hellaswag", "gsm8k", "mmlu", "triviaqa"]
+        # task_list = ["mnli", "gsm8k", "mmlu", "triviaqa"]
+        # task_list = ["arc_challenge", "arc_easy"]
+        eval_zero_shot(model, task_list)
     
     # print(carved_model)
 

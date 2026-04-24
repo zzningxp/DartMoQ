@@ -354,6 +354,7 @@ def cmoe_sequential(model, tokenizer, dataloader, args):
         print(layers_device)
     
     for layer_idx, layer in enumerate(layers):
+        tick0 = time.time()
         if args.standby_layer_cpu:
             layer = layer.to(layers_device[layer_idx])
 
@@ -383,6 +384,8 @@ def cmoe_sequential(model, tokenizer, dataloader, args):
             print(f"CUDA {i} Allocated: {torch.cuda.memory_allocated(device=i) / 1024**3:.2f} GB")
             print(f"CUDA {i} Reserved: {torch.cuda.memory_reserved(device=i) / 1024**3:.2f} GB")
         print(flush=True)
+        tick1 = time.time()
+        print(f"Layer {layer_idx} time: {tick1 - tick0:.2f} s")
         
     print("MoE carving done. Moving layers to GPU for evaluation...")
 

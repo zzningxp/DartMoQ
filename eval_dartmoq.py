@@ -77,6 +77,29 @@ def cmoe_ppl_eval(model, testloader, eval_set, args):
 
     return ppl.item()
 
+def eval_zero_shot(model, task_list = ["arc_challenge", "arc_easy", "piqa", "boolq", "winogrande"]):
+    tick0 = time.time()
+    from lm_eval import tasks, evaluator, utils
+    from lm_eval.models.huggingface import HFLM
+    model = HFLM(
+        pretrained=model,
+        trust_remote_code=True,
+        device="cuda",
+    )
+
+    for task in task_list:
+        results = evaluator.simple_evaluate(
+            model=model,
+            tasks=[task],
+            num_fewshot=5,
+            batch_size="auto",
+            device="cuda"
+        )
+        print(task, results["results"][task]) 
+    
+    tick1 = time.time()
+    print(f"Zero-shot evaluation time: {tick1 - tick0}")
+
 def get_llama(model):
     def skip(*args, **kwargs):
         pass
@@ -316,9 +339,13 @@ if __name__ == '__main__':
     parser.add_argument(        '--seed',
         type=int, default=0, help='Seed for sampling the calibration data.'
     )
-    parser.add_argument(        '--eval_zero',
+    parser.add_argument(        '--eval-zero',
         action='store_true', help='Evaluate zero-shot performance.'
     )
+    parser.add_argument(        '--val-samples',
+        type=int, default=256, help='Evaluate performance on x samples.'
+    )
+
 
     args = parser.parse_args()
     
@@ -339,18 +366,15 @@ if __name__ == '__main__':
         # datasets = ['wikitext2', ]
         for dataset in datasets:
             dataloader, testloader = get_loaders(
-                dataset, seed=args.seed, tokenizer=tokenizer, seqlen=model.seqlen
+                dataset, nsamples=args.val_samples, seed=args.seed, tokenizer=tokenizer, seqlen=model.seqlen
             )
             print(dataset)
             eval_set = dataset
             ppl_i = cmoe_ppl_eval(model, testloader, eval_set, args)
             ppl.append(f"{dataset}: {ppl_i}")
-            print("PPL on {}: {:.4f}".format(dataset, ppl_i))
+            # print("PPL on {}: {:.4f}".format(dataset, ppl_i))
 
     if args.eval_zero:
-        tick0 = time.time()
-        from lm_eval import tasks, evaluator, utils
-        from lm_eval.models.huggingface import HFLM
 
         tokenizer = AutoTokenizer.from_pretrained(args.model)
         model = AutoModelForCausalLM.from_pretrained(
@@ -361,23 +385,7 @@ if __name__ == '__main__':
             trust_remote_code=True
         )
 
-        model = HFLM(
-            pretrained=model,
-            trust_remote_code=True,
-            device="cuda",
-        )
-
-        task_list = ["arc_challenge", "arc_easy", "piqa", "boolq", "winogrande"] #, "hellaswag"]
-        for task in task_list:
-            results = evaluator.simple_evaluate(
-                model=model,
-                tasks=[task],
-                num_fewshot=5,
-                batch_size=16,
-                # batch_size="auto",
-                device="cuda"
-            )
-            print(task, results["results"][task]) 
-        
-        tick1 = time.time()
-        print(f"Zero-shot evaluation time: {tick1 - tick0}")
+        task_list = ["arc_challenge", "arc_easy", "piqa", "boolq", "winogrande", "sciq", "mnli", "hellaswag", "gsm8k", "mmlu", "triviaqa"]
+        # task_list = ["arc_challenge", "arc_easy", "boolq", "winogrande", "piqa", "sciq", "hellaswag", "mmlu", "gsm8k", "triviaqa"]
+        # task_list = ["mnli"]
+        eval_zero_shot(model, task_list)
