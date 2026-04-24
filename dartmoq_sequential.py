@@ -113,8 +113,10 @@ def reconstruct_moe_from_existing(model, layer, layer_idx, inps, n_experts, n_ac
     return moe, all_new_expert_rates
 
 @torch.no_grad()
-def construct_moe(model, moe_model_flag, layer, layer_idx, inp, attention_mask, position_ids, position_embeddings, 
-                                n_experts, n_activated, slice_expert_num, n_shared, ori_activated, args):
+def construct_moe(model, moe_model_flag, layer, layer_idx, inp, 
+                    attention_mask, position_ids, position_embeddings, 
+                    n_experts, n_activated, slice_expert_num, ori_activated, 
+                    args):
     
     modeltype = model.config.model_type
     batchsize = inp.shape[0]
@@ -185,14 +187,18 @@ def construct_moe(model, moe_model_flag, layer, layer_idx, inp, attention_mask, 
         # print(all_new_expert_rates)
         if all_new_expert_rates is not None:
             _, sorted_index = torch.sort(torch.tensor(all_new_expert_rates))
-            high_ratio = 0.25
-            low_ratio = 1 - high_ratio
+            high_ = n_experts // slice_expert_num
+            low_ = n_experts // slice_expert_num
+            mid_ = n_experts - high_ - low_
+            print(f"{high_}: {mid_}: {low_}")
             qscheme['expert'] = [[0] * slice_expert_num for i in range(n_experts // slice_expert_num)]
             for i, idx in enumerate(sorted_index):
-                if i < int(n_experts * low_ratio):
-                    bit = 2
+                if i < low_:
+                    bit = 1
+                elif i >= high_:
+                    bit = 3
                 else:
-                    bit = 4
+                    bit = 2
                 # print(idx, all_new_expert_rates[idx])
                 xi = int(idx // slice_expert_num)
                 xj = int(idx % slice_expert_num)
@@ -316,26 +322,27 @@ def cmoe_sequential(model, tokenizer, dataloader, args):
     for layer in layers:
         moe_model_flag = moe_model_flag or hasattr(layer.mlp, 'gate') or hasattr(layer.mlp, 'experts')
     if moe_model_flag:
-        if hasattr(model.config, 'num_experts'):         ## olmoe，
-            slice_expert_num = args.nexperts // model.config.num_experts
-            assert slice_expert_num * model.config.num_experts == args.nexperts, "n_experts must be multiple of existing expert num"
-            model.config.num_experts = args.nexperts
-        elif hasattr(model.config, 'n_routed_experts'):  ## DeepSeek-V1-MoE-16B
-            slice_expert_num = args.nexperts // model.config.n_routed_experts
-            assert slice_expert_num * model.config.n_routed_experts == args.nexperts, "n_experts must be multiple of existing expert num"
-            model.config.n_routed_experts = args.nexperts
+        slice_expert_num = args.slices
 
+        if hasattr(model.config, 'num_experts'):         ## olmoe，
+            new_num_expert = slice_expert_num * model.config.num_experts
+            model.config.num_experts = new_num_expert
+        elif hasattr(model.config, 'n_routed_experts'):  ## DeepSeek-V1-MoE-16B
+            new_num_expert = slice_expert_num * model.config.n_routed_experts
+            model.config.n_routed_experts = new_num_expert
+        
         ori_num_experts_per_tok = model.config.num_experts_per_tok
-        model.config.num_experts_per_tok = args.nactivated
+        new_num_experts_per_tok = slice_expert_num * model.config.num_experts_per_tok
+        model.config.num_experts_per_tok = new_num_experts_per_tok
+        
         if hasattr(model.config, 'moe_intermediate_size'): ## DeepSeek-V1-MoE-16B
             model.config.moe_intermediate_size = model.config.moe_intermediate_size // slice_expert_num
         elif hasattr(model.config, 'intermediate_size'): ## olmoe，
             model.config.intermediate_size = model.config.intermediate_size // slice_expert_num
         print("The model is already a MoE model. Proceeding to split experts. ")
-        print(f"Slice expert by {slice_expert_num}: to {args.nexperts}, with {args.nactivated} activated experts.")
+        print(f"Slice expert by {slice_expert_num}: to {new_num_expert}, with {new_num_experts_per_tok} activated experts.")
     else:
-        print("The model is a dense model. Proceeding to carve MoE layers. ")
-        slice_expert_num = args.nexperts
+        assert False, "Dense model is not supported."
     
     inps = inps.squeeze(1)
 
@@ -351,7 +358,7 @@ def cmoe_sequential(model, tokenizer, dataloader, args):
             force_release_inactive_splits(device=i)
             print(f"CUDA {i} Allocated: {torch.cuda.memory_allocated(device=i) / 1024**3:.2f} GB")
             print(f"CUDA {i} Reserved: {torch.cuda.memory_reserved(device=i) / 1024**3:.2f} GB")       
-        print(layers_device)
+        # print(layers_device)
     
     for layer_idx, layer in enumerate(layers):
         tick0 = time.time()
@@ -366,10 +373,9 @@ def cmoe_sequential(model, tokenizer, dataloader, args):
             attention_mask, 
             position_ids,
             position_embeddings,
-            n_experts = args.nexperts,
-            n_activated = args.nactivated,
+            n_experts = new_num_expert,
+            n_activated = new_num_experts_per_tok,
             slice_expert_num = slice_expert_num,
-            n_shared = args.nshared,
             ori_activated = ori_num_experts_per_tok,
             args = args
         )
@@ -383,10 +389,11 @@ def cmoe_sequential(model, tokenizer, dataloader, args):
             # force_release_inactive_splits(device=i) # force to release inactive reserved memory
             print(f"CUDA {i} Allocated: {torch.cuda.memory_allocated(device=i) / 1024**3:.2f} GB")
             print(f"CUDA {i} Reserved: {torch.cuda.memory_reserved(device=i) / 1024**3:.2f} GB")
-        print(flush=True)
+
         tick1 = time.time()
         print(f"Layer {layer_idx} time: {tick1 - tick0:.2f} s")
-        
+        print(flush=True)
+    
     print("MoE carving done. Moving layers to GPU for evaluation...")
 
     if args.standby_layer_cpu:

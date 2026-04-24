@@ -44,23 +44,11 @@ if __name__ == '__main__':
     parser.add_argument(        '--nsamples', type=int, default=128,
         help='Number of Fine-tuning data for CMoE.'
     )
-    parser.add_argument(        '--k-act', type=int, default=10,
-        help='TopK number for the ATopK. K_a in paper.'
-    )
-    parser.add_argument(        '--nexperts', type=int, default=16,
-        help='Total number of experts. N in paper.'
-    )
-    parser.add_argument(        '--nactivated', type=int, default=2,
-        help='Number of activated routed experts.'
-    )
-    parser.add_argument(        '--nshared', type=int, default=2,
-        help='Number of shared experts.'
+    parser.add_argument(        '--slices', type=int, default=1,
+        help='Number of sub experts to slice.'
     )
     parser.add_argument(        '--eval-zero', action='store_true',
         help='Whether to run downstream tasks evaluation.'
-    )
-    parser.add_argument(        '--prefix', type=str, default=None,
-        help='Prefix the results folder if needed.'
     )
     parser.add_argument(        '--quant-scheme', 
         type=str, default=None,
@@ -78,7 +66,7 @@ if __name__ == '__main__':
     
     print("-" * 50)
     print("Loading model: (ppl)", args.model)
-    print("quant-scheme/rank-mode: (ppl)", args.quant_scheme, args.rank_mode)
+    print("slices/quant-scheme/rank-mode: (ppl)", args.slices, args.quant_scheme, args.rank_mode)
     model, tokenizer = load_model(args.model)
 
     dataloader, _ = get_loaders(
@@ -99,7 +87,7 @@ if __name__ == '__main__':
         carved_model = cmoe_sequential(model, tokenizer, dataloader, args)
     save_carved_model = False
     if save_carved_model:
-        carved_save_dir = f"model/carved_{model.config.model_type}_e{args.nexperts}a{args.nactivated}_{args.quant_scheme}"
+        carved_save_dir = f"model/carved_{model.config.model_type}_e{args.slices}_{args.quant_scheme}"
         print(carved_model)
         carved_model.save_pretrained(carved_save_dir)
         tokenizer.save_pretrained(carved_save_dir)
