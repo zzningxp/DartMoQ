@@ -182,7 +182,7 @@ def construct_moe(model, moe_model_flag, layer, layer_idx, inp,
     print(f"reconstruct_moe_from_existing layer {layer_idx} time: {tick1 - tick0}")
 
     if "global" in args.quant_scheme:
-        ee = qscheme['expert']
+        ee = qscheme['econfig']
         e_bits = [int(e) for e in ee]
         
         # print(all_new_expert_rates)
@@ -199,10 +199,8 @@ def construct_moe(model, moe_model_flag, layer, layer_idx, inp,
 
         print("global quant expert scheme:", qscheme['expert'])
     else:
-        ee = qscheme['expert']
+        ee = qscheme['econfig']
         qscheme['expert'] = [ee for i in range(n_experts // slice_expert_num)]
-
-
     
     tick0 = time.time()
     if_quant_attn = True
@@ -356,9 +354,9 @@ def cmoe_sequential(model, tokenizer, dataloader, args):
         qscheme['attn'] = [int(aa)]
         qscheme['share'] = [int(ss)]
         assert len(ee) == slice_expert_num
-        qscheme['expert'] = [int(e) for e in ee]
-        bpw = sum(qscheme['expert']) * 1.0 / slice_expert_num
-        print(f"Quant expert scheme (ppl): {qscheme_str} {qscheme['expert']}, with bpw {bpw}")
+        qscheme['econfig'] = [int(e) for e in ee]
+        bpw = sum(qscheme['econfig']) * 1.0 / slice_expert_num
+        print(f"Quant expert scheme (ppl): {qscheme_str} {qscheme['econfig']}, with bpw {bpw}")
     except:
         assert False, f"Quant scheme {qscheme_str} is not valid."
 
