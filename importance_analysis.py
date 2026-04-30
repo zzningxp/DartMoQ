@@ -87,13 +87,14 @@ def analyze_expert_importance(
             top_k=top_k,
         ).to(dtype=hidden_states.dtype)
 
-        if torch.count_nonzero(router_scores) == 0:
+        expert_mask = router_scores > 0
+        if torch.count_nonzero(expert_mask) == 0:
             continue
+        hidden_states = hidden_states[expert_mask]
 
         pre_act = F.linear(hidden_states, up_weight)
         gate = F.linear(hidden_states, gate_weight)
         activations = act_fn(gate) * pre_act
-        activations = activations * router_scores.unsqueeze(1)
         activations = activations.float()
 
         exp_l2_square += (activations ** 2).sum(dim=0)
