@@ -56,7 +56,7 @@ if __name__ == '__main__':
     )
     parser.add_argument(        '--rank-mode', 
         type=str, default="quant_outlier",
-        help='Rank mode for MoE reconstruction. activation|quant_outlier|random|neuron_index'
+        help='Rank mode for MoE reconstruction. activation|importance|quant_outlier|random|neuron_index'
     )
     parser.add_argument(        '--standby-layer-cpu', action='store_true', default=False,
         help='Whether to move quant layers to CPU before and after quantization.' 
