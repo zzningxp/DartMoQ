@@ -207,10 +207,11 @@ def construct_moe(model, moe_model_flag, layer, layer_idx, inp,
                 xj = int(idx % slice_expert_num)
                 qscheme['expert'][xi][xj] = e_bits[i // sect_]
 
-        print("global quant expert scheme:", qscheme['expert'])
+            print("global quant expert scheme:", qscheme['expert'])
     else:
         ee = qscheme['econfig']
         qscheme['expert'] = [ee for i in range(n_experts // slice_expert_num)]
+        print("sliced quant expert scheme:", qscheme['expert'])
     
     tick0 = time.time()
     if_quant_attn = True
