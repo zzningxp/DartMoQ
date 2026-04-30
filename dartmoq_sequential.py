@@ -116,6 +116,7 @@ def reconstruct_moe_from_existing(model, layer, layer_idx, inps, n_experts, n_ac
 def construct_moe(model, moe_model_flag, layer, layer_idx, inp, 
                     attention_mask, position_ids, position_embeddings, 
                     n_experts, n_activated, slice_expert_num, ori_activated, 
+                    qscheme,
                     args):
     
     modeltype = model.config.model_type
@@ -181,71 +182,27 @@ def construct_moe(model, moe_model_flag, layer, layer_idx, inp,
     print(f"reconstruct_moe_from_existing layer {layer_idx} time: {tick1 - tick0}")
 
     if "global" in args.quant_scheme:
-        qscheme = {}
-        qscheme['attn'] = [8]
-        qscheme['share'] = [8]
-        qscheme['expert'] = []
-        e_high = 3
-        e_mid = 2
-        e_low = 1
-        try:
-            qscheme_str = args.quant_scheme
-            # sample: "a8s4m321", "a8s4m332"
-            match = re.search(r'global-a(\d)s(\d)m(\d)(\d)(\d)', qscheme_str)
-            aa = int(match.group(1))
-            ss = int(match.group(2))
-            e0 = int(match.group(3))
-            e1 = int(match.group(4))
-            e2 = int(match.group(5))
-            qscheme['attn'] = [aa]
-            qscheme['share'] = [ss]
-            e_high = e0
-            e_mid = e1
-            e_low = e2
-        except Exception as e:
-            print(f"Quant scheme {qscheme_str} is not valid: {e}")
+        ee = qscheme['expert']
+        e_bits = [int(e) for e in ee]
         
         # print(all_new_expert_rates)
         if all_new_expert_rates is not None:
-            _, sorted_index = torch.sort(torch.tensor(all_new_expert_rates))
-            high_ = n_experts // slice_expert_num
-            low_ = n_experts // slice_expert_num
-            mid_ = n_experts - high_ - low_
-            print(f"{high_}: {mid_}: {low_}")
+            _, sorted_index = torch.sort(torch.tensor(all_new_expert_rates), descending=True)
+            sect_ = n_experts // slice_expert_num
+            # print(e_bits, sect_, n_experts)
             qscheme['expert'] = [[0] * slice_expert_num for i in range(n_experts // slice_expert_num)]
             for i, idx in enumerate(sorted_index):
-                if i < low_:
-                    bit = e_low
-                elif i >= n_experts - high_:
-                    bit = e_high
-                else:
-                    bit = e_mid
                 # print(idx, all_new_expert_rates[idx])
                 xi = int(idx // slice_expert_num)
                 xj = int(idx % slice_expert_num)
-                qscheme['expert'][xi][xj] = bit
+                qscheme['expert'][xi][xj] = e_bits[i // sect_]
 
         print("global quant expert scheme:", qscheme['expert'])
     else:
-        # args.quant_scheme should lik "a8s4m3221"
-        qscheme_str = args.quant_scheme
-        qscheme = {}
-        qscheme['attn'] = [8]
-        qscheme['share'] = [4]
-        # qscheme['expert'] = [2, 2, 2, 2, 2, 2, 2, 2]
-        if qscheme_str is not None:
-            try:
-                # sample: "a8s4m3221", "a8s4m33222222"
-                match = re.search(r'a(\d)s(\d)m(\d+)', qscheme_str)
-                aa = match.group(1)
-                ss = match.group(2)
-                ee = match.group(3)
-                qscheme['attn'] = [int(aa)]
-                qscheme['share'] = [int(ss)]
-                qscheme['expert'] = [[int(e) for e in ee] for i in range(n_experts // slice_expert_num)]
-                print(qscheme['expert'])
-            except:
-                assert False, f"Quant scheme {qscheme_str} is not valid."
+        ee = qscheme['expert']
+        qscheme['expert'] = [ee for i in range(n_experts // slice_expert_num)]
+
+
     
     tick0 = time.time()
     if_quant_attn = True
@@ -348,9 +305,11 @@ def cmoe_sequential(model, tokenizer, dataloader, args):
         slice_expert_num = args.slices
 
         if hasattr(model.config, 'num_experts'):         ## olmoe，
+            ori_num_experts = model.config.num_experts
             new_num_expert = slice_expert_num * model.config.num_experts
             model.config.num_experts = new_num_expert
         elif hasattr(model.config, 'n_routed_experts'):  ## DeepSeek-V1-MoE-16B
+            ori_num_experts = model.config.n_routed_experts
             new_num_expert = slice_expert_num * model.config.n_routed_experts
             model.config.n_routed_experts = new_num_expert
         
@@ -383,6 +342,26 @@ def cmoe_sequential(model, tokenizer, dataloader, args):
             print(f"CUDA {i} Reserved: {torch.cuda.memory_reserved(device=i) / 1024**3:.2f} GB")       
         # print(layers_device)
     
+    qscheme_str = args.quant_scheme
+    qscheme = {}
+    # qscheme['attn'] = [8]
+    # qscheme['share'] = [4]
+    # qscheme['expert'] = [2, 2, 2, 2, 2, 2, 2, 2]
+    try:
+        # sample: "a8s4m3221", "a8s4m33222222"
+        match = re.search(r'a(\d)s(\d)m(\d+)', qscheme_str)
+        aa = match.group(1)
+        ss = match.group(2)
+        ee = match.group(3)
+        qscheme['attn'] = [int(aa)]
+        qscheme['share'] = [int(ss)]
+        assert len(ee) == slice_expert_num
+        qscheme['expert'] = [int(e) for e in ee]
+        bpw = sum(qscheme['expert']) * 1.0 / slice_expert_num
+        print(f"Quant expert scheme (ppl): {qscheme_str} {qscheme['expert']}, with bpw {bpw}")
+    except:
+        assert False, f"Quant scheme {qscheme_str} is not valid."
+
     for layer_idx, layer in enumerate(layers):
         tick0 = time.time()
         if args.standby_layer_cpu:
@@ -400,6 +379,7 @@ def cmoe_sequential(model, tokenizer, dataloader, args):
             n_activated = new_num_experts_per_tok,
             slice_expert_num = slice_expert_num,
             ori_activated = ori_num_experts_per_tok,
+            qscheme = qscheme,
             args = args
         )
 

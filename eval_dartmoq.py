@@ -74,7 +74,7 @@ def cmoe_ppl_eval(model, testloader, eval_set, args):
     # print(nlls)
     ppl = torch.exp(torch.stack(nlls).sum() / (nsamples * model.seqlen))
     tick1 = time.time()
-    print(f'ppl on {eval_set}: {ppl.item():.4f}, time: {tick1 - tick0:.2f}')
+    print(f'ppl on {eval_set}: {ppl.item():.4f} time: {tick1 - tick0:.2f}')
     model.config.use_cache = use_cache
 
     return ppl.item()
