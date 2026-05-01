@@ -6,7 +6,7 @@ from tqdm import tqdm
 from dartmoq_utils import *
 from data_utils import *
 from eval_dartmoq import cmoe_ppl_eval
-from importance_analysis import analyze_expert_importance
+from camera_utils import analyze_expert_energy
 from tool_utils import *
 
 DEV = torch.device('cuda:0')
@@ -48,13 +48,12 @@ def reconstruct_moe_from_existing(model, layer, layer_idx, inps, n_experts, n_ac
         if args.rank_mode == "activation":
             analyze_sparsity = 0.1
             rates = analyze_neuron_activations(expert.act_fn, inps, ori_gate_proj_weights, ori_up_proj_weights, sparsity=analyze_sparsity)
-        elif args.rank_mode == "importance":
-            rates = analyze_expert_importance(
+        elif args.rank_mode == "energy":
+            rates = analyze_expert_energy(
                 layer=layer,
                 expert_idx=expert_idx,
                 inps=inps,
                 model_type=model.config.model_type,
-                top_k=ori_activated,
             )
         elif args.rank_mode == "quant_outlier":
             rates = all_rates[expert_idx]

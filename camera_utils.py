@@ -24,12 +24,12 @@ SUPPORTED_PROJECT_MODEL_TYPES = (
 
 
 @torch.no_grad()
-def analyze_expert_importance(
+def analyze_expert_energy(
     layer: nn.Module,
     expert_idx: int,
     inps: torch.Tensor,
     model_type: str,
-    top_k: Optional[int] = None,
+    # top_k: Optional[int] = None,
     reduce_ratio: float = 1.0,
     chunk_size: int = 8192,
 ) -> torch.Tensor:
@@ -79,21 +79,21 @@ def analyze_expert_importance(
     flat_inps = inps.reshape(-1, inps.shape[-1])
     for start in range(0, flat_inps.shape[0], chunk_size):
         hidden_states = flat_inps[start:start + chunk_size]
-        router_scores = _expert_router_scores(
-            moe=moe,
-            hidden_states=hidden_states,
-            expert_idx=expert_idx,
-            model_type=model_type,
-            top_k=top_k,
-        ).to(dtype=hidden_states.dtype)
+        # router_scores = _expert_router_scores(
+        #     moe=moe,
+        #     hidden_states=hidden_states,
+        #     expert_idx=expert_idx,
+        #     model_type=model_type,
+        #     top_k=top_k,
+        # ).to(dtype=hidden_states.dtype)
 
-        if torch.count_nonzero(router_scores) == 0:
-            continue
+        # if torch.count_nonzero(router_scores) == 0:
+        #     continue
 
         pre_act = F.linear(hidden_states, up_weight)
         gate = F.linear(hidden_states, gate_weight)
         activations = act_fn(gate) * pre_act
-        activations = activations * router_scores.unsqueeze(1)
+        # activations = activations * router_scores.unsqueeze(1)
         activations = activations.float()
 
         exp_l2_square += (activations ** 2).sum(dim=0)
