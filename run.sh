@@ -13,27 +13,26 @@ export PYTORCH_CUDA_ALLOC_CONF="max_split_size_mb:128,roundup_power2_divisions:4
 
 # python run_dartmoq.py ~/models/OLMoE-1B-7B-0924-Instruct/ wikitext2 --slices 4 --nsamples 64 --quant-scheme a8s8m4222
 
-# python run_dartmoq.py ~/models/deepseek-moe-16b-base/ wikitext2 --slices 1 --nsamples 64 --quant-scheme a8s8m8
-# python run_dartmoq.py ~/models/OLMoE-1B-7B-0924-Instruct/ wikitext2 --slices 1 --nsamples 64 --quant-scheme a8s8m8
-# python run_dartmoq.py ~/models/DeepSeek-V2-Lite/ wikitext2 --slices 1 --nsamples 64 --quant-scheme a8s8m8
-# python run_dartmoq.py ~/models/Moonlight-16B-A3B/ wikitext2 --slices 1 --nsamples 64 --quant-scheme a8s8m8
-# python run_dartmoq.py ~/models/Qwen3-30B-A3B/ wikitext2 --slices 1 --nsamples 64 --quant-scheme a8s8m8 --standby-layer-cpu
+# python run_dartmoq.py ~/models/deepseek-moe-16b-base/ wikitext2 --slices 1 --nsamples 64 --rank-mode quant_outlier --quant-scheme a8s8m8
+# python run_dartmoq.py ~/models/OLMoE-1B-7B-0924-Instruct/ wikitext2 --slices 1 --nsamples 64 --rank-mode quant_outlier --quant-scheme a8s8m8
+# python run_dartmoq.py ~/models/DeepSeek-V2-Lite/ wikitext2 --slices 1 --nsamples 64 --rank-mode quant_outlier --quant-scheme a8s8m8
+# python run_dartmoq.py ~/models/Moonlight-16B-A3B/ wikitext2 --slices 1 --nsamples 64 --rank-mode quant_outlier --quant-scheme a8s8m8
+# python run_dartmoq.py ~/models/Qwen3-30B-A3B/ wikitext2 --slices 1 --nsamples 64 --rank-mode quant_outlier --quant-scheme a8s8m8 --standby-layer-cpu
 
-python run_dartmoq.py ~/models/deepseek-moe-16b-base/ wikitext2 --slices 8 --nsamples 64 --quant-scheme bpw-a8s8m2.25 --standby-layer-cpu
-python run_dartmoq.py ~/models/deepseek-moe-16b-base/ wikitext2 --slices 8 --nsamples 64 --quant-scheme bpw-a8s8m2.375 --standby-layer-cpu
-python run_dartmoq.py ~/models/deepseek-moe-16b-base/ wikitext2 --slices 8 --nsamples 64 --quant-scheme bpw-a8s8m2.5 --standby-layer-cpu
-python run_dartmoq.py ~/models/deepseek-moe-16b-base/ wikitext2 --slices 8 --nsamples 64 --quant-scheme bpw-a8s8m2.625 --standby-layer-cpu
-python run_dartmoq.py ~/models/deepseek-moe-16b-base/ wikitext2 --slices 8 --nsamples 64 --quant-scheme bpw-a8s8m2.75 --standby-layer-cpu
-python run_dartmoq.py ~/models/deepseek-moe-16b-base/ wikitext2 --slices 8 --nsamples 64 --quant-scheme bpw-a8s8m2.875 --standby-layer-cpu
-python run_dartmoq.py ~/models/deepseek-moe-16b-base/ wikitext2 --slices 8 --nsamples 64 --quant-scheme bpw-a8s8m3 --standby-layer-cpu
-python run_dartmoq.py ~/models/deepseek-moe-16b-base/ wikitext2 --slices 8 --nsamples 64 --quant-scheme bpw-a8s8m3.125 --standby-layer-cpu
-python run_dartmoq.py ~/models/deepseek-moe-16b-base/ wikitext2 --slices 8 --nsamples 64 --quant-scheme bpw-a8s8m3.25 --standby-layer-cpu
-python run_dartmoq.py ~/models/deepseek-moe-16b-base/ wikitext2 --slices 8 --nsamples 64 --quant-scheme bpw-a8s8m3.375 --standby-layer-cpu
-python run_dartmoq.py ~/models/deepseek-moe-16b-base/ wikitext2 --slices 8 --nsamples 64 --quant-scheme bpw-a8s8m3.5 --standby-layer-cpu
-python run_dartmoq.py ~/models/deepseek-moe-16b-base/ wikitext2 --slices 8 --nsamples 64 --quant-scheme bpw-a8s8m3.625 --standby-layer-cpu
-python run_dartmoq.py ~/models/deepseek-moe-16b-base/ wikitext2 --slices 8 --nsamples 64 --quant-scheme bpw-a8s8m3.75 --standby-layer-cpu
-python run_dartmoq.py ~/models/deepseek-moe-16b-base/ wikitext2 --slices 8 --nsamples 64 --quant-scheme bpw-a8s8m3.875 --standby-layer-cpu
-
+# python run_dartmoq.py ~/models/deepseek-moe-16b-base/ wikitext2 --slices 8 --nsamples 64 --rank-mode quant_outlier --quant-scheme bpw-a8s8m2.25 --standby-layer-cpu
+# python run_dartmoq.py ~/models/deepseek-moe-16b-base/ wikitext2 --slices 8 --nsamples 64 --rank-mode quant_outlier --quant-scheme bpw-a8s8m2.375 --standby-layer-cpu
+# python run_dartmoq.py ~/models/deepseek-moe-16b-base/ wikitext2 --slices 8 --nsamples 64 --rank-mode quant_outlier --quant-scheme bpw-a8s8m2.5 --standby-layer-cpu
+python run_dartmoq.py ~/models/deepseek-moe-16b-base/ wikitext2 --slices 8 --nsamples 64 --rank-mode quant_outlier --quant-scheme bpw-a8s8m2.625 --standby-layer-cpu
+python run_dartmoq.py ~/models/deepseek-moe-16b-base/ wikitext2 --slices 8 --nsamples 64 --rank-mode quant_outlier --quant-scheme bpw-a8s8m2.75 --standby-layer-cpu
+python run_dartmoq.py ~/models/deepseek-moe-16b-base/ wikitext2 --slices 8 --nsamples 64 --rank-mode quant_outlier --quant-scheme bpw-a8s8m2.875 --standby-layer-cpu
+python run_dartmoq.py ~/models/deepseek-moe-16b-base/ wikitext2 --slices 8 --nsamples 64 --rank-mode quant_outlier --quant-scheme bpw-a8s8m3 --standby-layer-cpu
+python run_dartmoq.py ~/models/deepseek-moe-16b-base/ wikitext2 --slices 8 --nsamples 64 --rank-mode quant_outlier --quant-scheme bpw-a8s8m3.125 --standby-layer-cpu
+python run_dartmoq.py ~/models/deepseek-moe-16b-base/ wikitext2 --slices 8 --nsamples 64 --rank-mode quant_outlier --quant-scheme bpw-a8s8m3.25 --standby-layer-cpu
+python run_dartmoq.py ~/models/deepseek-moe-16b-base/ wikitext2 --slices 8 --nsamples 64 --rank-mode quant_outlier --quant-scheme bpw-a8s8m3.375 --standby-layer-cpu
+python run_dartmoq.py ~/models/deepseek-moe-16b-base/ wikitext2 --slices 8 --nsamples 64 --rank-mode quant_outlier --quant-scheme bpw-a8s8m3.5 --standby-layer-cpu
+python run_dartmoq.py ~/models/deepseek-moe-16b-base/ wikitext2 --slices 8 --nsamples 64 --rank-mode quant_outlier --quant-scheme bpw-a8s8m3.625 --standby-layer-cpu
+python run_dartmoq.py ~/models/deepseek-moe-16b-base/ wikitext2 --slices 8 --nsamples 64 --rank-mode quant_outlier --quant-scheme bpw-a8s8m3.75 --standby-layer-cpu
+python run_dartmoq.py ~/models/deepseek-moe-16b-base/ wikitext2 --slices 8 --nsamples 64 --rank-mode quant_outlier --quant-scheme bpw-a8s8m3.875 --standby-layer-cpu
 
 # python run_dartmoq.py ~/models/deepseek-moe-16b-base/ wikitext2 --slices 8 --nsamples 64 --rank-mode energy --quant-scheme global-a8s8m32222220 --standby-layer-cpu
 # python run_dartmoq.py ~/models/deepseek-moe-16b-base/ wikitext2 --slices 8 --nsamples 64 --rank-mode energy --quant-scheme a8s8m32222220 --standby-layer-cpu

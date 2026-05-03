@@ -338,25 +338,17 @@ def precompute_block_losses(sorted_idx, rates, s):
     return block_losses
 
 def enum_optimal_m_scheme_fast(rates, s, target_bpw, epsilon = 0):
-    """
-    【主函数】极速版枚举最优m-scheme
-    速度：毫秒级 per 专家
-    """
-    # 1. 输入检查
     assert set(rates.keys()) == {2, 3, 4}
     n_neurons = len(rates[2])
     assert len(rates[3]) == n_neurons and len(rates[4]) == n_neurons
     
-    # 2. 极速步骤1：一次统一排序
     sorted_idx = get_unified_sorted_idx(rates)
     
-    # 3. 极速步骤2：预计算块损失表
     block_losses = precompute_block_losses(sorted_idx, rates, s)
     
-    # 4. 极速步骤3：枚举单调scheme，查表选最优
     valid_schemes = generate_valid_m_schemes(s, target_bpw, epsilon)
     if not valid_schemes:
-        raise ValueError("未找到有效方案")
+        raise ValueError(f"no valid scheme found for target_bpw={target_bpw}")
     
     best_loss = float('inf')
     best_scheme = None
@@ -368,11 +360,10 @@ def enum_optimal_m_scheme_fast(rates, s, target_bpw, epsilon = 0):
         if total_loss < best_loss:
             best_loss = total_loss
             best_scheme = scheme
-        print(f"current scheme: {scheme} loss: {total_loss:.4f}")
+        print(f"{scheme}: loss {total_loss:.4f}", end=' ')
     
-    # 5. 生成结果
-    m_scheme_str = ''.join([str(b) for b in best_scheme])
-    actual_bpw = np.mean(best_scheme)
+    # m_scheme_str = ''.join([str(b) for b in best_scheme])
+    # actual_bpw = np.mean(best_scheme)
     
     m = n_neurons // s
     neuron_bits = np.zeros(n_neurons, dtype=int)
@@ -381,12 +372,11 @@ def enum_optimal_m_scheme_fast(rates, s, target_bpw, epsilon = 0):
         end = start + m
         neuron_bits[sorted_idx[start:end]] = bit
     
-    print(f"best scheme: {best_scheme}")
+    print(f"best: {best_scheme}")
     return  best_scheme, neuron_bits
 
 
 if __name__ == "__main__":
-    # 1. 模拟生成rates dict
     np.random.seed(42)
     n_neurons = 1024
     r2 = np.random.rand(n_neurons)
@@ -395,7 +385,6 @@ if __name__ == "__main__":
     
     rates = {2: r2, 3: r3, 4: r4}
     
-    # 2. 运行主函数
     s = 8
     target_bpw = 2.5
     # result = enum_optimal_m_scheme(rates, s, target_bpw, epsilon=0)

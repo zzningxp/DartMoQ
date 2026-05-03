@@ -318,7 +318,7 @@ def analyze_quant_outlier(layer, layer_idx, hidden_states, ori_expert_num, wbits
                 del gptq[name]
             
             tick1 = time.time()
-            print(f"Simulate quant to find outliers, layer {layer_idx} {ff} {qmi}:{qmi + min(qbatch, len(qmodule.keys()))} bits: {wbits} time: {tick1 - tick0}")
+            print(f"Simulate quant to find outliers, layer {layer_idx} {ff} {qmi}:{qmi + min(qbatch, len(qmodule.keys()))} bits: {wbits} time: {tick1 - tick0:.4f}")
             del qmodule
 
         del qmodule_all
@@ -420,8 +420,6 @@ def quant_layer_mix_precision(layer, layer_idx, quant_attn, n_experts, slice_exp
             tick0 = time.time()
 
             qmodule = {k: qmodule_all[k] for k in list(qmodule_all.keys())[qmi: qmi + qbatch]}
-            # print("Quant modules", ff, qmodule.keys())
-            # print("Quant modules", ff, qmi)
             if len(qmodule.keys()) == 0:
                 continue
             for name in qmodule.keys():
@@ -460,7 +458,7 @@ def quant_layer_mix_precision(layer, layer_idx, quant_attn, n_experts, slice_exp
                                 hidden_states=attn_sample, 
                                 attention_mask=attention_mask, 
                                 position_ids=position_ids,
-                            position_embeddings=position_embeddings)
+                                position_embeddings=position_embeddings)
                     except:
                         with torch.no_grad():
                             layer.self_attn(
@@ -478,22 +476,45 @@ def quant_layer_mix_precision(layer, layer_idx, quant_attn, n_experts, slice_exp
                 handle.remove()
             del handles
 
-            for name in qmodule.keys():
-                if gptq[name].quantizer.bits == 0:
-                    gptq[name].layer.weight = nn.Parameter(torch.zeros_like(gptq[name].layer.weight))
-                    loss[name] = torch.zeros(1)
-                else:
-                    loss[name] = gptq[name].fasterquant(name=f"layer_idx.{layer_idx}."+name, groupsize=groupsize, actorder=act_order, static_groups=static_groups)
-                gptq[name].free()
-                del gptq[name]
-            
             tick1 = time.time()
-            # print(f"Quantize layer {layer_idx} {ff} {qmi}:{qmi + min(qbatch, len(qmodule.keys()))} bits: {bit} time: {tick1 - tick0} loss: {loss[name].sum()}")
-            print(f"Quantize layer {layer_idx} {ff} {qmi}:{qmi + min(qbatch, len(qmodule.keys()))} time: {tick1 - tick0} loss: {loss[name].sum()}")
+
+            forward_event = torch.cuda.Event()
+            forward_event.record(torch.cuda.current_stream())
+
+            streams = []
+            for name in qmodule.keys():
+                ss = torch.cuda.Stream()
+                streams.append(ss)
+                with torch.cuda.stream(ss):
+                    ss.wait_event(forward_event)
+                    if gptq[name].quantizer.bits == 0:
+                        gptq[name].layer.weight = nn.Parameter(torch.zeros_like(gptq[name].layer.weight))
+                        loss[name] = torch.zeros(1)
+                    else:
+                        loss[name] = gptq[name].fasterquant(
+                            name=f"layer_idx.{layer_idx}."+name,
+                            groupsize=groupsize,
+                            actorder=act_order,
+                            static_groups=static_groups
+                        )
+
+            for ss in streams:
+                ss.synchronize()
+
+            for name in qmodule.keys():
+                if gptq[name] is not None:
+                    gptq[name].free()
+                    del gptq[name]
+
+            # print(ff, qmodule, loss)
+            tick2 = time.time()
+            print(f"Quantize layer {layer_idx} {ff} {qmi}:{qmi + min(qbatch, len(qmodule.keys()))} time: {tick1 - tick0:.4f} + {tick2 - tick1:.4f} loss: {loss[name].sum():.6f}")
             del qmodule
 
         del qmodule_all
     
+    torch.cuda.synchronize()
+
     del loss, gptq
     torch.cuda.empty_cache()
     gc.collect()

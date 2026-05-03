@@ -37,9 +37,10 @@ def reconstruct_moe_from_existing(model, layer, layer_idx, inps,
     total_neurons_processed = 0
     gate_start_idx = 0
 
-    tick0 = time.time()
 
     if args.rank_mode == "quant_outlier":
+        tick0 = time.time()
+
         all_rates = {}
         if 'target_bpw' not in qscheme:
             outlier_bits = {2}
@@ -52,6 +53,10 @@ def reconstruct_moe_from_existing(model, layer, layer_idx, inps,
         # from visual_utils import plot_diff_wbits_correlation, plot_spearman_rank_correlation
         # # plot_diff_wbits_correlation(model.config.model_type, layer_idx, ori_expert_num, all_rates[2], all_rates[3], all_rates[4])
         # plot_spearman_rank_correlation(model.config.model_type, layer_idx, ori_expert_num, all_rates[2], all_rates[3], all_rates[4])
+        tick1 = time.time()
+        print(f"analyze quant outlier time {tick1 - tick0}")
+
+    tick0 = time.time()
 
     all_new_expert_rates = []
     dpscheme_list = []
@@ -73,7 +78,7 @@ def reconstruct_moe_from_existing(model, layer, layer_idx, inps,
                 rates_x = {}
                 for x in outlier_bits:
                     rates_x[x] = all_rates[x][expert_idx].detach().cpu().numpy()
-                print(f"expert_idx {expert_idx} scheme search:")
+                # print(f"expert_idx {expert_idx} scheme search:")
                 dpscheme, rates = enum_optimal_m_scheme_fast(rates_x, slice_expert_num, target_bpw=qscheme['target_bpw'])
                 dpscheme_list.append(dpscheme)
                 rates = torch.from_numpy(rates).to(device)
@@ -141,6 +146,12 @@ def reconstruct_moe_from_existing(model, layer, layer_idx, inps,
     print(qscheme)
     if 'target_bpw' in qscheme:
         qscheme['expert'] = dpscheme_list
+        try:
+            from collections import Counter
+            counter = Counter(dpscheme_list)
+            print(f"dpscheme_list scheme type count: {counter}")
+        except:
+            pass
     elif "global" in args.quant_scheme :
         ee = qscheme['econfig']
         e_bits = [int(e) for e in ee]
@@ -396,7 +407,7 @@ def cmoe_sequential(model, tokenizer, dataloader, args):
         else:
             bpw = float(ee)
             qscheme['target_bpw'] = bpw
-        print(f"Quant expert scheme (ppl): {qscheme_str}, with bpw {bpw}, qscheme {qscheme}")
+        print(f"Quant expert scheme (ppl): {qscheme_str} with bpw {bpw} qscheme {qscheme}")
     except:
         assert False, f"Quant scheme {qscheme_str} is not valid."
 

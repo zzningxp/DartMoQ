@@ -55,7 +55,7 @@ if __name__ == '__main__':
         help='Quantization scheme like fix_scheme like a8s4m3221 or global scheme like global.'
     )
     parser.add_argument(        '--rank-mode', 
-        type=str, default="quant_outlier",
+        type=str, default=None,
         help='Rank mode for MoE reconstruction. activation|energy|quant_outlier|random|neuron_index'
     )
     parser.add_argument(        '--standby-layer-cpu', action='store_true', default=False,
