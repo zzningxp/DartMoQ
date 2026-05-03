@@ -1,3 +1,4 @@
+
 import torch
 import torch.nn as nn
 import copy
@@ -7,12 +8,15 @@ from dartmoq_utils import *
 from data_utils import *
 from eval_dartmoq import cmoe_ppl_eval
 from camera_utils import analyze_expert_energy
+from dp_utils import enum_optimal_m_scheme_fast
 from tool_utils import *
 
 DEV = torch.device('cuda:0')
 
 @torch.no_grad()
-def reconstruct_moe_from_existing(model, layer, layer_idx, inps, n_experts, n_activated, slice_expert_num, ori_activated, device, args):
+def reconstruct_moe_from_existing(model, layer, layer_idx, inps, 
+                                  n_experts, n_activated, slice_expert_num, 
+                                  ori_activated, device, qscheme, args):
 
     if "global" in args.quant_scheme :
         expert_activation_rates = analyze_experts_activation(layer, layer_idx, inps, ori_activated, model.config.model_type) #, save_path="plot/{layer_idx}_experts_activation.png")
@@ -36,9 +40,21 @@ def reconstruct_moe_from_existing(model, layer, layer_idx, inps, n_experts, n_ac
     tick0 = time.time()
 
     if args.rank_mode == "quant_outlier":
-        all_rates = analyze_quant_outlier(layer, layer_idx, inps, ori_expert_num, if_dense=False, save_path=None)
+        all_rates = {}
+        if 'target_bpw' not in qscheme:
+            outlier_bits = {2}
+        else:
+            outlier_bits = {2, 3, 4}
+        print(f"simulate quant outlier_bits {outlier_bits}")
+        for x in outlier_bits:
+            all_rates[x] = analyze_quant_outlier(layer, layer_idx, inps, ori_expert_num, wbits=x, save_path=None)
+
+        # from visual_utils import plot_diff_wbits_correlation, plot_spearman_rank_correlation
+        # # plot_diff_wbits_correlation(model.config.model_type, layer_idx, ori_expert_num, all_rates[2], all_rates[3], all_rates[4])
+        # plot_spearman_rank_correlation(model.config.model_type, layer_idx, ori_expert_num, all_rates[2], all_rates[3], all_rates[4])
 
     all_new_expert_rates = []
+    dpscheme_list = []
     for expert_idx, expert in enumerate(layer.mlp.experts):
         ori_gate_proj_weights = expert.gate_proj.weight
         ori_up_proj_weights = expert.up_proj.weight
@@ -49,14 +65,18 @@ def reconstruct_moe_from_existing(model, layer, layer_idx, inps, n_experts, n_ac
             analyze_sparsity = 0.1
             rates = analyze_neuron_activations(expert.act_fn, inps, ori_gate_proj_weights, ori_up_proj_weights, sparsity=analyze_sparsity)
         elif args.rank_mode == "energy":
-            rates = analyze_expert_energy(
-                layer=layer,
-                expert_idx=expert_idx,
-                inps=inps,
-                model_type=model.config.model_type,
-            )
+            rates = analyze_expert_energy(expert, inps)
         elif args.rank_mode == "quant_outlier":
-            rates = all_rates[expert_idx]
+            if 'target_bpw' not in qscheme:
+                rates = all_rates[2][expert_idx]
+            else:
+                rates_x = {}
+                for x in outlier_bits:
+                    rates_x[x] = all_rates[x][expert_idx].detach().cpu().numpy()
+                print(f"expert_idx {expert_idx} scheme search:")
+                dpscheme, rates = enum_optimal_m_scheme_fast(rates_x, slice_expert_num, target_bpw=qscheme['target_bpw'])
+                dpscheme_list.append(dpscheme)
+                rates = torch.from_numpy(rates).to(device)
         elif args.rank_mode == "random":
             rates = torch.randn(layer.mlp.intermediate_size, device=device)
         elif args.rank_mode == "neuron_index":
@@ -115,18 +135,35 @@ def reconstruct_moe_from_existing(model, layer, layer_idx, inps, n_experts, n_ac
     if hasattr(layer.mlp, 'shared_experts'):
         moe.shared_experts = layer.mlp.shared_experts
 
-    if args.rank_mode == "quant_outlier":
-        del all_rates
     gc.collect()
     torch.cuda.empty_cache()
-    return moe, all_new_expert_rates
+
+    print(qscheme)
+    if 'target_bpw' in qscheme:
+        qscheme['expert'] = dpscheme_list
+    elif "global" in args.quant_scheme :
+        ee = qscheme['econfig']
+        e_bits = [int(e) for e in ee]
+
+        # print(all_new_expert_rates)
+        if all_new_expert_rates is not None:
+            _, sorted_index = torch.sort(torch.tensor(all_new_expert_rates), descending=True)
+            sect_ = n_experts // slice_expert_num
+            # print(e_bits, sect_, n_experts)
+            qscheme['expert'] = [[0] * slice_expert_num for i in range(n_experts // slice_expert_num)]
+            for i, idx in enumerate(sorted_index):
+                # print(idx, all_new_expert_rates[idx])
+                xi = int(idx // slice_expert_num)
+                xj = int(idx % slice_expert_num)
+                qscheme['expert'][xi][xj] = e_bits[i // sect_]
+
+    return moe
 
 @torch.no_grad()
 def construct_moe(model, moe_model_flag, layer, layer_idx, inp, 
                     attention_mask, position_ids, position_embeddings, 
                     n_experts, n_activated, slice_expert_num, ori_activated, 
-                    qscheme,
-                    args):
+                    qscheme, args):
     
     modeltype = model.config.model_type
     batchsize = inp.shape[0]
@@ -176,10 +213,11 @@ def construct_moe(model, moe_model_flag, layer, layer_idx, inp,
     is_moe_layer = hasattr(layer.mlp, 'gate') or hasattr(layer.mlp, 'experts') ## some moe model has no expert layer in the first few layers,
     
     tick0 = time.time()
-    all_new_expert_rates = None
     if moe_model_flag:
         if is_moe_layer:
-            moe, all_new_expert_rates = reconstruct_moe_from_existing(model, layer, layer_idx, hidden_states, n_experts, n_activated, slice_expert_num, ori_activated, device, args)
+            moe = reconstruct_moe_from_existing(model, layer, layer_idx, hidden_states, 
+                                                n_experts, n_activated, slice_expert_num, ori_activated, device,
+                                                qscheme, args)
             layer.mlp = moe
     else:
         # moe = reconstruct_moe_from_dense(model, layer, layer_idx, hidden_states, n_experts, n_activated, slice_expert_num, device, args)
@@ -190,23 +228,11 @@ def construct_moe(model, moe_model_flag, layer, layer_idx, inp,
     tick1 = time.time()
     print(f"reconstruct_moe_from_existing layer {layer_idx} time: {tick1 - tick0}")
 
-    if "global" in args.quant_scheme:
-        ee = qscheme['econfig']
-        e_bits = [int(e) for e in ee]
-        
-        # print(all_new_expert_rates)
-        if all_new_expert_rates is not None:
-            _, sorted_index = torch.sort(torch.tensor(all_new_expert_rates), descending=True)
-            sect_ = n_experts // slice_expert_num
-            # print(e_bits, sect_, n_experts)
-            qscheme['expert'] = [[0] * slice_expert_num for i in range(n_experts // slice_expert_num)]
-            for i, idx in enumerate(sorted_index):
-                # print(idx, all_new_expert_rates[idx])
-                xi = int(idx // slice_expert_num)
-                xj = int(idx % slice_expert_num)
-                qscheme['expert'][xi][xj] = e_bits[i // sect_]
-
-            print("global quant expert scheme:", qscheme['expert'])
+    if 'bpw' in args.quant_scheme:
+        if is_moe_layer:
+            print(f"target_bpw {qscheme['target_bpw']} quant expert scheme:", qscheme['expert'])
+    elif "global" in args.quant_scheme:
+        print("global quant expert scheme:", qscheme['expert'])
     else:
         ee = qscheme['econfig']
         qscheme['expert'] = [ee for i in range(n_experts // slice_expert_num)]
@@ -235,7 +261,7 @@ def construct_moe(model, moe_model_flag, layer, layer_idx, inp,
     with torch.no_grad():
         moe_out = moe_out + residual
 
-    del hidden_states, hidden_states_inorm, residual, attn_out, all_new_expert_rates
+    del hidden_states, hidden_states_inorm, residual, attn_out
 
     gc.collect()
     torch.cuda.empty_cache()
@@ -357,16 +383,20 @@ def cmoe_sequential(model, tokenizer, dataloader, args):
     # qscheme['expert'] = [2, 2, 2, 2, 2, 2, 2, 2]
     try:
         # sample: "a8s4m3221", "a8s4m33222222"
-        match = re.search(r'a(\d)s(\d)m(\d+)', qscheme_str)
+        match = re.search(r'a(\d)s(\d)m([\d.]+)', qscheme_str)
         aa = match.group(1)
         ss = match.group(2)
         ee = match.group(3)
         qscheme['attn'] = [int(aa)]
         qscheme['share'] = [int(ss)]
-        assert len(ee) == slice_expert_num
-        qscheme['econfig'] = [int(e) for e in ee]
-        bpw = sum(qscheme['econfig']) * 1.0 / slice_expert_num
-        print(f"Quant expert scheme (ppl): {qscheme_str} {qscheme['econfig']}, with bpw {bpw}")
+        if 'bpw' not in qscheme_str:
+            assert len(ee) == slice_expert_num
+            qscheme['econfig'] = [int(e) for e in ee]
+            bpw = sum(qscheme['econfig']) * 1.0 / slice_expert_num
+        else:
+            bpw = float(ee)
+            qscheme['target_bpw'] = bpw
+        print(f"Quant expert scheme (ppl): {qscheme_str}, with bpw {bpw}, qscheme {qscheme}")
     except:
         assert False, f"Quant scheme {qscheme_str} is not valid."
 

@@ -192,9 +192,7 @@ def analyze_neuron_activations(act_fn, inps, gate_proj_weights, up_proj_weights,
     # return activation_counts, activation_values, activation_markers
 
 @torch.no_grad()
-def construct_experts_by_rates(
-    origin_rates,
-    num_experts):
+def construct_experts_by_rates(origin_rates, num_experts):
 
     # print("origin_rates:", origin_rates.shape)
     hidden_size = origin_rates.shape[0]
@@ -267,12 +265,11 @@ def lowrank_compress_svd(weight_matrix, lowrank_sparsity, save_path=None):
     return low_rank_matrix.to(weight_matrix.dtype)
 
 @torch.no_grad()
-def analyze_quant_outlier(layer, layer_idx, hidden_states, ori_expert_num, if_dense=True, save_path=None):
-    print(f"reconstruct moe from layer {layer_idx}")
+def analyze_quant_outlier(layer, layer_idx, hidden_states, ori_expert_num, wbits=2, if_dense=False, save_path=None):
+    print(f"analyze_quant_outlier layer: {layer_idx} with {wbits} bits")
     nsample = hidden_states.shape[0]
 
     gptq = {}
-    wbits = 2
     groupsize = 128
     act_order = True
     static_groups = False
@@ -344,13 +341,12 @@ def analyze_quant_outlier(layer, layer_idx, hidden_states, ori_expert_num, if_de
         
         up_proj_loss = torch.sum(loss[u], dim=1)
         gate_proj_loss = torch.sum(loss[g], dim=1)
-        # down_proj_loss = torch.sum(loss[d], dim=1)
+        down_proj_loss = torch.sum(loss[d], dim=0)
         # print(up_proj_loss.shape, gate_proj_loss.shape, down_proj_loss.shape)
-        all_rates.append(up_proj_loss + gate_proj_loss)
+        all_rates.append(up_proj_loss + gate_proj_loss + down_proj_loss)
         # rates = up_proj_loss / up_proj_loss.mean() + gate_proj_loss / gate_proj_loss.mean()
         
-        del up_proj_loss, gate_proj_loss
-        # del down_proj_loss
+        del up_proj_loss, gate_proj_loss, down_proj_loss
 
     # print(f"Layer {layer_idx}, neural loss rates: ", all_rates)
 
