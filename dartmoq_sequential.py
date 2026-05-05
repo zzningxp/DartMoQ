@@ -149,7 +149,7 @@ def reconstruct_moe_from_existing(model, layer, layer_idx, inps,
         try:
             from collections import Counter
             counter = Counter(dpscheme_list)
-            print(f"dpscheme_list scheme type count: {counter}")
+            print(f"layer {layer_idx} {qscheme['target_bpw']} dpscheme_list scheme type count: {counter}")
         except:
             pass
     elif "global" in args.quant_scheme :
