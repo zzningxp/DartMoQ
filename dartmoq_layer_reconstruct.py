@@ -3,12 +3,14 @@ import torch.nn as nn
 import os
 import time
 import gc
+import numpy as np
 from dartmoq_utils import analyze_experts_activation
 from dartmoq_utils import construct_experts_by_rates
 from dartmoq_utils import analyze_neuron_activations
 from dartmoq_utils import analyze_quant_outlier
 from camera_utils import analyze_expert_energy
 from dp_utils import enum_optimal_m_scheme_fast_general
+from dp_utils import enum_optimal_m_scheme_global_fast
 from dp_utils import extrapolate_0bit_loss
 from collections import Counter
 from dartmoq_hybridmoe import DartMoQHybridWrapper
@@ -73,7 +75,6 @@ def reconstruct_moe_from_existing(model, layer, layer_idx, inps,
                     continue
                 except Exception as e:
                     print(f"Failed to load cached data {e}")
-            
             if x == 0:
                 print(f"Computing extrapolate 0 bit loss for layer {layer_idx}")
                 q_rates[0] = extrapolate_0bit_loss(q_rates)
@@ -87,17 +88,41 @@ def reconstruct_moe_from_existing(model, layer, layer_idx, inps,
         if 'target_bpw' not in qscheme:
             all_rates = q_rates[probe_bit]
         else:
-            all_rates = []
-            dpscheme_list = []
-            for expert_idx in range(ori_expert_num):
-                rates_x = {}
-                for x in outlier_bits:
-                    rates_x[x] = q_rates[x][expert_idx].detach().cpu().numpy()
-                # print(f"expert_idx {expert_idx} scheme search:")
-                dpscheme, rates = enum_optimal_m_scheme_fast_general(rates_x, slice_expert_num, target_bpw=qscheme['target_bpw'])
-                dpscheme_list.append(dpscheme)
-                rates = torch.from_numpy(rates).to(device)
-                all_rates.append(rates)
+            if global_mode:
+                expert_rates_list = []
+                for expert_idx in range(ori_expert_num):
+                    rates_x = {}
+                    for x in outlier_bits:
+                        rates_x[x] = q_rates[x][expert_idx].detach().cpu().numpy()
+                    expert_rates_list.append(rates_x)
+
+                dpscheme_list, all_rates_arr = enum_optimal_m_scheme_global_fast(
+                        expert_rates_list,
+                        expert_activation_rates,
+                        slice_expert_num,
+                        target_bpw=qscheme['target_bpw']
+                    )
+
+                # Convert to torch tensors
+                all_rates = []
+                for expert_idx in range(ori_expert_num):
+                    rates_arr = all_rates_arr[expert_idx]
+                    all_rates.append(torch.from_numpy(rates_arr).to(device))
+
+                print(f"built dpscheme_list target_bpw {qscheme['target_bpw']} for {ori_expert_num} experts")
+            else:
+                # Original per-expert mode
+                all_rates = []
+                dpscheme_list = []
+                for expert_idx in range(ori_expert_num):
+                    rates_x = {}
+                    for x in outlier_bits:
+                        rates_x[x] = q_rates[x][expert_idx].detach().cpu().numpy()
+                    # print(f"expert_idx {expert_idx} scheme search:")
+                    dpscheme, rates = enum_optimal_m_scheme_fast_general(rates_x, slice_expert_num, target_bpw=qscheme['target_bpw'])
+                    dpscheme_list.append(dpscheme)
+                    rates = torch.from_numpy(rates).to(device)
+                    all_rates.append(rates)
             
         # from visual_utils import plot_diff_wbits_correlation, plot_spearman_rank_correlation
         # # plot_diff_wbits_correlation(model.config.model_type, layer_idx, ori_expert_num, q_rates[2], q_rates[3], q_rates[4])
@@ -147,8 +172,7 @@ def reconstruct_moe_from_existing(model, layer, layer_idx, inps,
     # print(qscheme)
     if 'target_bpw' in qscheme:
         qscheme['expert'] = dpscheme_list
-        counter = Counter(dpscheme_list)
-        print(f"layer {layer_idx} {qscheme['target_bpw']} dpscheme_list scheme type count: {counter}")
+
     elif global_mode:
         ee = qscheme['econfig']
         e_bits = [int(e) for e in ee]
@@ -164,6 +188,9 @@ def reconstruct_moe_from_existing(model, layer, layer_idx, inps,
                 qscheme['expert'][xi][xj] = e_bits[i // ori_expert_num]
     else:
         qscheme['expert'] = [qscheme['econfig'] for i in range(ori_expert_num)]
+    
+    counter = Counter(tuple(s) for s in qscheme['expert'])
+    print(f"layer {layer_idx} scheme type count: {counter}")
     
     # For hybrid MoE: restructure qscheme to group by bit config
     if use_hybrid_moe:
