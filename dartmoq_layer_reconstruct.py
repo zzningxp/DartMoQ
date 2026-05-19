@@ -11,6 +11,7 @@ from dartmoq_utils import analyze_quant_outlier
 from camera_utils import analyze_expert_energy
 from dp_utils import enum_optimal_m_scheme_separate_fast
 from dp_utils import enum_optimal_m_scheme_global_fast
+from dp_utils import enum_optimal_m_scheme_energy_global_fast
 from dp_utils import extrapolate_0bit_loss
 from collections import Counter
 from dartmoq_hybridmoe import DartMoQHybridWrapper
@@ -53,6 +54,7 @@ def reconstruct_moe_from_existing(model, layer, layer_idx, inps,
     expert_to_subexperts = []
 
     probe_bit = 2
+    dpscheme_list = None
     if args.rank_mode == "quant_outlier":
         tick0 = time.time()
 
@@ -65,7 +67,7 @@ def reconstruct_moe_from_existing(model, layer, layer_idx, inps,
 
         cache_dir = f"quant_outlier_{quantmode}/{model.model_id}"
         os.makedirs(cache_dir, exist_ok=True)
-        
+
         for x in sorted(outlier_bits, reverse=True):  ## 0 bit should be extrapolated from other bit data, so we compute it at last
             cache_path = os.path.join(cache_dir, f"{model.model_id}_L{layer_idx}_b{x}.pt")
             if os.path.exists(cache_path):
@@ -85,7 +87,7 @@ def reconstruct_moe_from_existing(model, layer, layer_idx, inps,
                 q_rates[x] = analyze_quant_outlier(layer, layer_idx, inps, ori_expert_num, wbits=x, quantmode=quantmode, save_path=None)
             torch.save(q_rates[x], cache_path)
             print(f"Saved quant outlier data to {cache_path}")
-        
+
         if 'target_bpw' not in qscheme:
             all_rates = q_rates[probe_bit]
         else:
@@ -124,18 +126,40 @@ def reconstruct_moe_from_existing(model, layer, layer_idx, inps,
                     dpscheme_list.append(dpscheme)
                     rates = torch.from_numpy(rates).to(device)
                     all_rates.append(rates)
-            
+
         # from visual_utils import plot_diff_wbits_correlation, plot_spearman_rank_correlation
         # # plot_diff_wbits_correlation(model.config.model_type, layer_idx, ori_expert_num, q_rates[2], q_rates[3], q_rates[4])
         # plot_spearman_rank_correlation(model.config.model_type, layer_idx, ori_expert_num, q_rates[2], q_rates[3], q_rates[4])
         tick1 = time.time()
         print(f"analyze quant outlier time {tick1 - tick0}", flush=True)
+    elif args.rank_mode == "energy" and 'target_bpw' in qscheme and global_mode:
+        # Energy mode with target_bpw and global mode
+        tick0 = time.time()
+        print(f"Energy mode with target_bpw {qscheme['target_bpw']}")
+
+        # First collect all expert energies
+        expert_energy_list = []
+        for expert_idx, expert in enumerate(layer.mlp.experts):
+            energy = analyze_expert_energy(expert, inps)
+            expert_energy_list.append(energy.detach().cpu().float().numpy())
+
+        # Use energy global DP to get optimal scheme
+        dpscheme_list, all_rates_arr = enum_optimal_m_scheme_energy_global_fast(
+                expert_energy_list,
+                expert_activation_rates,
+                slice_expert_num,
+                target_bpw=qscheme['target_bpw']
+            )
+
+        print(f"built dpscheme_list for energy mode target_bpw {qscheme['target_bpw']} for {ori_expert_num} experts")
+        tick1 = time.time()
+        print(f"energy mode analyze time {tick1 - tick0}", flush=True)
 
     tick0 = time.time()
 
     all_new_expert_rates = []
     all_expert_groups = []  # Store groups for each expert
-    
+
     for expert_idx, expert in enumerate(layer.mlp.experts):
         # print(f"\nProcessing original expert {expert_idx} / {ori_expert_num}")
         if args.rank_mode == "activation":
@@ -155,15 +179,15 @@ def reconstruct_moe_from_existing(model, layer, layer_idx, inps,
             rates = torch.arange(layer.mlp.intermediate_size, device=device)
         else:
             assert False, f"Unknown rank mode: {args.rank_mode}"
-        
+
         expert_groups, expert_rates = construct_experts_by_rates(
             rates,
             num_experts = slice_expert_num
         )
-        
+
         expert_groups = expert_groups[1:]
         all_expert_groups.append(expert_groups)
-        
+
         if global_mode:
             _rates = [e * expert_activation_rates[expert_idx] for e in expert_rates[1:]]
             all_new_expert_rates.extend(_rates)
@@ -171,7 +195,7 @@ def reconstruct_moe_from_existing(model, layer, layer_idx, inps,
             all_new_expert_rates.extend(expert_rates[1:])
 
     # print(qscheme)
-    if 'target_bpw' in qscheme:
+    if 'target_bpw' in qscheme and dpscheme_list is not None:
         qscheme['expert'] = dpscheme_list
 
     elif global_mode:

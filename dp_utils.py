@@ -544,6 +544,215 @@ def enum_optimal_m_scheme_global_fast(
 
     return per_expert_scheme, per_expert_neuron_bits
 
+def enum_optimal_m_scheme_energy_global_fast(
+    expert_energy_list: List[np.ndarray],
+    expert_activation_rates: List,
+    slice_expert_num: int,
+    target_bpw: float,
+    bits: List[int] = None,
+    epsilon: float = 0
+):
+    """
+    Global DP for energy-based mode:
+    1. Each expert's neurons are sorted by energy and split into slice_expert_num sub-experts
+    2. All sub-experts are globally sorted by importance (energy * activation_rate)
+    3. DP with monotonic non-increasing bit allocation
+    4. Bits are assigned back to each expert's sub-experts
+
+    For energy mode, we don't have pre-computed losses for different bits.
+    Instead, we convert energy to loss by assuming higher bit -> lower loss.
+    The loss for a sub-expert with bit b is: loss = total_energy / (b + 1)
+
+    Args:
+        expert_energy_list: list of arrays, expert_energy_list[expert_idx] is per-neuron energy
+        expert_activation_rates: list of activation rates for each expert
+        slice_expert_num: number of sub-experts to split each expert into
+        target_bpw: target average bit width
+        bits: list of available bits, defaults to [1, 2, 3, 4]
+        epsilon: tolerance for bit budget
+
+    Returns:
+        per_expert_scheme: list of lists, per_expert_scheme[expert_idx] is the bit scheme for that expert
+        per_expert_neuron_bits: list of arrays, per_expert_neuron_bits[expert_idx] is the bit for each neuron
+    """
+    if bits is None:
+        bits = [1, 2, 3, 4]
+
+    n_experts = len(expert_energy_list)
+
+    # Step 1: For each expert, sort its neurons by energy (descending) and split into sub-experts
+    expert_sorted_indices = []  # expert_sorted_indices[expert_idx] = sorted neuron indices (high energy first)
+    expert_subexpert_neurons = []  # expert_subexpert_neurons[expert_idx][sub_idx] = list of neuron indices in this sub-expert
+    all_subexperts = []  # list of (expert_idx, sub_idx, importance)
+
+    bits_sorted_asc = sorted(bits)
+    bits_sorted_desc = sorted(bits, reverse=True)
+
+    for expert_idx in range(n_experts):
+        energy = expert_energy_list[expert_idx]
+        # Sort neurons by energy descending
+        sorted_idx = np.argsort(-energy)
+        expert_sorted_indices.append(sorted_idx)
+
+        n_neurons = len(sorted_idx)
+        neurons_per_subexpert = n_neurons // slice_expert_num
+
+        # Split into sub-experts
+        subexpert_neurons = []
+        for sub_idx in range(slice_expert_num):
+            start = sub_idx * neurons_per_subexpert
+            end = start + neurons_per_subexpert
+            neurons_in_sub = sorted_idx[start:end]
+            subexpert_neurons.append(neurons_in_sub)
+
+            # Compute importance: sum of energy in this sub-expert
+            sub_energy = energy[neurons_in_sub].sum()
+
+            # Multiply by expert activation rate
+            act_rate = expert_activation_rates[expert_idx]
+            if hasattr(act_rate, 'detach'):
+                act_rate = float(act_rate.detach().cpu().numpy())
+            elif hasattr(act_rate, 'item'):
+                act_rate = float(act_rate.item())
+            else:
+                act_rate = float(act_rate)
+
+            importance = sub_energy * act_rate
+            all_subexperts.append((expert_idx, sub_idx, -importance))  # negative for ascending sort
+
+        expert_subexpert_neurons.append(subexpert_neurons)
+
+    # Step 2: Sort all sub-experts globally by importance
+    all_subexperts_sorted = sorted(all_subexperts, key=lambda x: x[2])  # sort by negative importance (ascending)
+    # Now all_subexperts_sorted is sorted from most important to least important
+    sorted_subexpert_ids = [(x[0], x[1]) for x in all_subexperts_sorted]  # list of (expert_idx, sub_idx)
+
+    total_subexperts = n_experts * slice_expert_num
+
+    # Step 3: Precompute block losses for the sorted sub-experts
+    # For energy mode, loss for bit b is: total_energy / (bit + 1)
+    # Higher bit -> lower loss
+    block_losses = np.zeros((len(bits), total_subexperts))
+    bit_to_idx = {b: i for i, b in enumerate(bits)}
+
+    for pos, (expert_idx, sub_idx) in enumerate(sorted_subexpert_ids):
+        neurons_in_sub = expert_subexpert_neurons[expert_idx][sub_idx]
+        energy = expert_energy_list[expert_idx]
+        sub_energy = energy[neurons_in_sub].sum()
+        for bit in bits:
+            bit_idx = bit_to_idx[bit]
+            # Loss = total_energy / (bit + 1), so higher bit has lower loss
+            block_losses[bit_idx, pos] = sub_energy / (bit + 1)
+
+    # Step 4: Monotonic DP on the sorted sub-experts
+    min_bit = bits_sorted_asc[0]
+    max_bit = bits_sorted_asc[-1]
+    n_bits = len(bits)
+
+    # Total bit budget
+    target_total = target_bpw * total_subexperts
+    min_total = min_bit * total_subexperts
+    max_total = max_bit * total_subexperts
+    target_total_clipped = int(np.clip(target_total, min_total, max_total))
+
+    # Use offset for DP (relative to min_bit) to reduce state space
+    offset = min_bit * total_subexperts
+    max_offset_w = max_total - offset
+    target_offset_w = target_total_clipped - offset
+
+    INF = float('inf')
+
+    # DP state: dp[k][w][b_idx] = min loss for first k blocks, using w offset bits,
+    #                             where k-th block uses bits_sorted_desc[b_idx]
+    prev_dp = np.full((max_offset_w + 1, n_bits), INF)
+    choice_history = []
+
+    # Initialize for first block (k=0)
+    for b_idx, bit in enumerate(bits_sorted_desc):
+        w = bit - min_bit
+        if w <= max_offset_w:
+            bit_idx_in_arr = bit_to_idx[bit]
+            prev_dp[w, b_idx] = block_losses[bit_idx_in_arr, 0]
+
+    # Fill DP table
+    for k in range(1, total_subexperts):
+        curr_dp = np.full((max_offset_w + 1, n_bits), INF)
+        curr_choice = [[(-1, -1) for __ in range(n_bits)] for _ in range(max_offset_w + 1)]
+
+        for w_prev in range(max_offset_w + 1):
+            for b_prev_idx in range(n_bits):
+                if prev_dp[w_prev, b_prev_idx] == INF:
+                    continue
+
+                # Next block can only use <= previous bit (monotonic non-increasing)
+                for b_curr_idx in range(b_prev_idx, n_bits):
+                    bit_curr = bits_sorted_desc[b_curr_idx]
+                    w_add = bit_curr - min_bit
+                    w_curr = w_prev + w_add
+
+                    if w_curr > max_offset_w:
+                        continue
+
+                    bit_idx_in_arr = bit_to_idx[bit_curr]
+                    new_loss = prev_dp[w_prev, b_prev_idx] + block_losses[bit_idx_in_arr, k]
+
+                    if new_loss < curr_dp[w_curr, b_curr_idx]:
+                        curr_dp[w_curr, b_curr_idx] = new_loss
+                        curr_choice[w_curr][b_curr_idx] = (w_prev, b_prev_idx)
+
+        prev_dp = curr_dp
+        choice_history.append(curr_choice)
+
+    # Find best w in epsilon range
+    search_range = int(epsilon * total_subexperts)
+    best_w = -1
+    best_b_idx = -1
+    best_loss = INF
+
+    for w in range(max(0, target_offset_w - search_range),
+                   min(max_offset_w, target_offset_w + search_range) + 1):
+        for b_idx in range(n_bits):
+            if prev_dp[w, b_idx] < best_loss:
+                best_loss = prev_dp[w, b_idx]
+                best_w = w
+                best_b_idx = b_idx
+
+    if best_w == -1:
+        raise ValueError("No feasible solution found, please check target_bpw and epsilon")
+
+    # Backtrack to get global scheme (in sorted sub-expert order)
+    global_scheme_sorted = [0] * total_subexperts
+    current_w = best_w
+    current_b_idx = best_b_idx
+
+    global_scheme_sorted[-1] = bits_sorted_desc[current_b_idx]
+
+    for k in reversed(range(total_subexperts - 1)):
+        prev_w, prev_b_idx = choice_history[k][current_w][current_b_idx]
+        global_scheme_sorted[k] = bits_sorted_desc[prev_b_idx]
+        current_w, current_b_idx = prev_w, prev_b_idx
+
+    print(f"Energy Global DP mode: best loss = {best_loss:.4f}")
+
+    # Step 5: Map back to per-expert scheme
+    per_expert_scheme = [[0] * slice_expert_num for _ in range(n_experts)]
+    for pos, (expert_idx, sub_idx) in enumerate(sorted_subexpert_ids):
+        per_expert_scheme[expert_idx][sub_idx] = global_scheme_sorted[pos]
+
+    # Step 6: Build per-expert neuron bits arrays
+    per_expert_neuron_bits = []
+    for expert_idx in range(n_experts):
+        n_neurons = len(expert_sorted_indices[expert_idx])
+        neuron_bits = np.zeros(n_neurons, dtype=int)
+        for sub_idx in range(slice_expert_num):
+            bit = per_expert_scheme[expert_idx][sub_idx]
+            neurons_in_sub = expert_subexpert_neurons[expert_idx][sub_idx]
+            for neuron_idx in neurons_in_sub:
+                neuron_bits[neuron_idx] = bit
+        per_expert_neuron_bits.append(neuron_bits)
+
+    return per_expert_scheme, per_expert_neuron_bits
+
 #---- Test ----
 
 def test_read_rates_from_file():
