@@ -73,7 +73,7 @@ def construct_moe(model, moe_model_flag, layer, layer_idx, inp,
         if is_moe_layer:
             moe = reconstruct_moe_from_existing(model, layer, layer_idx, hidden_states, 
                                                 n_experts, n_activated, slice_expert_num, ori_activated, device,
-                                                qscheme, use_hybrid_moe, global_mode, args)
+                                                qscheme, use_hybrid_moe, global_mode, quantmode, args)
             layer.mlp = moe
     else:
         # moe = reconstruct_moe_from_dense(model, layer, layer_idx, hidden_states, n_experts, n_activated, slice_expert_num, device, args)

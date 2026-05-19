@@ -3,9 +3,9 @@ import matplotlib.pyplot as plt
 
 def plot_diff_wbits_correlation(model_type, layer_idx, expert_num, rates_2, rates_3, rates_4):
     for x in range(expert_num):
-        rates_2_x = rates_2[x].cpu().numpy()
-        rates_3_x = rates_3[x].cpu().numpy()
-        rates_4_x = rates_4[x].cpu().numpy()
+        rates_2_x = rates_2[x].cpu().float().numpy()
+        rates_3_x = rates_3[x].cpu().float().numpy()
+        rates_4_x = rates_4[x].cpu().float().numpy()
         
         n_neurons = len(rates_2_x)
         bins = len(rates_3_x) // n_neurons
@@ -57,9 +57,9 @@ def plot_spearman_rank_correlation(model_type, layer_idx, expert_num, rates_2, r
 
     corr_matrix_list = []
     for x in range(expert_num):
-        rates_2_x = rates_2[x].cpu().numpy()
-        rates_3_x = rates_3[x].cpu().numpy()
-        rates_4_x = rates_4[x].cpu().numpy()
+        rates_2_x = rates_2[x].cpu().float().numpy()
+        rates_3_x = rates_3[x].cpu().float().numpy()
+        rates_4_x = rates_4[x].cpu().float().numpy()
         
         ranks = {
             "2-bit": np.argsort(np.argsort(-rates_2_x)) + 1,

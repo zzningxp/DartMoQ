@@ -16,9 +16,10 @@ import time
 import gc
 
 from gptq_utils import GPTQ, Quantizer, find_layers
-from turboquant_utils.dartmoq_backend import quantize_linear_if_turbo_supported
+from turboquant_utils.dartmoq_backend import turbo_fake_quant_linear
 
 QBATCH = 256
+QSEED = 42
 DEV = torch.device('cuda:0')
 
 @torch.no_grad()
@@ -267,7 +268,7 @@ def lowrank_compress_svd(weight_matrix, lowrank_sparsity, save_path=None):
     return low_rank_matrix.to(weight_matrix.dtype)
 
 @torch.no_grad()
-def analyze_quant_outlier(layer, layer_idx, hidden_states, ori_expert_num, wbits=2, if_dense=False, save_path=None):
+def analyze_quant_outlier(layer, layer_idx, hidden_states, ori_expert_num, wbits=2, quantmode='gptq', save_path=None):
     print(f"analyze_quant_outlier layer: {layer_idx} with {wbits} bits")
     nsample = hidden_states.shape[0]
 
@@ -315,7 +316,22 @@ def analyze_quant_outlier(layer, layer_idx, hidden_states, ori_expert_num, wbits
             del handles
 
             for name in qmodule.keys():
-                loss[name] = gptq[name].fasterquant(name=f"layer_idx.{layer_idx}."+name, groupsize=groupsize, actorder=act_order, static_groups=static_groups, update=False)
+                if quantmode == 'turboquant':
+                    loss[name] = turbo_fake_quant_linear(
+                        gptq[name].layer,
+                        bit_width=gptq[name].quantizer.bits,
+                        group_size=groupsize,
+                        seed=QSEED+layer_idx,
+                        rotation="qr",
+                        update=False,
+                    )
+                else:
+                    loss[name] = gptq[name].fasterquant(
+                        name=f"layer_idx.{layer_idx}."+name, 
+                        groupsize=groupsize, 
+                        actorder=act_order, 
+                        static_groups=static_groups, 
+                        update=False)
                 gptq[name].free()
                 del gptq[name]
             
@@ -329,8 +345,6 @@ def analyze_quant_outlier(layer, layer_idx, hidden_states, ori_expert_num, wbits
 
     # print(loss)
     all_rates = []
-    if if_dense:
-        assert ori_expert_num == 1, "dense model n == 1"
     for expert_idx in range(ori_expert_num):
         if ori_expert_num == 1:
             u = f'mlp.up_proj'
@@ -523,16 +537,13 @@ def quant_layer_mix_precision(layer, layer_idx, quant_attn, n_experts, slice_exp
                         loss[name] = torch.zeros(1)
                     else:
                         if quantmode == 'turboquant':
-                            turbo_result = quantize_linear_if_turbo_supported(
+                            loss[name] = turbo_fake_quant_linear(
                                 gptq[name].layer,
                                 bit_width=gptq[name].quantizer.bits,
                                 group_size=groupsize,
-                                seed= 42 + layer_idx,
+                                seed=QSEED+layer_idx,
                                 rotation="qr",
-                                zero_bit_policy="fallback",
                             )
-                            assert turbo_result is not None and turbo_result.handled, f"Turboquant failed for {name}"
-                            loss[name] = turbo_result.weight_sse
                         else:
                             loss[name] = gptq[name].fasterquant(
                                 name=f"layer_idx.{layer_idx}."+name,

@@ -9,7 +9,7 @@ import numpy as np
 from scipy.optimize import curve_fit
 from typing import Dict
 
-def extrapolate_0bit_loss(rates: Dict[int, List[np.ndarray]], save_plots: bool = False) -> List[np.ndarray]:
+def extrapolate_0bit_loss(rates: Dict[int, List[np.ndarray]], quant_type: str = "gptq", save_plots: bool = False) -> List[np.ndarray]:
     bits = sorted(rates.keys())
     if 0 in bits:
         bits.remove(0)
@@ -31,7 +31,7 @@ def extrapolate_0bit_loss(rates: Dict[int, List[np.ndarray]], save_plots: bool =
         expert_rates = {}
         n_neurons = None
         for b in bits:
-            expert_rates[b] = rates[b][expert_idx].detach().cpu().numpy()
+            expert_rates[b] = rates[b][expert_idx].detach().cpu().float().numpy()
             if n_neurons is None:
                 n_neurons = len(expert_rates[b])
             else:
@@ -85,7 +85,8 @@ def extrapolate_0bit_loss(rates: Dict[int, List[np.ndarray]], save_plots: bool =
                 plt.grid(True)
                 plt.legend()
                 plt.tight_layout()
-                plt.savefig(f'plot/bit_loss_fit/exp2_expert_{expert_idx}_neuron_{i}.png', dpi=150)
+                os.makedirs(f'plot/{quant_type}_bit_loss_fit', exist_ok=True)
+                plt.savefig(f'plot/{quant_type}_bit_loss_fit/exp2_expert_{expert_idx}_neuron_{i}.png', dpi=150)
                 plt.close()
 
         L0.append(expert_L0)
@@ -551,7 +552,8 @@ def test_read_rates_from_file():
 
     model_id = "deepseek-v1-moe-16b"
     layer_idx = 1
-    cache_dir = f"quant_outlier_/{model_id}"
+    quant_type = "gptq"
+    cache_dir = f"quant_outlier_{quant_type}/{model_id}"
 
     p = 20
     rates = {}
@@ -566,7 +568,7 @@ def test_read_rates_from_file():
             except Exception as e:
                 print(f"Failed to load cached data: {e}")
 
-    rates[0] = extrapolate_0bit_loss(rates, save_plots=True)
+    rates[0] = extrapolate_0bit_loss(rates, quant_type=quant_type, save_plots=True)
     for i in range(p):
         print(i, end=',')
         print(f"{rates[4][0][i].item():.4f}", end=',')
@@ -693,7 +695,6 @@ def test_global_dp_utils():
 
 
 if __name__ == "__main__":
-    # test_extrapolate_0bit_loss()
-    # test_read_rates_from_file()
+    test_read_rates_from_file()
     # test_dp_utils()
-    test_global_dp_utils()
+    # test_global_dp_utils()

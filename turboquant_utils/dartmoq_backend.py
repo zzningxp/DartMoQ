@@ -34,7 +34,6 @@ import torch.nn as nn
 
 
 # 当前让 1-15 bit 宽度走 TurboQuant fake-quant。
-# bit=0 保留给 DartMoQ 原来的剪枝/置零语义处理；bit=16 表示保持
 # base/fp16 权重，不做 fake-quant。
 MIN_TURBO_FAKE_QUANT_BIT = 1
 MAX_TURBO_FAKE_QUANT_BIT = 15
@@ -89,8 +88,6 @@ def _import_turboquant_quantize():
 def normalize_bit_width(bit_width: Any) -> int:
     """Convert DartMoQ/Torch bit-width values to a plain int."""
 
-    # DartMoQ 的 Quantizer.bits 通常是 Python int，但有些路径可能传入
-    # torch scalar。统一转成 int 后，后面的集合判断和日志更简单。
     if isinstance(bit_width, torch.Tensor):
         if bit_width.numel() != 1:
             raise ValueError(f"bit_width tensor must be scalar, got shape {tuple(bit_width.shape)}")
@@ -122,6 +119,7 @@ def turbo_fake_quant_linear(
     group_size: int | None = 128,
     seed: int = 42,
     rotation: str = "qr",
+    update: bool = True,
 ) -> nn.Linear:
     """Apply TurboQuant fake-quant to a Linear layer in-place.
 
@@ -169,58 +167,8 @@ def turbo_fake_quant_linear(
     )
 
     # 原地 copy，保持 nn.Parameter 对象本身不变，减少对上层模型结构的影响。
-    linear.weight.data.copy_(qweight.to(device=orig_device, dtype=orig_dtype))
-    return linear
-
-
-@torch.no_grad()
-def quantize_linear_if_turbo_supported(
-    linear: nn.Linear,
-    bit_width: Any,
-    group_size: int | None = 128,
-    seed: int = 42,
-    rotation: str = "qr",
-    zero_bit_policy: str = "zero",
-) -> TurboFakeQuantResult:
-    """Handle a DartMoQ-selected Linear bit-width when TurboQuant should own it.
-
-    Returns handled=False for unsupported bits so the caller can fall back to
-    DartMoQ/GPTQ unchanged.
-
-    zero_bit_policy:
-        - "zero": preserve DartMoQ's current bit=0 behavior by zeroing weight;
-        - "fallback": return handled=False and let the caller handle bit=0.
-    """
-
-    bit = normalize_bit_width(bit_width)
-
-    # bit=0 在 DartMoQ 中表示该权重被剪掉/置零。默认可以在这里直接置零；
-    # 当前 dartmoq_utils.py 传入的是 "fallback"，让原 DartMoQ 分支继续处理。
-    if bit == 0:
-        if zero_bit_policy == "zero":
-            linear.weight.data.zero_()
-            return TurboFakeQuantResult(True, bit, "zeroed by bit=0 policy")
-        if zero_bit_policy == "fallback":
-            return TurboFakeQuantResult(False, bit, "bit=0 left to caller")
-        raise ValueError(f"unknown zero_bit_policy: {zero_bit_policy!r}")
-
-    if not is_turbo_fake_quant_supported(bit):
-        return TurboFakeQuantResult(False, bit, "bit-width left to existing DartMoQ path")
-
-    # 处理成功后返回 handled=True；调用方应该跳过 GPTQ fasterquant。
-    orig_weight = linear.weight.data.float().clone()
-    turbo_fake_quant_linear(
-        linear,
-        bit_width=bit,
-        group_size=group_size,
-        seed=seed,
-        rotation=rotation,
-    )
-    quant_error = (orig_weight - linear.weight.data.float()).pow(2)
-    return TurboFakeQuantResult(
-        True,
-        bit,
-        "turboquant fake-quant applied",
-        weight_mse=quant_error.mean(),
-        weight_sse=quant_error.sum(),
-    )
+    # if update == False, will not update the weight.
+    quant_error = (linear.weight.data - qweight).pow(2)
+    if update:
+        linear.weight.data.copy_(qweight.to(device=orig_device, dtype=orig_dtype))
+    return quant_error

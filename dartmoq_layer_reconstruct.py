@@ -19,7 +19,8 @@ from dartmoq_hybridmoe import restructure_hybrid_qscheme
 @torch.no_grad()
 def reconstruct_moe_from_existing(model, layer, layer_idx, inps, 
                                   n_experts, n_activated, slice_expert_num, 
-                                  ori_activated, device, qscheme, use_hybrid_moe, global_mode, args):
+                                  ori_activated, device, qscheme, 
+                                  use_hybrid_moe, global_mode, quantmode, args):
     if global_mode:
         expert_activation_rates = analyze_experts_activation(layer, layer_idx, inps, ori_activated, model.config.model_type)
 
@@ -62,7 +63,7 @@ def reconstruct_moe_from_existing(model, layer, layer_idx, inps,
             outlier_bits = {0, 1, 2, 3, 4}
         print(f"simulate quant outlier_bits {outlier_bits}")
 
-        cache_dir = f"quant_outlier_/{model.model_id}"
+        cache_dir = f"quant_outlier_{quantmode}/{model.model_id}"
         os.makedirs(cache_dir, exist_ok=True)
         
         for x in sorted(outlier_bits, reverse=True):  ## 0 bit should be extrapolated from other bit data, so we compute it at last
@@ -77,11 +78,11 @@ def reconstruct_moe_from_existing(model, layer, layer_idx, inps,
                     print(f"Failed to load cached data {e}")
             if x == 0:
                 print(f"Computing extrapolate 0 bit loss for layer {layer_idx}")
-                q_rates[0] = extrapolate_0bit_loss(q_rates)
+                q_rates[0] = extrapolate_0bit_loss(q_rates, quant_type=quantmode)
                 q_rates[0] = [torch.from_numpy(q_rates[0][i]).to(device) for i in range(len(q_rates[0]))]
             else:
                 print(f"Computing quant outlier for layer {layer_idx}, wbits={x}")
-                q_rates[x] = analyze_quant_outlier(layer, layer_idx, inps, ori_expert_num, wbits=x, save_path=None)
+                q_rates[x] = analyze_quant_outlier(layer, layer_idx, inps, ori_expert_num, wbits=x, quantmode=quantmode, save_path=None)
             torch.save(q_rates[x], cache_path)
             print(f"Saved quant outlier data to {cache_path}")
         
@@ -93,7 +94,7 @@ def reconstruct_moe_from_existing(model, layer, layer_idx, inps,
                 for expert_idx in range(ori_expert_num):
                     rates_x = {}
                     for x in outlier_bits:
-                        rates_x[x] = q_rates[x][expert_idx].detach().cpu().numpy()
+                        rates_x[x] = q_rates[x][expert_idx].detach().cpu().float().numpy()
                     expert_rates_list.append(rates_x)
 
                 dpscheme_list, all_rates_arr = enum_optimal_m_scheme_global_fast(
@@ -117,7 +118,7 @@ def reconstruct_moe_from_existing(model, layer, layer_idx, inps,
                 for expert_idx in range(ori_expert_num):
                     rates_x = {}
                     for x in outlier_bits:
-                        rates_x[x] = q_rates[x][expert_idx].detach().cpu().numpy()
+                        rates_x[x] = q_rates[x][expert_idx].detach().cpu().float().numpy()
                     # print(f"expert_idx {expert_idx} scheme search:")
                     dpscheme, rates = enum_optimal_m_scheme_separate_fast(rates_x, slice_expert_num, target_bpw=qscheme['target_bpw'])
                     dpscheme_list.append(dpscheme)
