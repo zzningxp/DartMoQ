@@ -131,7 +131,7 @@ def generate_valid_m_schemes_general(bits, s, target_bpw, epsilon):
 def get_unified_sorted_idx_general(rates: Dict[int, np.ndarray], bits: List[int]) -> np.ndarray:
     """
     core step 1: unified marginal gain sorting (general bit version)
-    sorting criterion: combined marginal gain of adjacent bits
+    sorting criterion: combined marginal gain using log-quadratic fit model
     """
     bits_sorted = sorted(bits)
     n_neurons = len(rates[bits_sorted[0]])
@@ -140,14 +140,31 @@ def get_unified_sorted_idx_general(rates: Dict[int, np.ndarray], bits: List[int]
     if len(bits_sorted) == 1:
         return idx
 
-    # compute combined score of marginal gains: sum(adjacent bit gains)
+    b_array = np.array(bits_sorted, dtype=float)
     combined_score = np.zeros(n_neurons)
-    for i in range(len(bits_sorted) - 1):
-        low_bit = bits_sorted[i]
-        high_bit = bits_sorted[i + 1]
-        # gain: high_bit replacing low_bit (rates[low] - rates[high])
-        gain = rates[low_bit] - rates[high_bit]
-        combined_score += gain
+
+    for i in range(n_neurons):
+        loss_array = np.array([rates[b][i] for b in bits_sorted])
+        try:
+            log_loss = np.log(loss_array)
+            p, q, r = np.polyfit(b_array, log_loss, deg=2)
+
+            # Compute integrated gain from min_bit to max_bit using the fitted curve
+            # integral of loss(b) db from b_low to b_high
+            # Since loss(b) = exp(p*b² + q*b + r) doesn't have closed-form integral,
+            # we use the difference between loss at min_bit and max_bit as a proxy
+            l_min = np.exp(p * (b_array[0] ** 2) + q * b_array[0] + r)
+            l_max = np.exp(p * (b_array[-1] ** 2) + q * b_array[-1] + r)
+            score = l_min - l_max
+
+            # Fallback: if score is not positive, use linear difference
+            if score <= 0:
+                score = rates[bits_sorted[0]][i] - rates[bits_sorted[-1]][i]
+        except (RuntimeError, ValueError, np.linalg.LinAlgError):
+            # Fallback to linear difference if fit fails
+            score = rates[bits_sorted[0]][i] - rates[bits_sorted[-1]][i]
+
+        combined_score[i] = score
 
     sorted_idx = idx[np.argsort(-combined_score)]
     return sorted_idx
@@ -354,17 +371,28 @@ def enum_optimal_m_scheme_global_fast(
             neurons_in_sub = sorted_idx[start:end]
             subexpert_neurons.append(neurons_in_sub)
 
-            # Compute importance: use the first neuron's combined score as proxy
-            # Or compute average combined score for the sub-expert
+            # Compute importance: use log-quadratic fit for each neuron, then average
             if len(bits_sorted_asc) == 1:
                 combined_score = 1.0
             else:
+                b_array = np.array(bits_sorted_asc, dtype=float)
                 combined_score = 0.0
-                for i in range(len(bits_sorted_asc) - 1):
-                    low_bit = bits_sorted_asc[i]
-                    high_bit = bits_sorted_asc[i + 1]
-                    for neuron_idx in neurons_in_sub:
-                        combined_score += (rates[low_bit][neuron_idx] - rates[high_bit][neuron_idx])
+                for neuron_idx in neurons_in_sub:
+                    loss_array = np.array([rates[b][neuron_idx] for b in bits_sorted_asc])
+                    try:
+                        log_loss = np.log(loss_array)
+                        p, q, r = np.polyfit(b_array, log_loss, deg=2)
+
+                        l_min = np.exp(p * (b_array[0] ** 2) + q * b_array[0] + r)
+                        l_max = np.exp(p * (b_array[-1] ** 2) + q * b_array[-1] + r)
+                        score = l_min - l_max
+
+                        if score <= 0:
+                            score = rates[bits_sorted_asc[0]][neuron_idx] - rates[bits_sorted_asc[-1]][neuron_idx]
+                    except (RuntimeError, ValueError, np.linalg.LinAlgError):
+                        score = rates[bits_sorted_asc[0]][neuron_idx] - rates[bits_sorted_asc[-1]][neuron_idx]
+
+                    combined_score += score
                 combined_score /= len(neurons_in_sub)
 
             # Multiply by expert activation rate

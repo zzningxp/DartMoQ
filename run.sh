@@ -14,6 +14,7 @@ python run_dartmoq.py ~/models/deepseek-moe-16b-base/ wikitext2 --slices 8 --nsa
 python run_dartmoq.py ~/models/deepseek-moe-16b-base/ wikitext2 --slices 8 --nsamples 64 --rank-mode quant_outlier --quant-scheme global-bpw-a8s8m2 --use-hybrid-moe
 python run_dartmoq.py ~/models/deepseek-moe-16b-base/ wikitext2 --slices 8 --nsamples 64 --rank-mode quant_outlier --quant-scheme global-bpw-a8s8m2.125 --use-hybrid-moe
 python run_dartmoq.py ~/models/deepseek-moe-16b-base/ wikitext2 --slices 8 --nsamples 64 --rank-mode quant_outlier --quant-scheme global-bpw-a8s8m2.25 --use-hybrid-moe
+python run_dartmoq.py ~/models/deepseek-moe-16b-base/ wikitext2 --slices 8 --nsamples 64 --rank-mode quant_outlier --quant-scheme global-bpw-a8s8m2.375 --use-hybrid-moe
 python run_dartmoq.py ~/models/deepseek-moe-16b-base/ wikitext2 --slices 8 --nsamples 64 --rank-mode quant_outlier --quant-scheme global-bpw-a8s8m2.5 --use-hybrid-moe
 python run_dartmoq.py ~/models/deepseek-moe-16b-base/ wikitext2 --slices 8 --nsamples 64 --rank-mode quant_outlier --quant-scheme global-bpw-a8s8m2.625 --use-hybrid-moe
 python run_dartmoq.py ~/models/deepseek-moe-16b-base/ wikitext2 --slices 8 --nsamples 64 --rank-mode quant_outlier --quant-scheme global-bpw-a8s8m2.75 --use-hybrid-moe
