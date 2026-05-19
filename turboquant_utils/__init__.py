@@ -5,6 +5,7 @@ TurboQuant 是一种近最优的权重量化方法，结合随机正交旋转和
 
 论文来源: "TurboQuant: Online Vector Quantization with Near-optimal Distortion Rate"
 (Zandieh et al., 2025, arXiv:2504.19874)
+项目来源：https://github.com/cksac/turboquant-model
 
 核心特性:
 - 单遍量化：一次遍历即可完成量化，无需迭代微调

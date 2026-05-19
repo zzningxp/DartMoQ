@@ -64,6 +64,9 @@ if __name__ == '__main__':
     parser.add_argument(        '--use-hybrid-moe', action='store_true', default=False,
         help='Use hybrid MoE structure with two-level experts.' 
     )
+    parser.add_argument(        '--quantmode', type=str, default='gptq', choices=['gptq', 'turboquant'],
+        help='Quantization mode: gptq (default) or turboquant.'
+    )
 
     args = parser.parse_args()
     

@@ -15,6 +15,11 @@ keeps the first integration step small and makes PPL comparisons easy.
 从 GPTQ 换成 TurboQuant。它不会把 nn.Linear 替换成 TurboQuantLinear，
 也不会生成 packed indices / norms / codebook 这种真实压缩推理格式。
 因此它适合用来比较 PPL 和量化误差，但不能反映最终模型体积压缩。
+
+论文来源: "TurboQuant: Online Vector Quantization with Near-optimal Distortion Rate"
+(Zandieh et al., 2025, arXiv:2504.19874)
+项目来源：https://github.com/cksac/turboquant-model
+
 """
 
 from __future__ import annotations

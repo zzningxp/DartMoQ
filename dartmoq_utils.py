@@ -395,7 +395,7 @@ def analyze_quant_outlier(layer, layer_idx, hidden_states, ori_expert_num, wbits
 @torch.no_grad()
 def quant_layer_mix_precision(layer, layer_idx, quant_attn, n_experts, slice_expert_num,
                 attn_hidden_states, ffn_hidden_states, attention_mask, position_ids, position_embeddings, 
-                qscheme, use_hybrid_moe):
+                qscheme, use_hybrid_moe, quantmode):
     print(f"Quantize layer {layer_idx}")
     nsample = attn_hidden_states.shape[0]
     assert attn_hidden_states.shape[0] == ffn_hidden_states.shape[0], f"attn_hidden_states.shape: {attn_hidden_states.shape}, ffn_hidden_states.shape: {ffn_hidden_states.shape}"
@@ -522,18 +522,16 @@ def quant_layer_mix_precision(layer, layer_idx, quant_attn, n_experts, slice_exp
                         gptq[name].layer.weight = nn.Parameter(torch.zeros_like(gptq[name].layer.weight))
                         loss[name] = torch.zeros(1)
                     else:
-                        turbo_result = None
-                        if not use_hybrid_moe:
+                        if quantmode == 'turboquant':
                             turbo_result = quantize_linear_if_turbo_supported(
                                 gptq[name].layer,
                                 bit_width=gptq[name].quantizer.bits,
                                 group_size=groupsize,
-                                seed=42 + layer_idx,
+                                seed= 42 + layer_idx,
                                 rotation="qr",
                                 zero_bit_policy="fallback",
                             )
-
-                        if turbo_result is not None and turbo_result.handled:
+                            assert turbo_result is not None and turbo_result.handled, f"Turboquant failed for {name}"
                             loss[name] = turbo_result.weight_sse
                         else:
                             loss[name] = gptq[name].fasterquant(
@@ -556,7 +554,8 @@ def quant_layer_mix_precision(layer, layer_idx, quant_attn, n_experts, slice_exp
                     del loss[name]
 
             tick2 = time.time()
-            print(f"Quantize layer {layer_idx} {ff} {qmi}:{qmi + min(qbatch, len(qmodule.keys()))}  time: {tick1 - tick0:.4f} + {tick2 - tick1:.4f} bit_set: {Counter(bit_set)} loss: {sum_loss:.6f}", flush=True)
+            print(f"Quantize layer {layer_idx} {ff} {qmi}:{qmi + min(qbatch, len(qmodule.keys()))} {quantmode} time: {tick1 - tick0:.4f} + {tick2 - tick1:.4f}", end=" ")
+            print(f"bit_set: {Counter(bit_set)} loss: {sum_loss:.6f}", flush=True)
             del qmodule
 
         del qmodule_all

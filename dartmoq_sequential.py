@@ -66,6 +66,7 @@ def construct_moe(model, moe_model_flag, layer, layer_idx, inp,
     
     tick0 = time.time()
     use_hybrid_moe = getattr(args, 'use_hybrid_moe', False)
+    quantmode = getattr(args, 'quantmode', 'gptq')
     global_mode = "global" in args.quant_scheme
     
     if moe_model_flag:
@@ -87,7 +88,7 @@ def construct_moe(model, moe_model_flag, layer, layer_idx, inp,
     if_quant_attn = True
     quant_layer_mix_precision(layer, layer_idx, if_quant_attn, n_experts, slice_expert_num,
                 hidden_states_inorm, hidden_states, attention_mask, position_ids, position_embeddings, 
-                qscheme, use_hybrid_moe)
+                qscheme, use_hybrid_moe, quantmode)
     gc.collect()
     torch.cuda.empty_cache()
     tick1 = time.time()
