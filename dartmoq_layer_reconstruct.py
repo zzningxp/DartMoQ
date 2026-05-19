@@ -9,7 +9,7 @@ from dartmoq_utils import construct_experts_by_rates
 from dartmoq_utils import analyze_neuron_activations
 from dartmoq_utils import analyze_quant_outlier
 from camera_utils import analyze_expert_energy
-from dp_utils import enum_optimal_m_scheme_fast_general
+from dp_utils import enum_optimal_m_scheme_separate_fast
 from dp_utils import enum_optimal_m_scheme_global_fast
 from dp_utils import extrapolate_0bit_loss
 from collections import Counter
@@ -119,7 +119,7 @@ def reconstruct_moe_from_existing(model, layer, layer_idx, inps,
                     for x in outlier_bits:
                         rates_x[x] = q_rates[x][expert_idx].detach().cpu().numpy()
                     # print(f"expert_idx {expert_idx} scheme search:")
-                    dpscheme, rates = enum_optimal_m_scheme_fast_general(rates_x, slice_expert_num, target_bpw=qscheme['target_bpw'])
+                    dpscheme, rates = enum_optimal_m_scheme_separate_fast(rates_x, slice_expert_num, target_bpw=qscheme['target_bpw'])
                     dpscheme_list.append(dpscheme)
                     rates = torch.from_numpy(rates).to(device)
                     all_rates.append(rates)

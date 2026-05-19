@@ -9,19 +9,6 @@ import numpy as np
 from scipy.optimize import curve_fit
 from typing import Dict
 
-
-def _exp_decay_func(b: np.ndarray, A: float, B: float, C: float) -> np.ndarray:
-    return A * np.exp(B * b) + C
-
-
-def _poly2_func(b: np.ndarray, A: float, B: float, C: float) -> np.ndarray:
-    return A * (b ** 2) + B * b + C
-
-
-def _power_growth_func(x: np.ndarray, A: float, C: float, D: float, x_max: float) -> np.ndarray:
-    return A * np.power(x_max - x + 1, C) + D
-
-
 def extrapolate_0bit_loss(rates: Dict[int, List[np.ndarray]], save_plots: bool = False) -> List[np.ndarray]:
     bits = sorted(rates.keys())
     if 0 in bits:
@@ -105,7 +92,6 @@ def extrapolate_0bit_loss(rates: Dict[int, List[np.ndarray]], save_plots: bool =
 
     return L0
 
-
 def generate_valid_m_schemes_general(bits, s, target_bpw, epsilon):
     """
     generate_valid_m_schemes_general(bits, s, target_bpw, epsilon)
@@ -142,7 +128,6 @@ def generate_valid_m_schemes_general(bits, s, target_bpw, epsilon):
 
     return valid_schemes
 
-
 def get_unified_sorted_idx_general(rates: Dict[int, np.ndarray], bits: List[int]) -> np.ndarray:
     """
     core step 1: unified marginal gain sorting (general bit version)
@@ -167,7 +152,6 @@ def get_unified_sorted_idx_general(rates: Dict[int, np.ndarray], bits: List[int]
     sorted_idx = idx[np.argsort(-combined_score)]
     return sorted_idx
 
-
 def precompute_block_losses_general(sorted_idx, rates, bits, s):
     n_neurons = len(sorted_idx)
     assert n_neurons % s == 0, "number of neurons must be divisible by the number of blocks"
@@ -185,60 +169,6 @@ def precompute_block_losses_general(sorted_idx, rates, bits, s):
             block_losses[bit_idx, k] = rates[bit][idx_in_block].sum()
 
     return block_losses, bit_to_idx
-
-
-def get_unified_sorted_idx_global(
-    expert_rates_list: List[Dict[int, np.ndarray]],
-    expert_activation_rates: List,
-    bits: List[int]
-) -> Tuple[List[Tuple[int, int]], np.ndarray]:
-    """
-    Global version: unified marginal gain sorting across all experts,
-    each neuron is (expert_idx, neuron_idx) tuple, sorted by combined score * expert_activation_rate
-    """
-    bits_sorted = sorted(bits)
-    n_experts = len(expert_rates_list)
-
-    # Collect all neuron indices with expert info
-    all_neurons = []  # list of (expert_idx, neuron_idx)
-    all_combined_scores = []
-
-    for expert_idx in range(n_experts):
-        rates = expert_rates_list[expert_idx]
-        n_neurons = len(rates[bits_sorted[0]])
-
-        if len(bits_sorted) == 1:
-            combined_score = np.ones(n_neurons)
-        else:
-            # compute combined score of marginal gains: sum(adjacent bit gains)
-            combined_score = np.zeros(n_neurons)
-            for i in range(len(bits_sorted) - 1):
-                low_bit = bits_sorted[i]
-                high_bit = bits_sorted[i + 1]
-                gain = rates[low_bit] - rates[high_bit]
-                combined_score += gain
-
-        # Multiply by expert activation rate for global sorting (convert to numpy/float)
-        act_rate = expert_activation_rates[expert_idx]
-        if hasattr(act_rate, 'detach'):
-            act_rate = float(act_rate.detach().cpu().numpy())
-        elif hasattr(act_rate, 'item'):
-            act_rate = float(act_rate.item())
-        else:
-            act_rate = float(act_rate)
-        combined_score *= act_rate
-
-        for neuron_idx in range(n_neurons):
-            all_neurons.append((expert_idx, neuron_idx))
-            all_combined_scores.append(combined_score[neuron_idx])
-
-    # Sort all neurons globally by combined score
-    all_combined_scores = np.array(all_combined_scores)
-    sorted_positions = np.argsort(-all_combined_scores)
-    sorted_neurons = [all_neurons[pos] for pos in sorted_positions]
-
-    return sorted_neurons, sorted_positions
-
 
 def precompute_block_losses_global(
     sorted_neurons: List[Tuple[int, int]],
@@ -270,8 +200,7 @@ def precompute_block_losses_global(
 
     return block_losses, bit_to_idx
 
-
-def enum_optimal_m_scheme_fast_general(rates, s, target_bpw, epsilon=0):
+def enum_optimal_m_scheme_separate_fast(rates, s, target_bpw, epsilon=0):
     bits = list(rates.keys())
     n_neurons = len(rates[bits[0]])
     for b in bits[1:]:
@@ -386,8 +315,10 @@ def enum_optimal_m_scheme_global_fast(
 ):
     """
     Global DP with monotonicity constraint:
-    1. Global neuron sorting (same as before)
-    2. DP with monotonic non-increasing bit allocation
+    1. Each expert's neurons are sorted and split into slice_expert_num sub-experts
+    2. All sub-experts are globally sorted by importance
+    3. DP with monotonic non-increasing bit allocation
+    4. Bits are assigned back to each expert's sub-experts
     Returns:
         per_expert_scheme: list of lists, per_expert_scheme[expert_idx] is the bit scheme for that expert
         per_expert_neuron_bits: list of arrays, per_expert_neuron_bits[expert_idx] is the bit for each neuron
@@ -398,34 +329,93 @@ def enum_optimal_m_scheme_global_fast(
     for expert_rates in expert_rates_list:
         assert list(expert_rates.keys()) == bits, "all experts must have same bit set"
 
-    # Step 1: Global sorting of all neurons
-    sorted_neurons, _ = get_unified_sorted_idx_global(
-        expert_rates_list, expert_activation_rates, bits
-    )
+    # Step 1: For each expert, sort its neurons and split into sub-experts
+    # Also compute each sub-expert's importance and precompute losses
+    expert_sorted_indices = []  # expert_sorted_indices[expert_idx] = sorted neuron indices
+    expert_subexpert_neurons = []  # expert_subexpert_neurons[expert_idx][sub_idx] = list of neuron indices in this sub-expert
+    all_subexperts = []  # list of (expert_idx, sub_idx, importance)
 
-    total_neurons = len(sorted_neurons)
-    total_blocks = n_experts * slice_expert_num
+    bits_sorted_asc = sorted(bits)
+    bits_sorted_desc = sorted(bits, reverse=True)
 
-    # Step 2: Precompute block losses
-    block_losses, bit_to_idx = precompute_block_losses_global(
-        sorted_neurons, expert_rates_list, bits, total_blocks
-    )
+    for expert_idx in range(n_experts):
+        rates = expert_rates_list[expert_idx]
+        sorted_idx = get_unified_sorted_idx_general(rates, bits)
+        expert_sorted_indices.append(sorted_idx)
 
-    # Step 3: Monotonic DP
-    bits_sorted_asc = sorted(bits)  # ascending: [0, 1, 2, 3, 4]
-    bits_sorted_desc = sorted(bits, reverse=True)  # descending: [4, 3, 2, 1, 0]
+        n_neurons = len(sorted_idx)
+        neurons_per_subexpert = n_neurons // slice_expert_num
+
+        # Split into sub-experts
+        subexpert_neurons = []
+        for sub_idx in range(slice_expert_num):
+            start = sub_idx * neurons_per_subexpert
+            end = start + neurons_per_subexpert
+            neurons_in_sub = sorted_idx[start:end]
+            subexpert_neurons.append(neurons_in_sub)
+
+            # Compute importance: use the first neuron's combined score as proxy
+            # Or compute average combined score for the sub-expert
+            if len(bits_sorted_asc) == 1:
+                combined_score = 1.0
+            else:
+                combined_score = 0.0
+                for i in range(len(bits_sorted_asc) - 1):
+                    low_bit = bits_sorted_asc[i]
+                    high_bit = bits_sorted_asc[i + 1]
+                    for neuron_idx in neurons_in_sub:
+                        combined_score += (rates[low_bit][neuron_idx] - rates[high_bit][neuron_idx])
+                combined_score /= len(neurons_in_sub)
+
+            # Multiply by expert activation rate
+            act_rate = expert_activation_rates[expert_idx]
+            if hasattr(act_rate, 'detach'):
+                act_rate = float(act_rate.detach().cpu().numpy())
+            elif hasattr(act_rate, 'item'):
+                act_rate = float(act_rate.item())
+            else:
+                act_rate = float(act_rate)
+            combined_score *= act_rate
+
+            all_subexperts.append((expert_idx, sub_idx, -combined_score))  # negative for ascending sort
+
+        expert_subexpert_neurons.append(subexpert_neurons)
+
+    # Step 2: Sort all sub-experts globally by importance
+    all_subexperts_sorted = sorted(all_subexperts, key=lambda x: x[2])  # sort by negative score (ascending)
+    # Now all_subexperts_sorted is sorted from most important to least important
+    sorted_subexpert_ids = [(x[0], x[1]) for x in all_subexperts_sorted]  # list of (expert_idx, sub_idx)
+
+
+    total_subexperts = n_experts * slice_expert_num
+
+    # Step 3: Precompute block losses for the sorted sub-experts
+    block_losses = np.zeros((len(bits), total_subexperts))
+    bit_to_idx = {b: i for i, b in enumerate(bits)}
+
+    for pos, (expert_idx, sub_idx) in enumerate(sorted_subexpert_ids):
+        neurons_in_sub = expert_subexpert_neurons[expert_idx][sub_idx]
+        rates = expert_rates_list[expert_idx]
+        for bit in bits:
+            bit_idx = bit_to_idx[bit]
+            loss_sum = 0.0
+            for neuron_idx in neurons_in_sub:
+                loss_sum += rates[bit][neuron_idx]
+            block_losses[bit_idx, pos] = loss_sum
+
+    # Step 4: Monotonic DP on the sorted sub-experts
     min_bit = bits_sorted_asc[0]
     max_bit = bits_sorted_asc[-1]
     n_bits = len(bits)
 
     # Total bit budget
-    target_total = target_bpw * total_blocks
-    min_total = min_bit * total_blocks
-    max_total = max_bit * total_blocks
+    target_total = target_bpw * total_subexperts
+    min_total = min_bit * total_subexperts
+    max_total = max_bit * total_subexperts
     target_total_clipped = int(np.clip(target_total, min_total, max_total))
 
     # Use offset for DP (relative to min_bit) to reduce state space
-    offset = min_bit * total_blocks
+    offset = min_bit * total_subexperts
     max_offset_w = max_total - offset
     target_offset_w = target_total_clipped - offset
 
@@ -446,7 +436,7 @@ def enum_optimal_m_scheme_global_fast(
             prev_dp[w, b_idx] = block_losses[bit_idx_in_arr, 0]
 
     # Fill DP table
-    for k in range(1, total_blocks):
+    for k in range(1, total_subexperts):
         curr_dp = np.full((max_offset_w + 1, n_bits), INF)
         curr_choice = [[(-1, -1) for __ in range(n_bits)] for _ in range(max_offset_w + 1)]
 
@@ -476,7 +466,7 @@ def enum_optimal_m_scheme_global_fast(
         choice_history.append(curr_choice)
 
     # Find best w in epsilon range
-    search_range = int(epsilon * total_blocks)
+    search_range = int(epsilon * total_subexperts)
     best_w = -1
     best_b_idx = -1
     best_loss = INF
@@ -492,56 +482,38 @@ def enum_optimal_m_scheme_global_fast(
     if best_w == -1:
         raise ValueError("No feasible solution found, please check target_bpw and epsilon")
 
-    # Backtrack to get scheme
-    global_scheme = [0] * total_blocks
+    # Backtrack to get global scheme (in sorted sub-expert order)
+    global_scheme_sorted = [0] * total_subexperts
     current_w = best_w
     current_b_idx = best_b_idx
 
-    global_scheme[-1] = bits_sorted_desc[current_b_idx]
+    global_scheme_sorted[-1] = bits_sorted_desc[current_b_idx]
 
-    for k in reversed(range(total_blocks - 1)):
+    for k in reversed(range(total_subexperts - 1)):
         prev_w, prev_b_idx = choice_history[k][current_w][current_b_idx]
-        global_scheme[k] = bits_sorted_desc[prev_b_idx]
+        global_scheme_sorted[k] = bits_sorted_desc[prev_b_idx]
         current_w, current_b_idx = prev_w, prev_b_idx
 
     print(f"Global DP fast mode: best loss = {best_loss:.4f}")
 
-    # Step 4: Assign bits to neurons based on our global scheme
-    neurons_per_block = total_neurons // total_blocks
+    # Step 5: Map back to per-expert scheme
+    per_expert_scheme = [[0] * slice_expert_num for _ in range(n_experts)]
+    for pos, (expert_idx, sub_idx) in enumerate(sorted_subexpert_ids):
+        per_expert_scheme[expert_idx][sub_idx] = global_scheme_sorted[pos]
 
-    neuron_bit_map = {}
-    for block_idx, bit in enumerate(global_scheme):
-        start = block_idx * neurons_per_block
-        end = start + neurons_per_block
-        for pos in range(start, end):
-            expert_idx, neuron_idx = sorted_neurons[pos]
-            if expert_idx not in neuron_bit_map:
-                neuron_bit_map[expert_idx] = {}
-            neuron_bit_map[expert_idx][neuron_idx] = bit
-
-    # Step 5: Build per-expert return values
-    n_neurons_per_expert = total_neurons // n_experts
-
-    per_expert_scheme = []
+    # Step 6: Build per-expert neuron bits arrays
     per_expert_neuron_bits = []
-
-    # Split global_scheme into per-expert chunks
     for expert_idx in range(n_experts):
-        start = expert_idx * slice_expert_num
-        end = start + slice_expert_num
-        expert_sub_scheme = global_scheme[start:end]
-        per_expert_scheme.append(expert_sub_scheme)
-
-    # Build neuron bits arrays
-    for expert_idx in range(n_experts):
-        neuron_bits = np.zeros(n_neurons_per_expert, dtype=int)
-        if expert_idx in neuron_bit_map:
-            for neuron_idx, bit in neuron_bit_map[expert_idx].items():
+        n_neurons = len(expert_sorted_indices[expert_idx])
+        neuron_bits = np.zeros(n_neurons, dtype=int)
+        for sub_idx in range(slice_expert_num):
+            bit = per_expert_scheme[expert_idx][sub_idx]
+            neurons_in_sub = expert_subexpert_neurons[expert_idx][sub_idx]
+            for neuron_idx in neurons_in_sub:
                 neuron_bits[neuron_idx] = bit
         per_expert_neuron_bits.append(neuron_bits)
 
     return per_expert_scheme, per_expert_neuron_bits
-
 
 #---- Test ----
 
@@ -605,7 +577,7 @@ def test_dp_utils():
 
     print("\n--- Fast m-scheme Search ---")
     tick = time.time()
-    best_scheme, neuron_bits_fast = enum_optimal_m_scheme_fast_general(
+    best_scheme, neuron_bits_fast = enum_optimal_m_scheme_separate_fast(
         rates, s, target_bpw, epsilon
     )
     print(f"Fast m-scheme Search Time: {time.time() - tick:.4f} s")
@@ -619,9 +591,8 @@ def test_global_dp_utils():
 
     bits = [2, 3, 4]
 
-    # Generate random expert activation rates
-    expert_activation_rates = np.random.rand(n_experts)
-    expert_activation_rates = expert_activation_rates / expert_activation_rates.sum()
+    # Generate random expert activation rates - some high, some low
+    expert_activation_rates = np.array([0.25, 0.2, 0.15, 0.1, 0.1, 0.08, 0.07, 0.05])
 
     # Generate rates for each expert
     expert_rates_list = []
@@ -644,13 +615,13 @@ def test_global_dp_utils():
 
         expert_rates_list.append(rates)
 
-    target_bpw = 2.5
+    target_bpw = 2.7
     epsilon = 0.1
 
     print(f"Global DP Config: n_experts={n_experts}, n_neurons_per_expert={n_neurons_per_expert}")
     print(f"  slice_expert_num={slice_expert_num}, bits={bits}, target_bpw={target_bpw}, epsilon={epsilon}")
 
-    print(f"  expert_activation_rates (top 3): {np.sort(expert_activation_rates)[::-1][:3]}")
+    print(f"  expert_activation_rates: {expert_activation_rates}")
 
     print("\n--- Global DP Search ---")
     tick = time.time()
@@ -660,14 +631,6 @@ def test_global_dp_utils():
     elapsed = time.time() - tick
     print(f"Global DP Search Time: {elapsed:.4f} s")
 
-    # Rebuild global scheme to verify it's non-increasing
-    global_scheme = []
-    for expert_scheme in per_expert_scheme:
-        global_scheme.extend(expert_scheme)
-
-    is_non_increasing = all(global_scheme[i] >= global_scheme[i+1] for i in range(len(global_scheme)-1))
-    print(f"Global scheme is non-increasing: {is_non_increasing}")
-
     # Verify each expert's scheme is non-increasing
     all_experts_non_increasing = True
     for expert_idx, expert_scheme in enumerate(per_expert_scheme):
@@ -676,18 +639,17 @@ def test_global_dp_utils():
             all_experts_non_increasing = False
             print(f"Expert {expert_idx} scheme NOT non-increasing: {expert_scheme}")
 
-    print(f"All experts' schemes are non-increasing: {all_experts_non_increasing}")
+    print(f"All experts' internal schemes are non-increasing: {all_experts_non_increasing}")
 
     # Verify and print stats
     print(f"\nPer-expert sub-expert schemes:")
-    for expert_idx in range(min(3, n_experts)):
+    for expert_idx in range(n_experts):
         print(f"  Expert {expert_idx}: {per_expert_scheme[expert_idx]}")
 
-    # Count bit distribution
-    bit_counts = {}
-    for bit in global_scheme:
-        bit_counts[bit] = bit_counts.get(bit, 0) + 1
-    print(f"Bit distribution in global scheme: {dict(sorted(bit_counts.items()))}")
+    # Count scheme types
+    from collections import Counter
+    scheme_counter = Counter(tuple(s) for s in per_expert_scheme)
+    print(f"\nScheme type count: {scheme_counter}")
 
     # Build per-expert stats
     expert_bit_counts = [{} for _ in range(n_experts)]
@@ -698,7 +660,7 @@ def test_global_dp_utils():
             expert_bit_counts[expert_idx][bit] = expert_bit_counts[expert_idx].get(bit, 0) + 1
 
     print("\nBit distribution per expert:")
-    for expert_idx in range(min(3, n_experts)):
+    for expert_idx in range(n_experts):
         print(f"  Expert {expert_idx}: {dict(sorted(expert_bit_counts[expert_idx].items()))}")
 
 
