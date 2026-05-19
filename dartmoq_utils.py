@@ -16,6 +16,7 @@ import time
 import gc
 
 from gptq_utils import GPTQ, Quantizer, find_layers
+from turboquant_utils.dartmoq_backend import quantize_linear_if_turbo_supported
 
 QBATCH = 256
 DEV = torch.device('cuda:0')
@@ -521,12 +522,26 @@ def quant_layer_mix_precision(layer, layer_idx, quant_attn, n_experts, slice_exp
                         gptq[name].layer.weight = nn.Parameter(torch.zeros_like(gptq[name].layer.weight))
                         loss[name] = torch.zeros(1)
                     else:
-                        loss[name] = gptq[name].fasterquant(
-                            name=f"layer_idx.{layer_idx}."+name,
-                            groupsize=groupsize,
-                            actorder=act_order,
-                            static_groups=static_groups
-                        )
+                        turbo_result = None
+                        if not use_hybrid_moe:
+                            turbo_result = quantize_linear_if_turbo_supported(
+                                gptq[name].layer,
+                                bit_width=gptq[name].quantizer.bits,
+                                group_size=groupsize,
+                                seed=42 + layer_idx,
+                                rotation="qr",
+                                zero_bit_policy="fallback",
+                            )
+
+                        if turbo_result is not None and turbo_result.handled:
+                            loss[name] = turbo_result.weight_sse
+                        else:
+                            loss[name] = gptq[name].fasterquant(
+                                name=f"layer_idx.{layer_idx}."+name,
+                                groupsize=groupsize,
+                                actorder=act_order,
+                                static_groups=static_groups
+                            )
 
             for ss in streams:
                 ss.synchronize()
