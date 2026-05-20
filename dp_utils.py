@@ -1,3 +1,4 @@
+from collections import Counter
 from pyexpat import model
 import os
 import time
@@ -495,7 +496,8 @@ def enum_optimal_m_scheme_global_fast(
         global_scheme_sorted[k] = bits_sorted_desc[prev_b_idx]
         current_w, current_b_idx = prev_w, prev_b_idx
 
-    print(f"Global DP fast mode: best loss = {best_loss:.4f}")
+    # print(f"Global DP fast mode: best loss = {best_loss:.4f}")
+    print(f"Multi Bits Global DP mode {Counter(global_scheme_sorted)}, {sum(global_scheme_sorted)*1.0/len(global_scheme_sorted)}: best loss = {best_loss:.4f}")
 
     # Step 5: Map back to per-expert scheme
     per_expert_scheme = [[0] * slice_expert_num for _ in range(n_experts)]
@@ -704,7 +706,7 @@ def enum_optimal_m_scheme_energy_global_fast(
         global_scheme_sorted[k] = bits_sorted_desc[prev_b_idx]
         current_w, current_b_idx = prev_w, prev_b_idx
 
-    print(f"Energy Global DP mode: best loss = {best_loss:.4f}")
+    print(f"Energy Global DP mode {Counter(global_scheme_sorted)}, {sum(global_scheme_sorted)*1.0/len(global_scheme_sorted)}: best loss = {best_loss:.4f}")
 
     # Step 5: Map back to per-expert scheme
     per_expert_scheme = [[0] * slice_expert_num for _ in range(n_experts)]
@@ -799,9 +801,9 @@ def test_global_dp_utils():
     np.random.seed(42)
     n_neurons_per_expert = 1024
     n_experts = 8
-    slice_expert_num = 4
+    slice_expert_num = 8
 
-    bits = [2, 3, 4]
+    bits = [0, 1, 2, 3, 4]
 
     # Generate random expert activation rates - some high, some low
     expert_activation_rates = np.array([0.25, 0.2, 0.15, 0.1, 0.1, 0.08, 0.07, 0.05])
@@ -827,7 +829,7 @@ def test_global_dp_utils():
 
         expert_rates_list.append(rates)
 
-    target_bpw = 2.7
+    target_bpw = 1.5
     epsilon = 0.1
 
     print(f"Global DP Config: n_experts={n_experts}, n_neurons_per_expert={n_neurons_per_expert}")
@@ -877,6 +879,6 @@ def test_global_dp_utils():
 
 
 if __name__ == "__main__":
-    test_read_rates_from_file()
+    # test_read_rates_from_file()
     # test_dp_utils()
-    # test_global_dp_utils()
+    test_global_dp_utils()
