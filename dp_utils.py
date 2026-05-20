@@ -132,7 +132,7 @@ def generate_valid_m_schemes_general(bits, s, target_bpw, epsilon):
 def get_unified_sorted_idx_general(rates: Dict[int, np.ndarray], bits: List[int]) -> np.ndarray:
     """
     core step 1: unified marginal gain sorting (general bit version)
-    sorting criterion: combined marginal gain using log-quadratic fit model
+    sorting criterion: combined marginal gain of adjacent bits
     """
     bits_sorted = sorted(bits)
     n_neurons = len(rates[bits_sorted[0]])
@@ -141,32 +141,15 @@ def get_unified_sorted_idx_general(rates: Dict[int, np.ndarray], bits: List[int]
     if len(bits_sorted) == 1:
         return idx
 
-    b_array = np.array(bits_sorted, dtype=float)
+    # compute combined score of marginal gains: sum(adjacent bit gains)
     combined_score = np.zeros(n_neurons)
-
-    for i in range(n_neurons):
-        loss_array = np.array([rates[b][i] for b in bits_sorted])
-        try:
-            log_loss = np.log(loss_array)
-            p, q, r = np.polyfit(b_array, log_loss, deg=2)
-
-            # Compute integrated gain from min_bit to max_bit using the fitted curve
-            # integral of loss(b) db from b_low to b_high
-            # Since loss(b) = exp(p*b² + q*b + r) doesn't have closed-form integral,
-            # we use the difference between loss at min_bit and max_bit as a proxy
-            l_min = np.exp(p * (b_array[0] ** 2) + q * b_array[0] + r)
-            l_max = np.exp(p * (b_array[-1] ** 2) + q * b_array[-1] + r)
-            score = l_min - l_max
-
-            # Fallback: if score is not positive, use linear difference
-            if score <= 0:
-                score = rates[bits_sorted[0]][i] - rates[bits_sorted[-1]][i]
-        except (RuntimeError, ValueError, np.linalg.LinAlgError):
-            # Fallback to linear difference if fit fails
-            score = rates[bits_sorted[0]][i] - rates[bits_sorted[-1]][i]
-
-        combined_score[i] = score
-
+    for i in range(len(bits_sorted) - 1):
+        low_bit = bits_sorted[i]
+        high_bit = bits_sorted[i + 1]
+        # gain: high_bit replacing low_bit (rates[low] - rates[high])
+        gain = rates[low_bit] - rates[high_bit]
+        combined_score += gain
+    
     sorted_idx = idx[np.argsort(-combined_score)]
     return sorted_idx
 
@@ -372,28 +355,17 @@ def enum_optimal_m_scheme_global_fast(
             neurons_in_sub = sorted_idx[start:end]
             subexpert_neurons.append(neurons_in_sub)
 
-            # Compute importance: use log-quadratic fit for each neuron, then average
+            # Compute importance: use the first neuron's combined score as proxy
+            # Or compute average combined score for the sub-expert
             if len(bits_sorted_asc) == 1:
                 combined_score = 1.0
             else:
-                b_array = np.array(bits_sorted_asc, dtype=float)
                 combined_score = 0.0
-                for neuron_idx in neurons_in_sub:
-                    loss_array = np.array([rates[b][neuron_idx] for b in bits_sorted_asc])
-                    try:
-                        log_loss = np.log(loss_array)
-                        p, q, r = np.polyfit(b_array, log_loss, deg=2)
-
-                        l_min = np.exp(p * (b_array[0] ** 2) + q * b_array[0] + r)
-                        l_max = np.exp(p * (b_array[-1] ** 2) + q * b_array[-1] + r)
-                        score = l_min - l_max
-
-                        if score <= 0:
-                            score = rates[bits_sorted_asc[0]][neuron_idx] - rates[bits_sorted_asc[-1]][neuron_idx]
-                    except (RuntimeError, ValueError, np.linalg.LinAlgError):
-                        score = rates[bits_sorted_asc[0]][neuron_idx] - rates[bits_sorted_asc[-1]][neuron_idx]
-
-                    combined_score += score
+                for i in range(len(bits_sorted_asc) - 1):
+                    low_bit = bits_sorted_asc[i]
+                    high_bit = bits_sorted_asc[i + 1]
+                    for neuron_idx in neurons_in_sub:
+                        combined_score += (rates[low_bit][neuron_idx] - rates[high_bit][neuron_idx])
                 combined_score /= len(neurons_in_sub)
 
             # Multiply by expert activation rate
@@ -761,10 +733,11 @@ def test_read_rates_from_file():
 
     model_id = "deepseek-v1-moe-16b"
     layer_idx = 1
-    quant_type = "gptq"
+    quant_type = "turboquant"
     cache_dir = f"quant_outlier_{quant_type}/{model_id}"
 
     p = 20
+    expert_idx = 0
     rates = {}
     for x in outlier_bits:
         cache_path = os.path.join(cache_dir, f"{model_id}_L{layer_idx}_b{x}.pt")
@@ -773,18 +746,18 @@ def test_read_rates_from_file():
                 import torch
                 cached_data = torch.load(cache_path, map_location='cpu')
                 print(f"Loading cached quant outlier data for layer {layer_idx}, wbits={x}")
-                rates[x] = [cached_data[0][:p]]
+                rates[x] = [cached_data[expert_idx][:p]]
             except Exception as e:
                 print(f"Failed to load cached data: {e}")
 
     rates[0] = extrapolate_0bit_loss(rates, quant_type=quant_type, save_plots=True)
     for i in range(p):
-        print(i, end=',')
-        print(f"{rates[4][0][i].item():.4f}", end=',')
-        print(f"{rates[3][0][i].item():.4f}", end=',')
-        print(f"{rates[2][0][i].item():.4f}", end=',')
-        print(f"{rates[1][0][i].item():.4f}", end=',')
-        print(f"{rates[0][0][i].item():.4f}", end=',')
+        print(i, end=', ')
+        print(f"{rates[4][expert_idx][i].item():.4f}", end=', ')
+        print(f"{rates[3][expert_idx][i].item():.4f}", end=', ')
+        print(f"{rates[2][expert_idx][i].item():.4f}", end=', ')
+        print(f"{rates[1][expert_idx][i].item():.4f}", end=', ')
+        print(f"{rates[0][expert_idx][i].item():.4f}", end=', ')
         print()
 
 def test_dp_utils():

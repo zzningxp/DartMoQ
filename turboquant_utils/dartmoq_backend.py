@@ -28,6 +28,7 @@ from dataclasses import dataclass
 import importlib
 import sys
 from typing import Any
+from .quantize import turboquant_quantize
 
 import torch
 import torch.nn as nn
@@ -38,53 +39,6 @@ import torch.nn as nn
 MIN_TURBO_FAKE_QUANT_BIT = 1
 MAX_TURBO_FAKE_QUANT_BIT = 15
 
-
-@dataclass(frozen=True)
-class TurboFakeQuantResult:
-    """Result returned by quantize_linear_if_turbo_supported.
-
-    handled:
-        True 表示当前 bit 已经由这个 backend 处理，调用方不需要再跑 GPTQ。
-        False 表示当前 bit 不归 TurboQuant 处理，调用方应该回退到原逻辑。
-    bit_width:
-        归一化后的 int bit 宽度。
-    reason:
-        用于日志/调试，说明本次处理或跳过的原因。
-    weight_mse / weight_sse:
-        TurboQuant fake-quant 前后权重的简单重构误差。这里只衡量权重
-        本身的误差，不等价于 GPTQ 的 Hessian/activation-aware loss。
-    """
-
-    handled: bool
-    bit_width: int
-    reason: str
-    weight_mse: torch.Tensor | None = None
-    weight_sse: torch.Tensor | None = None
-
-
-def _import_turboquant_quantize():
-    """Lazy import the local TurboQuant quantizer.
-
-    这里只从本项目的 turboquant_model 包导入。运行入口应从当前项目
-    根目录启动，保证解析到的是仓库内的 TurboQuant 源码。
-    """
-
-    # The vendored directory in this repository is named ``turboquant_utils``,
-    # while the upstream files use absolute ``turboquant_model.*`` imports.
-    # Alias the current package before importing ``.quantize`` so fake-quant
-    # uses the local source without requiring a package rename.
-    package_name = __package__.split(".")[0]
-    package = importlib.import_module(package_name)
-    sys.modules.setdefault("turboquant_model", package)
-    for module_name in ("codebook", "rotation"):
-        local_name = f"{package_name}.{module_name}"
-        upstream_name = f"turboquant_model.{module_name}"
-        sys.modules.setdefault(upstream_name, importlib.import_module(local_name))
-
-    from .quantize import turboquant_quantize
-    return turboquant_quantize
-
-
 def normalize_bit_width(bit_width: Any) -> int:
     """Convert DartMoQ/Torch bit-width values to a plain int."""
 
@@ -93,7 +47,6 @@ def normalize_bit_width(bit_width: Any) -> int:
             raise ValueError(f"bit_width tensor must be scalar, got shape {tuple(bit_width.shape)}")
         return int(bit_width.item())
     return int(bit_width)
-
 
 def get_linear_bit_from_dartmoq_quantizer(gptq_obj: Any) -> int:
     """Read the selected bit-width from DartMoQ's GPTQ wrapper.
@@ -104,13 +57,11 @@ def get_linear_bit_from_dartmoq_quantizer(gptq_obj: Any) -> int:
 
     return normalize_bit_width(gptq_obj.quantizer.bits)
 
-
 def is_turbo_fake_quant_supported(bit_width: Any) -> bool:
     """Return True only for bit-widths intended for TurboQuant fake-quant."""
 
     bit = normalize_bit_width(bit_width)
     return MIN_TURBO_FAKE_QUANT_BIT <= bit <= MAX_TURBO_FAKE_QUANT_BIT
-
 
 @torch.no_grad()
 def turbo_fake_quant_linear(
@@ -150,9 +101,6 @@ def turbo_fake_quant_linear(
     if not isinstance(linear, nn.Linear):
         raise TypeError(f"expected nn.Linear, got {type(linear)!r}")
 
-    turboquant_quantize = _import_turboquant_quantize()
-
-    # 记录原 dtype/device，保证写回后不改变 DartMoQ/HF 模型原本的参数格式。
     orig_dtype = linear.weight.data.dtype
     orig_device = linear.weight.data.device
 
@@ -169,6 +117,7 @@ def turbo_fake_quant_linear(
     # 原地 copy，保持 nn.Parameter 对象本身不变，减少对上层模型结构的影响。
     # if update == False, will not update the weight.
     quant_error = (linear.weight.data - qweight).pow(2)
+    # quant_error = (linear.weight.data - qweight).abs()
     if update:
         linear.weight.data.copy_(qweight.to(device=orig_device, dtype=orig_dtype))
     return quant_error
