@@ -63,7 +63,7 @@ def reconstruct_moe_from_existing(model, layer, layer_idx, inps,
             outlier_bits = {probe_bit}
         else:
             outlier_bits = {0, 1, 2, 3, 4}
-        print(f"simulate quant outlier_bits {outlier_bits}")
+        print(f"simulate {quantmode} outlier_bits {outlier_bits}")
 
         cache_dir = f"quant_outlier_{quantmode}/{model.model_id}"
         os.makedirs(cache_dir, exist_ok=True)
@@ -73,7 +73,7 @@ def reconstruct_moe_from_existing(model, layer, layer_idx, inps,
             if os.path.exists(cache_path):
                 try:
                     cached_data = torch.load(cache_path, map_location=device)
-                    print(f"Loading cached quant outlier data for layer {layer_idx}, wbits={x}", flush=True)
+                    print(f"Loading cached {quantmode} outlier data for layer {layer_idx}, wbits={x}", flush=True)
                     q_rates[x] = cached_data
                     continue
                 except Exception as e:
@@ -83,10 +83,10 @@ def reconstruct_moe_from_existing(model, layer, layer_idx, inps,
                 q_rates[0] = extrapolate_0bit_loss(q_rates, quant_type=quantmode)
                 q_rates[0] = [torch.from_numpy(q_rates[0][i]).to(device) for i in range(len(q_rates[0]))]
             else:
-                print(f"Computing quant outlier for layer {layer_idx}, wbits={x}")
+                print(f"Computing {quantmode} outlier for layer {layer_idx}, wbits={x}")
                 q_rates[x] = analyze_quant_outlier(layer, layer_idx, inps, ori_expert_num, wbits=x, quantmode=quantmode, save_path=None)
             torch.save(q_rates[x], cache_path)
-            print(f"Saved quant outlier data to {cache_path}")
+            print(f"Saved {quantmode} outlier data to {cache_path}")
 
         if 'target_bpw' not in qscheme:
             all_rates = q_rates[probe_bit]
