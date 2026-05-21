@@ -133,25 +133,14 @@ def generate_valid_m_schemes_general(bits, s, target_bpw, epsilon):
 def get_unified_sorted_idx_general(rates: Dict[int, np.ndarray], bits: List[int]) -> np.ndarray:
     """
     core step 1: unified marginal gain sorting (general bit version)
-    sorting criterion: combined marginal gain of adjacent bits
+    sorting criterion: use the lowest non-zero bit's loss
     """
     bits_sorted = sorted(bits)
     n_neurons = len(rates[bits_sorted[0]])
     idx = np.arange(n_neurons)
-
-    if len(bits_sorted) == 1:
-        return idx
-
-    # compute combined score of marginal gains: sum(adjacent bit gains)
-    combined_score = np.zeros(n_neurons)
-    for i in range(len(bits_sorted) - 1):
-        low_bit = bits_sorted[i]
-        high_bit = bits_sorted[i + 1]
-        # gain: high_bit replacing low_bit (rates[low] - rates[high])
-        gain = rates[low_bit] - rates[high_bit]
-        combined_score += gain
-    
-    sorted_idx = idx[np.argsort(-combined_score)]
+    lowest_bit = bits_sorted[0]
+    # sort by the lowest bit's loss (descending)
+    sorted_idx = idx[np.argsort(-rates[lowest_bit])]
     return sorted_idx
 
 def precompute_block_losses_general(sorted_idx, rates, bits, s):
@@ -335,6 +324,7 @@ def enum_optimal_m_scheme_global_fast(
     # Also compute each sub-expert's importance and precompute losses
     expert_sorted_indices = []  # expert_sorted_indices[expert_idx] = sorted neuron indices
     expert_subexpert_neurons = []  # expert_subexpert_neurons[expert_idx][sub_idx] = list of neuron indices in this sub-expert
+    expert_act_rates = []  # cache act_rates for later use
     all_subexperts = []  # list of (expert_idx, sub_idx, importance)
 
     bits_sorted_asc = sorted(bits)
@@ -344,6 +334,16 @@ def enum_optimal_m_scheme_global_fast(
         rates = expert_rates_list[expert_idx]
         sorted_idx = get_unified_sorted_idx_general(rates, bits)
         expert_sorted_indices.append(sorted_idx)
+
+        # Get and cache act_rate for this expert
+        act_rate = expert_activation_rates[expert_idx]
+        if hasattr(act_rate, 'detach'):
+            act_rate = float(act_rate.detach().cpu().numpy())
+        elif hasattr(act_rate, 'item'):
+            act_rate = float(act_rate.item())
+        else:
+            act_rate = float(act_rate)
+        expert_act_rates.append(act_rate)
 
         n_neurons = len(sorted_idx)
         neurons_per_subexpert = n_neurons // slice_expert_num
@@ -356,27 +356,16 @@ def enum_optimal_m_scheme_global_fast(
             neurons_in_sub = sorted_idx[start:end]
             subexpert_neurons.append(neurons_in_sub)
 
-            # Compute importance: use the first neuron's combined score as proxy
-            # Or compute average combined score for the sub-expert
+            # Compute importance: average bit 0 loss × expert activation rate
             if len(bits_sorted_asc) == 1:
                 combined_score = 1.0
             else:
                 combined_score = 0.0
-                for i in range(len(bits_sorted_asc) - 1):
-                    low_bit = bits_sorted_asc[i]
-                    high_bit = bits_sorted_asc[i + 1]
-                    for neuron_idx in neurons_in_sub:
-                        combined_score += (rates[low_bit][neuron_idx] - rates[high_bit][neuron_idx])
+                low_bit = bits_sorted_asc[0]
+                for neuron_idx in neurons_in_sub:
+                    combined_score += rates[low_bit][neuron_idx]
                 combined_score /= len(neurons_in_sub)
 
-            # Multiply by expert activation rate
-            act_rate = expert_activation_rates[expert_idx]
-            if hasattr(act_rate, 'detach'):
-                act_rate = float(act_rate.detach().cpu().numpy())
-            elif hasattr(act_rate, 'item'):
-                act_rate = float(act_rate.item())
-            else:
-                act_rate = float(act_rate)
             combined_score *= act_rate
 
             all_subexperts.append((expert_idx, sub_idx, -combined_score))  # negative for ascending sort
@@ -388,7 +377,6 @@ def enum_optimal_m_scheme_global_fast(
     # Now all_subexperts_sorted is sorted from most important to least important
     sorted_subexpert_ids = [(x[0], x[1]) for x in all_subexperts_sorted]  # list of (expert_idx, sub_idx)
 
-
     total_subexperts = n_experts * slice_expert_num
 
     # Step 3: Precompute block losses for the sorted sub-experts
@@ -398,12 +386,19 @@ def enum_optimal_m_scheme_global_fast(
     for pos, (expert_idx, sub_idx) in enumerate(sorted_subexpert_ids):
         neurons_in_sub = expert_subexpert_neurons[expert_idx][sub_idx]
         rates = expert_rates_list[expert_idx]
+        act_rate = expert_act_rates[expert_idx]
         for bit in bits:
             bit_idx = bit_to_idx[bit]
             loss_sum = 0.0
             for neuron_idx in neurons_in_sub:
                 loss_sum += rates[bit][neuron_idx]
-            block_losses[bit_idx, pos] = loss_sum
+            block_losses[bit_idx, pos] = loss_sum * act_rate
+
+    # print(block_losses.shape)
+    # for bit_idx_0 in bit_to_idx.values():
+    #     print(f"bit {bit_idx_0}  8: [{', '.join([f'{x:.2f}' for x in block_losses[bit_idx_0, :8].tolist()])}]")
+    #     print(f"bit {bit_idx_0} -8: [{', '.join([f'{x:.2f}' for x in block_losses[bit_idx_0, -8:].tolist()])}]")
+
 
     # Step 4: Monotonic DP on the sorted sub-experts
     min_bit = bits_sorted_asc[0]
@@ -729,6 +724,131 @@ def enum_optimal_m_scheme_energy_global_fast(
 
 #---- Test ----
 
+def plot_neuron_rates_across_bits(
+    model_id: str,
+    layer_idx: int,
+    quant_type: str,
+    expert_idx: int = 0,
+    p: int = 20,
+    outlier_bits: set = None,
+    use_0bit: bool = True,
+    save_dir: str = None
+):
+    """
+    Visualize neuron rates across different bit widths for a single expert.
+
+    Args:
+        model_id: Model identifier
+        layer_idx: Layer index
+        quant_type: Quantization type
+        expert_idx: Expert index
+        p: Number of neurons to plot (first p neurons)
+        outlier_bits: Set of bit widths to load, defaults to {1,2,3,4}
+        use_0bit: Whether to extrapolate and include 0bit
+        save_dir: Directory to save plot, defaults to 'plot/neuron_rates'
+    """
+    if outlier_bits is None:
+        outlier_bits = {1, 2, 3, 4}
+
+    print(f"Plotting neuron rates: model={model_id}, layer={layer_idx}, quant={quant_type}, expert={expert_idx}, p={p}")
+
+    cache_dir = f"quant_outlier_{quant_type}/{model_id}"
+    rates = {}
+
+    # Load data for each bit
+    for x in outlier_bits:
+        cache_path = os.path.join(cache_dir, f"{model_id}_L{layer_idx}_b{x}.pt")
+        if os.path.exists(cache_path):
+            try:
+                import torch
+                cached_data = torch.load(cache_path, map_location='cpu')
+                print(f"Loading cached data for layer {layer_idx}, wbits={x}")
+                rates[x] = [cached_data[expert_idx][:p]]
+            except Exception as e:
+                print(f"Failed to load cached data for bit {x}: {e}")
+
+    if not rates:
+        print("No data loaded!")
+        return
+
+    # Extrapolate 0bit if needed
+    if use_0bit:
+        rates[0] = extrapolate_0bit_loss(rates, quant_type=quant_type, save_plots=False)
+
+    # Prepare data for plotting
+    bits_sorted = sorted(rates.keys())
+    n_neurons = min(p, len(rates[bits_sorted[0]][0]))
+
+    # Get highest bit for sorting
+    highest_bit = max(bits_sorted)
+
+    # Collect neuron indices and their rates at highest bit
+    neuron_rates = []
+    for i in range(n_neurons):
+        val = rates[highest_bit][0][i]
+        if hasattr(val, 'item'):
+            val = val.item()
+        neuron_rates.append((i, val))
+
+    # Sort neurons by rate at highest bit (descending)
+    neuron_rates.sort(key=lambda x: x[1], reverse=True)
+    sorted_neuron_indices = [idx for idx, _ in neuron_rates]
+
+    plt.figure(figsize=(10, 6))
+
+    # Use a colormap for different neurons (turbo has more distinct colors)
+    cmap = plt.get_cmap('turbo', n_neurons)
+
+    for color_idx, neuron_idx in enumerate(sorted_neuron_indices):
+        # Get rate values across bits for this neuron
+        rate_values = []
+        for b in bits_sorted:
+            val = rates[b][0][neuron_idx]
+            if hasattr(val, 'item'):
+                val = val.item()
+            rate_values.append(val)
+
+        # Plot line for this neuron
+        plt.plot(bits_sorted, rate_values, marker='o', linestyle='-',
+                 color=cmap(color_idx), linewidth=1, markersize=4, alpha=0.2,
+                 label=f'Neuron {neuron_idx}' if n_neurons <= 20 else "")
+
+    plt.xlabel('Bit Width')
+    plt.ylabel('Rate (log scale)')
+    plt.title(f'Neuron Rates vs Bit Width\n{model_id} Layer {layer_idx} Expert {expert_idx} ({quant_type})')
+    plt.yscale('log')
+    plt.grid(True, alpha=0.3)
+
+    # Only show legend if number of neurons is small
+    if n_neurons <= 20:
+        plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize='small')
+    plt.tight_layout()
+
+    # Save plot
+    if save_dir is None:
+        save_dir = 'plot/neuron_rates'
+    os.makedirs(save_dir, exist_ok=True)
+    save_path = os.path.join(save_dir, f'{model_id}_{quant_type}_L{layer_idx}_exp{expert_idx}.png')
+    plt.savefig(save_path, dpi=150)
+    print(f"Plot saved to {save_path}")
+    plt.close()
+
+    # Also print the values (sorted by highest bit rate)
+    print(f"\nNeuron rates across bits (sorted by {highest_bit}bit rate):")
+    header = "Neuron"
+    for b in bits_sorted:
+        header += f", {b}bit"
+    print(header)
+    for neuron_idx in sorted_neuron_indices:
+        line = f"{neuron_idx:4d}"
+        for b in bits_sorted:
+            val = rates[b][0][neuron_idx]
+            if hasattr(val, 'item'):
+                val = val.item()
+            line += f", {val:.4f}"
+        print(line)
+
+
 def test_read_rates_from_file():
     outlier_bits = {1, 2, 3, 4}
     print(f"simulate quant outlier_bits {outlier_bits}")
@@ -881,4 +1001,15 @@ def test_global_dp_utils():
 if __name__ == "__main__":
     # test_read_rates_from_file()
     # test_dp_utils()
-    test_global_dp_utils()
+    # test_global_dp_utils()
+
+    for q in ["gptq", "turboquant"]:
+        plot_neuron_rates_across_bits(
+            model_id="deepseek-v1-moe-16b",
+            layer_idx=1,
+            quant_type=q,
+            expert_idx=0,
+            p=10,
+            outlier_bits={0, 1, 2, 3, 4},
+            use_0bit=True
+        )
