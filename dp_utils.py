@@ -732,7 +732,8 @@ def plot_neuron_rates_across_bits(
     p: int = 20,
     outlier_bits: set = None,
     use_0bit: bool = True,
-    save_dir: str = None
+    save_dir: str = None,
+    dir_suffix: str = ""
 ):
     """
     Visualize neuron rates across different bit widths for a single expert.
@@ -752,7 +753,7 @@ def plot_neuron_rates_across_bits(
 
     print(f"Plotting neuron rates: model={model_id}, layer={layer_idx}, quant={quant_type}, expert={expert_idx}, p={p}")
 
-    cache_dir = f"quant_outlier_{quant_type}/{model_id}"
+    cache_dir = f"quant_outlier_{quant_type}/{model_id}{dir_suffix}"
     rates = {}
 
     # Load data for each bit
@@ -826,7 +827,7 @@ def plot_neuron_rates_across_bits(
 
     # Save plot
     if save_dir is None:
-        save_dir = 'plot/neuron_rates'
+        save_dir = 'plot/neuron_rates' + dir_suffix
     os.makedirs(save_dir, exist_ok=True)
     save_path = os.path.join(save_dir, f'{model_id}_{quant_type}_L{layer_idx}_exp{expert_idx}.png')
     plt.savefig(save_path, dpi=150)
@@ -1003,13 +1004,15 @@ if __name__ == "__main__":
     # test_dp_utils()
     # test_global_dp_utils()
 
-    for q in ["gptq", "turboquant"]:
-        plot_neuron_rates_across_bits(
-            model_id="deepseek-v1-moe-16b",
-            layer_idx=1,
-            quant_type=q,
-            expert_idx=0,
-            p=10,
-            outlier_bits={0, 1, 2, 3, 4},
-            use_0bit=True
-        )
+    for q in ["turboquant"]:
+        for s in ["", "-whole-pow2"]:
+            plot_neuron_rates_across_bits(
+                model_id="deepseek-v1-moe-16b",
+                layer_idx=2,
+                quant_type=q,
+                expert_idx=2,
+                p=10,
+                outlier_bits={0, 1, 2, 3, 4},
+                use_0bit=True,
+                dir_suffix=s
+            )

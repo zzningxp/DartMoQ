@@ -11,7 +11,7 @@ The resulting model is still a normal dense model. This is intentional: it
 keeps the first integration step small and makes PPL comparisons easy.
 
 中文说明：
-这个文件实现的是“方案 1”：只把最终量化阶段的一部分权重近似方式
+这个文件实现的是"方案 1"：只把最终量化阶段的一部分权重近似方式
 从 GPTQ 换成 TurboQuant。它不会把 nn.Linear 替换成 TurboQuantLinear，
 也不会生成 packed indices / norms / codebook 这种真实压缩推理格式。
 因此它适合用来比较 PPL 和量化误差，但不能反映最终模型体积压缩。
@@ -28,10 +28,11 @@ from dataclasses import dataclass
 import importlib
 import sys
 from typing import Any
-from .quantize import turboquant_quantize
 
 import torch
 import torch.nn as nn
+
+from .quantize import turboquant_quantize
 
 
 # 当前让 1-15 bit 宽度走 TurboQuant fake-quant。
@@ -40,7 +41,8 @@ MIN_TURBO_FAKE_QUANT_BIT = 1
 MAX_TURBO_FAKE_QUANT_BIT = 15
 
 def normalize_bit_width(bit_width: Any) -> int:
-    """Convert DartMoQ/Torch bit-width values to a plain int."""
+    """Convert DartMoQ/Torch bit-width values to a plain int."""       
+
 
     if isinstance(bit_width, torch.Tensor):
         if bit_width.numel() != 1:
@@ -71,7 +73,8 @@ def turbo_fake_quant_linear(
     seed: int = 42,
     rotation: str = "qr",
     update: bool = True,
-) -> nn.Linear:
+    neuron_direction: str = None,
+) -> torch.Tensor:
     """Apply TurboQuant fake-quant to a Linear layer in-place.
 
     Args:
@@ -81,10 +84,13 @@ def turbo_fake_quant_linear(
             current GPTQ group size. Use None for full-row groups.
         seed: TurboQuant rotation seed.
         rotation: "qr" is the safest default for arbitrary hidden sizes.
+        update: whether to update the linear weight in-place.
+        neuron_direction: "up" or "down" for per-neuron quantization when update=False.
+            "up": (hidden_size, neuron_size) -> split along neuron dim as (hidden_size, 1)
+            "down": (neuron_size, hidden_size) -> split along neuron dim as (1, hidden_size)
 
     Returns:
-        The same nn.Linear object, with linear.weight.data replaced by the
-        dequantized TurboQuant approximation.
+        quant_error: quantization error with the same shape as linear.weight.
 
     注意：
         这是 fake-quant。TurboQuant 会先量化权重，再把近似权重反量化
@@ -103,21 +109,51 @@ def turbo_fake_quant_linear(
 
     orig_dtype = linear.weight.data.dtype
     orig_device = linear.weight.data.device
+    weight = linear.weight.data
 
-    # turboquant_quantize 返回的是“反量化后的近似权重”，不是 packed 表示。
-    # group_size=128 默认对齐 DartMoQ 当前 GPTQ 的 groupsize 设置。
-    qweight = turboquant_quantize(
-        linear.weight.data,
-        bit_width=bit,
-        group_size=group_size,
-        seed=seed,
-        rotation=rotation,
-    )
-
-    # 原地 copy，保持 nn.Parameter 对象本身不变，减少对上层模型结构的影响。
-    # if update == False, will not update the weight.
-    quant_error = (linear.weight.data - qweight).pow(2)
-    # quant_error = (linear.weight.data - qweight).abs()
     if update:
+        qweight = turboquant_quantize(
+            weight,
+            bit_width=bit,
+            group_size=group_size,
+            seed=seed,
+            rotation=rotation,
+        )
+        quant_error = (weight - qweight).pow(2)
         linear.weight.data.copy_(qweight.to(device=orig_device, dtype=orig_dtype))
+    else:
+        quant_error = torch.zeros_like(weight)
+
+        if neuron_direction == "down":
+            hidden_size, neuron_size = weight.shape
+            for i in range(neuron_size):
+                # 取出第 i 个 neuron 的列向量，保持 (hidden_size, 1) 形状
+                w_slice = weight[:, i:i+1]
+                q_slice = turboquant_quantize(
+                    w_slice,
+                    bit_width=bit,
+                    group_size=group_size,
+                    seed=seed,
+                    rotation=rotation,
+                )
+                quant_error[:, i:i+1] = (w_slice - q_slice).pow(2)
+        elif neuron_direction == "up" or neuron_direction == "gate":
+            neuron_size, hidden_size = weight.shape
+            for i in range(neuron_size):
+                # 取出第 i 个 neuron 的行向量，保持 (1, hidden_size) 形状
+                w_slice = weight[i:i+1, :]
+                q_slice = turboquant_quantize(
+                    w_slice,
+                    bit_width=bit,
+                    group_size=group_size,
+                    seed=seed,
+                    rotation=rotation,
+                )
+                quant_error[i:i+1, :] = (w_slice - q_slice).pow(2)
+                # if i % 64 == 0:
+                #     print(f"{neuron_direction} {i} {w_slice.shape} {q_slice.shape} quant_error[i:i+1, :]: {quant_error[i:i+1, :].sum()}")
+        else:
+            raise ValueError(f"neuron_direction must be 'up' or 'down' when update=False, got {neuron_direction}")
+
     return quant_error
+

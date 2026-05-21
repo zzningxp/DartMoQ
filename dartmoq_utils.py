@@ -324,6 +324,7 @@ def analyze_quant_outlier(layer, layer_idx, hidden_states, ori_expert_num, wbits
                         seed=QSEED+layer_idx,
                         rotation="qr",
                         update=False,
+                        neuron_direction=split_name.split('_')[0],
                     )
                 else:
                     loss[name] = gptq[name].fasterquant(
