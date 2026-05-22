@@ -17,6 +17,7 @@ import gc
 
 from gptq_utils import GPTQ, Quantizer, find_layers
 from turboquant_utils.dartmoq_backend import turbo_fake_quant_linear
+from turboquant_utils.dartmoq_backend import turboquant_outlier_activation_aware_rates
 
 QBATCH = 256
 QSEED = 42
@@ -401,6 +402,73 @@ def analyze_quant_outlier(layer, layer_idx, hidden_states, ori_expert_num, wbits
         plt.close()
     
     del loss
+    torch.cuda.empty_cache()
+    gc.collect()
+
+    return all_rates
+
+@torch.no_grad()
+def analyze_turboquant_outlier_activation_aware(
+    layer,
+    layer_idx,
+    hidden_states,
+    ori_expert_num,
+    wbits=2,
+    mode="aw",
+    if_dense=False,
+    save_path=None,
+):
+    print(f"analyze_turboquant_outlier_{mode} layer: {layer_idx} with {wbits} bits")
+    assert mode in ("aw", "output"), f"Unknown TurboQuant outlier mode: {mode}"
+
+    groupsize = 128
+    flat_states = hidden_states.reshape(-1, hidden_states.shape[-1]).float()
+
+    all_rates = []
+    if if_dense:
+        assert ori_expert_num == 1, "dense model n == 1"
+
+    for expert_idx in range(ori_expert_num):
+        tick0 = time.time()
+        if ori_expert_num == 1:
+            expert = layer.mlp
+        else:
+            expert = layer.mlp.experts[expert_idx]
+
+        rates = turboquant_outlier_activation_aware_rates(
+            expert,
+            flat_states,
+            bit_width=wbits,
+            mode=mode,
+            group_size=groupsize,
+            seed=QSEED + layer_idx,
+            rotation="qr",
+        )
+
+        all_rates.append(rates)
+        tick1 = time.time()
+        print(
+            f"TurboQuant {mode} outlier, layer {layer_idx} expert {expert_idx} "
+            f"bits: {wbits} time: {tick1 - tick0:.4f}",
+            flush=True,
+        )
+
+    if save_path:
+        rates = all_rates[0]
+        plt.figure(figsize=(10, 10))
+        plt.subplot(1, 1, 1)
+        pps = rates.detach().cpu().to(dtype=torch.float32).numpy()
+        neuron_indices = np.arange(rates.shape[0])
+        plt.plot(neuron_indices, pps, 'b-', alpha=0.6)
+        plt.title(f'Distribution of TurboQuant {mode} Neuron Loss Rates')
+        plt.xlabel('Neuron Index')
+        plt.ylabel('Loss')
+        plt.grid(True, alpha=0.3)
+        plt.tight_layout()
+        plt.savefig(save_path)
+        plt.close()
+
+    del flat_states
     torch.cuda.empty_cache()
     gc.collect()
 

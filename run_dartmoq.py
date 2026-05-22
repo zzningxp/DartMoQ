@@ -54,9 +54,9 @@ if __name__ == '__main__':
         type=str, default=None,
         help='Quantization scheme like fix_scheme like a8s4m3221 or global scheme like global.'
     )
-    parser.add_argument(        '--rank-mode', 
+    parser.add_argument(        '--rank-mode',
         type=str, default=None,
-        help='Rank mode for MoE reconstruction. activation|energy|quant_outlier|random|neuron_index'
+        help='Rank mode for MoE reconstruction. activation|energy|quant_outlier|turboquant_outlier_aw|turboquant_outlier_output|random|neuron_index'
     )
     parser.add_argument(        '--standby-layer-cpu', action='store_true', default=False,
         help='Whether to move quant layers to CPU before and after quantization.' 

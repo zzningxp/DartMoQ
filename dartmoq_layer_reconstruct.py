@@ -8,6 +8,7 @@ from dartmoq_utils import analyze_experts_activation
 from dartmoq_utils import construct_experts_by_rates
 from dartmoq_utils import analyze_neuron_activations
 from dartmoq_utils import analyze_quant_outlier
+from dartmoq_utils import analyze_turboquant_outlier_activation_aware
 from camera_utils import analyze_expert_energy
 from dp_utils import enum_optimal_m_scheme_separate_fast
 from dp_utils import enum_optimal_m_scheme_global_fast
@@ -55,17 +56,24 @@ def reconstruct_moe_from_existing(model, layer, layer_idx, inps,
 
     probe_bit = 2
     dpscheme_list = None
-    if args.rank_mode == "quant_outlier":
+    turboquant_outlier_modes = {
+        "turboquant_outlier_aw": "aw",
+        "turboquant_outlier_output": "output",
+    }
+    if args.rank_mode == "quant_outlier" or args.rank_mode in turboquant_outlier_modes:
         tick0 = time.time()
+        turboquant_outlier_mode = turboquant_outlier_modes.get(args.rank_mode)
 
         q_rates = {}
         if 'target_bpw' not in qscheme:
             outlier_bits = {probe_bit}
         else:
             outlier_bits = {0, 1, 2, 3, 4}
-        print(f"simulate {quantmode} outlier_bits {outlier_bits}")
+        outlier_label = args.rank_mode if turboquant_outlier_mode else quantmode
+        print(f"simulate {outlier_label} outlier_bits {outlier_bits}")
 
-        cache_dir = f"quant_outlier_{quantmode}/{model.model_id}"
+        cache_root = f"{args.rank_mode}_" if turboquant_outlier_mode else f"quant_outlier_{quantmode}"
+        cache_dir = f"{cache_root}/{model.model_id}"
         os.makedirs(cache_dir, exist_ok=True)
 
         for x in sorted(outlier_bits, reverse=True):  ## 0 bit should be extrapolated from other bit data, so we compute it at last
@@ -73,20 +81,31 @@ def reconstruct_moe_from_existing(model, layer, layer_idx, inps,
             if os.path.exists(cache_path):
                 try:
                     cached_data = torch.load(cache_path, map_location=device)
-                    print(f"Loading cached {quantmode} outlier data for layer {layer_idx}, wbits={x}", flush=True)
+                    print(f"Loading cached {outlier_label} outlier data for layer {layer_idx}, wbits={x}", flush=True)
                     q_rates[x] = cached_data
                     continue
                 except Exception as e:
                     print(f"Failed to load cached data {e}")
             if x == 0:
                 print(f"Computing extrapolate 0 bit loss for layer {layer_idx}")
-                q_rates[0] = extrapolate_0bit_loss(q_rates, quant_type=quantmode)
+                q_rates[0] = extrapolate_0bit_loss(q_rates, quant_type=outlier_label)
                 q_rates[0] = [torch.from_numpy(q_rates[0][i]).to(device) for i in range(len(q_rates[0]))]
             else:
-                print(f"Computing {quantmode} outlier for layer {layer_idx}, wbits={x}")
-                q_rates[x] = analyze_quant_outlier(layer, layer_idx, inps, ori_expert_num, wbits=x, quantmode=quantmode, save_path=None)
+                print(f"Computing {outlier_label} outlier for layer {layer_idx}, wbits={x}")
+                if turboquant_outlier_mode:
+                    q_rates[x] = analyze_turboquant_outlier_activation_aware(
+                        layer,
+                        layer_idx,
+                        inps,
+                        ori_expert_num,
+                        wbits=x,
+                        mode=turboquant_outlier_mode,
+                        save_path=None,
+                    )
+                else:
+                    q_rates[x] = analyze_quant_outlier(layer, layer_idx, inps, ori_expert_num, wbits=x, quantmode=quantmode, save_path=None)
             torch.save(q_rates[x], cache_path)
-            print(f"Saved {quantmode} outlier data to {cache_path}")
+            print(f"Saved {outlier_label} outlier data to {cache_path}")
 
         if 'target_bpw' not in qscheme:
             all_rates = q_rates[probe_bit]
@@ -171,7 +190,7 @@ def reconstruct_moe_from_existing(model, layer, layer_idx, inps,
             rates = analyze_neuron_activations(expert.act_fn, inps, ori_gate_proj_weights, ori_up_proj_weights, sparsity=analyze_sparsity)
         elif args.rank_mode == "energy":
             rates = analyze_expert_energy(expert, inps)
-        elif args.rank_mode == "quant_outlier":
+        elif args.rank_mode == "quant_outlier" or args.rank_mode in turboquant_outlier_modes:
             rates = all_rates[expert_idx]
         elif args.rank_mode == "random":
             rates = torch.randn(layer.mlp.intermediate_size, device=device)
