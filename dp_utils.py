@@ -191,6 +191,24 @@ def precompute_block_losses_global(
 
     return block_losses, bit_to_idx
 
+def get_sorted_and_block_losses(rates, bits, num_blocks):
+    """
+    Sort neurons using get_unified_sorted_idx_general and compute block losses.
+
+    Args:
+        rates: Dict of {bit: rate_array}
+        bits: List of bits
+        num_blocks: Number of blocks (s)
+
+    Returns:
+        sorted_idx: Sorted neuron indices
+        block_losses: Array of shape (len(bits), num_blocks)
+        bit_to_idx: Mapping from bit to index
+    """
+    sorted_idx = get_unified_sorted_idx_general(rates, bits)
+    block_losses, bit_to_idx = precompute_block_losses_general(sorted_idx, rates, bits, num_blocks)
+    return sorted_idx, block_losses, bit_to_idx
+
 def enum_optimal_m_scheme_separate_fast(rates, s, target_bpw, epsilon=0):
     bits = list(rates.keys())
     n_neurons = len(rates[bits[0]])
@@ -999,20 +1017,339 @@ def test_global_dp_utils():
         print(f"  Expert {expert_idx}: {dict(sorted(expert_bit_counts[expert_idx].items()))}")
 
 
+def plot_bit_overlap(
+    model_id: str,
+    layer_idx: int,
+    quant_types: List[str],
+    expert_idx: int = 0,
+    outlier_bits: set = None,
+    use_0bit: bool = True,
+    save_dir: str = None,
+    dir_suffix: str = ""
+):
+    """
+    Visualize neuron loss overlap across different bit widths in a single plot with subfigures for each quant type.
+    X-axis: loss value, Y-axis: bit width (0-4), showing all neuron loss points.
+
+    Args:
+        model_id: Model identifier
+        layer_idx: Layer index
+        quant_types: List of quantization types (e.g., ["gptq", "turboquant"])
+        expert_idx: Expert index
+        outlier_bits: Set of bit widths to load, defaults to {1,2,3,4}
+        use_0bit: Whether to extrapolate and include 0bit
+        save_dir: Directory to save plot, defaults to 'plot/bit_overlap'
+        dir_suffix: Suffix for directory
+    """
+    if outlier_bits is None:
+        outlier_bits = {1, 2, 3, 4}
+
+    n_quants = len(quant_types)
+    all_rates = []
+
+    for quant_type in quant_types:
+        print(f"Plotting bit overlap: model={model_id}, layer={layer_idx}, quant={quant_type}, expert={expert_idx}")
+
+        cache_dir = f"quant_outlier_{quant_type}/{model_id}{dir_suffix}"
+        rates = {}
+
+        # Load data for each bit
+        for x in outlier_bits:
+            cache_path = os.path.join(cache_dir, f"{model_id}_L{layer_idx}_b{x}.pt")
+            if os.path.exists(cache_path):
+                try:
+                    import torch
+                    cached_data = torch.load(cache_path, map_location='cpu')
+                    print(f"Loading cached data for layer {layer_idx}, wbits={x}")
+                    rates[x] = cached_data[expert_idx]
+                except Exception as e:
+                    print(f"Failed to load cached data for bit {x}: {e}")
+
+        if not rates:
+            print(f"No data loaded for {quant_type}!")
+            all_rates.append(None)
+            continue
+
+        # Extrapolate 0bit if needed
+        if use_0bit:
+            # Format rates for extrapolate_0bit_loss
+            rates_for_extrap = {b: [rates[b]] for b in rates}
+            rates_0 = extrapolate_0bit_loss(rates_for_extrap, quant_type=quant_type, save_plots=False)
+            rates[0] = rates_0[0]
+
+        all_rates.append(rates)
+
+    # Create figure with subplots
+    _, axes = plt.subplots(1, n_quants, figsize=(12 * n_quants, 7), sharey=True)
+    if n_quants == 1:
+        axes = [axes]
+
+    # Get common bits from first valid rates
+    bits_sorted = None
+    for rates in all_rates:
+        if rates is not None:
+            bits_sorted = sorted(rates.keys())
+            break
+    if bits_sorted is None:
+        print("No valid data loaded!")
+        plt.close()
+        return
+
+    # Use a colormap for different bits
+    cmap = plt.get_cmap('tab10', len(bits_sorted))
+
+    # Plot each quant type in its own subplot
+    for ax_idx, (quant_type, rates) in enumerate(zip(quant_types, all_rates)):
+        ax = axes[ax_idx]
+
+        if rates is None:
+            ax.text(0.5, 0.5, 'No Data', ha='center', va='center', transform=ax.transAxes)
+            ax.set_title(f'{quant_type}', fontsize=14)
+            continue
+
+        n_neurons = len(rates[bits_sorted[0]])
+
+        # Plot each bit
+        for bit_idx, bit in enumerate(bits_sorted):
+            # Get rate values for this bit
+            rate_values = []
+            for neuron_idx in range(n_neurons):
+                val = rates[bit][neuron_idx]
+                if hasattr(val, 'item'):
+                    val = val.item()
+                rate_values.append(val)
+
+            # Add jitter on y-axis for better visualization of overlapping points
+            y_pos = np.full(n_neurons, float(bit))
+            y_jitter = y_pos
+
+            ax.scatter(rate_values, y_jitter,
+                       color=cmap(bit_idx),
+                       s=100, alpha=0.2,
+                       label=f'{bit}bit')
+
+        ax.set_xlabel('Loss (log scale)', fontsize=12)
+        ax.set_title(f'{quant_type}', fontsize=14)
+        ax.set_xscale('log')
+        ax.grid(True, alpha=0.3, axis='x')
+        ax.legend(markerscale=2)
+
+    # Set y-axis label only on first subplot
+    axes[0].set_ylabel('Bit Width', fontsize=12)
+    axes[0].set_yticks(bits_sorted, [f'{b}bit' for b in bits_sorted])
+
+    plt.suptitle(f'Bit Loss Overlap\n{model_id} Layer {layer_idx} Expert {expert_idx}', fontsize=14, y=1.02)
+    plt.tight_layout()
+
+    # Save plot
+    if save_dir is None:
+        save_dir = 'plot/bit_overlap' + dir_suffix
+    os.makedirs(save_dir, exist_ok=True)
+    quant_str = '_'.join(quant_types)
+    save_path = os.path.join(save_dir, f'{model_id}_{quant_str}_L{layer_idx}_exp{expert_idx}_overlap.png')
+    plt.savefig(save_path, dpi=150, bbox_inches='tight')
+    print(f"Plot saved to {save_path}")
+    plt.close()
+
+
+def plot_block_losses_overlap(
+    model_id: str,
+    layer_idx: int,
+    quant_types: List[str],
+    num_blocks: int = 8,
+    outlier_bits: set = None,
+    use_0bit: bool = True,
+    save_dir: str = None,
+    dir_suffix: str = ""
+):
+    """
+    Visualize block loss overlap across different bit widths in a single plot with subfigures for each quant type.
+    X-axis: block loss value, Y-axis: bit width (0-4), showing all block loss points from all experts.
+
+    Args:
+        model_id: Model identifier
+        layer_idx: Layer index
+        quant_types: List of quantization types (e.g., ["gptq", "turboquant"])
+        num_blocks: Number of blocks per expert (s)
+        outlier_bits: Set of bit widths to load, defaults to {1,2,3,4}
+        use_0bit: Whether to extrapolate and include 0bit
+        save_dir: Directory to save plot, defaults to 'plot/block_losses_overlap'
+        dir_suffix: Suffix for directory
+    """
+    if outlier_bits is None:
+        outlier_bits = {1, 2, 3, 4}
+
+    n_quants = len(quant_types)
+    all_block_data = []
+
+    for quant_type in quant_types:
+        print(f"Plotting block losses: model={model_id}, layer={layer_idx}, quant={quant_type}")
+
+        cache_dir = f"quant_outlier_{quant_type}/{model_id}{dir_suffix}"
+
+        # First, load one bit to get number of experts
+        n_experts = None
+        bits_sorted = None
+        for x in outlier_bits:
+            cache_path = os.path.join(cache_dir, f"{model_id}_L{layer_idx}_b{x}.pt")
+            if os.path.exists(cache_path):
+                try:
+                    import torch
+                    cached_data = torch.load(cache_path, map_location='cpu')
+                    n_experts = len(cached_data)
+                    break
+                except Exception as e:
+                    pass
+
+        if n_experts is None:
+            print(f"No data loaded for {quant_type}!")
+            all_block_data.append(None)
+            continue
+
+        # Load cached data for all bits first
+        bit_data = {}
+        bits_to_load = set(outlier_bits)
+        # If use_0bit is True, try to load 0bit from cache first
+        if use_0bit:
+            bits_to_load.add(0)
+
+        for x in bits_to_load:
+            cache_path = os.path.join(cache_dir, f"{model_id}_L{layer_idx}_b{x}.pt")
+            if os.path.exists(cache_path):
+                try:
+                    import torch
+                    cached_data = torch.load(cache_path, map_location='cpu')
+                    bit_data[x] = cached_data
+                except Exception:
+                    pass
+
+        # Collect all expert rates
+        all_expert_rates = []
+        for expert_idx in range(n_experts):
+            rates = {}
+            for x in bit_data:
+                rates[x] = bit_data[x][expert_idx]
+            if rates:
+                all_expert_rates.append(rates)
+
+        if not all_expert_rates:
+            print(f"No data loaded for {quant_type}!")
+            all_block_data.append(None)
+            continue
+
+        # Get sorted indices and block losses for each expert, keep separate
+        bits_sorted = sorted(all_expert_rates[0].keys())
+        all_block_losses = []
+        for rates in all_expert_rates:
+            _, block_losses, bit_to_idx = get_sorted_and_block_losses(rates, bits_sorted, num_blocks)
+            all_block_losses.append(block_losses)
+
+        if all_block_losses:
+            all_block_data.append((bits_sorted, bit_to_idx, all_block_losses))
+        else:
+            all_block_data.append(None)
+
+    # Create figure with subplots
+    _, axes = plt.subplots(n_quants, 1, figsize=(10 * n_quants, 12), sharey=True)
+    if n_quants == 1:
+        axes = [axes]
+
+    # Get common bits from first valid data
+    bits_sorted = None
+    for data in all_block_data:
+        if data is not None:
+            bits_sorted = data[0]
+            break
+    if bits_sorted is None:
+        print("No valid data loaded!")
+        plt.close()
+        return
+
+    # Use a colormap for different bits
+    cmap = plt.get_cmap('tab10', len(bits_sorted))
+
+    # Plot each quant type in its own subplot
+    for ax_idx, (quant_type, data) in enumerate(zip(quant_types, all_block_data)):
+        ax = axes[ax_idx]
+
+        if data is None:
+            ax.text(0.5, 0.5, 'No Data', ha='center', va='center', transform=ax.transAxes)
+            ax.set_title(f'{quant_type}', fontsize=14)
+            continue
+
+        _, bit_to_idx, all_block_losses = data
+        n_experts = len(all_block_losses)
+        expert_spacing = 0.8 / max(n_experts, 1)  # Spread experts within 0.6 range around bit
+        expert_cmap = plt.get_cmap('viridis', n_experts)  # Softer gradient for experts
+
+        for bit_idx, bit in enumerate(bits_sorted):
+            for expert_idx, block_losses in enumerate(all_block_losses):
+                loss_values = block_losses[bit_to_idx[bit], :]
+
+                y_pos = float(bit) - 0.4 + expert_idx * expert_spacing + expert_spacing / 2
+
+                expert_color = expert_cmap(expert_idx)
+                r, g, b, a = expert_color
+                combined_color = (r, g, b, 0.5)
+
+                label = f'{bit}bit' if expert_idx == 0 else ""
+                ax.scatter(loss_values, np.full(len(loss_values), y_pos),
+                           color=combined_color,
+                           s=40, alpha=0.5,
+                           label=label)
+
+        ax.set_xlabel('Block Loss (log scale)', fontsize=12)
+        ax.set_title(f'{quant_type}', fontsize=14)
+        ax.set_xscale('log')
+        ax.grid(True, alpha=0.3, axis='x')
+        ax.legend(markerscale=2)
+
+    axes[0].set_ylabel('Bit Width', fontsize=12)
+    axes[0].set_yticks(bits_sorted, [f'{b}bit' for b in bits_sorted])
+
+    plt.suptitle(f'Block Loss Overlap ({num_blocks} blocks/expert, all experts)\n{model_id} Layer {layer_idx}', fontsize=14, y=1.02)
+    plt.tight_layout()
+
+    # Save plot
+    if save_dir is None:
+        save_dir = f'plot/block_losses_overlap_{model_id}_{dir_suffix}'
+    os.makedirs(save_dir, exist_ok=True)
+    quant_str = '_'.join(quant_types)
+    save_path = os.path.join(save_dir, f'{quant_str}_L{layer_idx}_block_overlap.png')
+    plt.savefig(save_path, dpi=150, bbox_inches='tight')
+    print(f"Plot saved to {save_path}")
+    plt.close()
+
 if __name__ == "__main__":
     # test_read_rates_from_file()
     # test_dp_utils()
     # test_global_dp_utils()
 
-    for q in ["turboquant"]:
-        for s in ["", "-whole-pow2"]:
-            plot_neuron_rates_across_bits(
-                model_id="deepseek-v1-moe-16b",
-                layer_idx=2,
-                quant_type=q,
-                expert_idx=2,
-                p=10,
-                outlier_bits={0, 1, 2, 3, 4},
-                use_0bit=True,
-                dir_suffix=s
-            )
+    # for l in range(1, 20):
+    #     for q in ["turboquant"]:
+    #         for s in ["", "-whole-pow2"]:
+    #             plot_neuron_rates_across_bits(
+    #             model_id="deepseek-v1-moe-16b",
+    #             layer_idx=l,
+    #             quant_type=q,
+    #             expert_idx=2,
+    #             p=10,
+    #             outlier_bits={0, 1, 2, 3, 4},
+    #             use_0bit=True,
+    #             dir_suffix=s
+    #         )
+
+    # Example: Plot bit overlap visualization
+    for l in range(1, 27):
+            # for s in ["", "-whole-pow2"]:
+                # plot_bit_overlap(
+                plot_block_losses_overlap(
+                    model_id="deepseek-v1-moe-16b",
+                    layer_idx=l,
+                    quant_types=["gptq", "turboquant"],
+                    outlier_bits={1, 2, 3, 4},
+                    use_0bit=True,
+                    dir_suffix="-whole-pow2"
+                )
+    
+    
