@@ -72,9 +72,9 @@ def reconstruct_moe_from_existing(model, layer, layer_idx, inps,
         outlier_label = args.rank_mode if turboquant_outlier_mode else quantmode
         print(f"simulate {outlier_label} outlier_bits {outlier_bits}")
 
-        cache_root = f"{args.rank_mode}_{quantmode}"
+        cache_root = f"quant_outlier_{quantmode}"
         cache_dir = f"{cache_root}/{turboquant_outlier_mode}/{model.model_id}"
-        print(f"cache_dir: {cache_dir}")
+        # print(f"cache_dir: {cache_dir}")
         os.makedirs(cache_dir, exist_ok=True)
 
         for x in sorted(outlier_bits, reverse=True):  ## 0 bit should be extrapolated from other bit data, so we compute it at last
