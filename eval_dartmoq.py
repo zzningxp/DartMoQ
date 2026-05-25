@@ -215,23 +215,23 @@ def get_qwen3_moe(model_path):
 
 def get_qwen3_30b_a3b(model_path):
     from transformers import Qwen3MoeForCausalLM
-    device_map = {
-                "model.embed_tokens": "cuda:0",
-                "model.rotary_emb": "cuda:0",
-                **{
-                    f"model.layers.{k}": "cuda:0" for k in range(0, 16)
-                },
-                **{
-                    f"model.layers.{k}": "cuda:1" for k in range(16, 32)
-                },
-                **{
-                    f"model.layers.{k}": "cpu" for k in range(32, 48)
-                },
-                "model.norm": "cpu",
-                "lm_head": "cpu",
-            }
+    # device_map = {
+    #             "model.embed_tokens": "cuda:0",
+    #             "model.rotary_emb": "cuda:0",
+    #             **{
+    #                 f"model.layers.{k}": "cuda:0" for k in range(0, 16)
+    #             },
+    #             **{
+    #                 f"model.layers.{k}": "cuda:1" for k in range(16, 32)
+    #             },
+    #             **{
+    #                 f"model.layers.{k}": "cpu" for k in range(32, 48)
+    #             },
+    #             "model.norm": "cpu",
+    #             "lm_head": "cpu",
+    #         }
     # print(device_map)
-    # device_map = 'auto'
+    device_map = 'auto'
     model = Qwen3MoeForCausalLM.from_pretrained(
         model_path,
         torch_dtype=torch.bfloat16,

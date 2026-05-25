@@ -62,7 +62,7 @@ def reconstruct_moe_from_existing(model, layer, layer_idx, inps,
     }
     if args.rank_mode == "quant_outlier" or args.rank_mode in turboquant_outlier_modes:
         tick0 = time.time()
-        turboquant_outlier_mode = turboquant_outlier_modes.get(args.rank_mode)
+        turboquant_outlier_mode = turboquant_outlier_modes.get(args.rank_mode, "")
 
         q_rates = {}
         if 'target_bpw' not in qscheme:
