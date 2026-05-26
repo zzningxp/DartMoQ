@@ -40,9 +40,13 @@ def analyze_experts_activation(layer, layer_idx, inps, K, modeltype, save_path=N
             # print(top_indices.shape)
             del router_logits, hidden_states
     else:
-        with torch.no_grad():
-            top_indices, top_values, _ = layer.mlp.gate(inps)
-            # print(top_indices.shape)
+        if modeltype == 'deepseek_v3':
+            with torch.no_grad():
+                top_indices, top_values = layer.mlp.gate(inps)
+        else:
+            with torch.no_grad():
+                top_indices, top_values, _ = layer.mlp.gate(inps)
+                # print(top_indices.shape)
 
     for i in range(total_samples):
         activation_markers[top_indices[i]] += 1.0

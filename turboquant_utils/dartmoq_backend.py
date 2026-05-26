@@ -167,26 +167,26 @@ def turboquant_outlier_activation_aware_rates(
 
     up_out = F.linear(flat_states, up_w)
     gate_out = F.linear(flat_states, gate_w)
-    z = expert.act_fn(gate_out) * up_out
+    z_w = expert.act_fn(gate_out) * up_out
+    zw_norm2 = z_w.pow(2).mean(dim=0)
 
     if mode == "aw":
         up_loss = (up_w - up_q).pow(2)
         gate_loss = (gate_w - gate_q).pow(2)
         down_loss = (down_w - down_q).pow(2)
-        z_energy = z.pow(2).mean(dim=0)
         weight_score = up_loss.sum(dim=1) + gate_loss.sum(dim=1) + down_loss.sum(dim=0)
-        return weight_score * z_energy
+        return weight_score * zw_norm2
+    else:
+        up_q_out = F.linear(flat_states, up_q)
+        gate_q_out = F.linear(flat_states, gate_q)
+        z_q = expert.act_fn(gate_q_out) * up_q_out
 
-    up_q_out = F.linear(flat_states, up_q)
-    gate_q_out = F.linear(flat_states, gate_q)
-    z_q = expert.act_fn(gate_q_out) * up_q_out
+        zq_norm2 = z_q.pow(2).mean(dim=0)
+        zz = (z_w * z_q).mean(dim=0)
 
-    z2 = z.pow(2).mean(dim=0)
-    zq2 = z_q.pow(2).mean(dim=0)
-    zzq = (z * z_q).mean(dim=0)
-
-    down_norm2 = down_w.pow(2).sum(dim=0)
-    qdown_norm2 = down_q.pow(2).sum(dim=0)
-    down_dot = (down_w * down_q).sum(dim=0)
-    rates = z2 * down_norm2 + zq2 * qdown_norm2 - 2 * zzq * down_dot
-    return rates.clamp_min(0)
+        wdown_norm2 = down_w.pow(2).sum(dim=0)
+        qdown_norm2 = down_q.pow(2).sum(dim=0)
+        down_dot = (down_w * down_q).sum(dim=0)
+        rates = zw_norm2 * wdown_norm2 + zq_norm2 * qdown_norm2 - 2 * zz * down_dot
+        # rates = ((z_w * down_w - z_q * down_q)).norm2() ??
+        return rates.clamp_min(0)
