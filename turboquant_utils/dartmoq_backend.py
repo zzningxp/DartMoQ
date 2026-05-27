@@ -115,7 +115,6 @@ def turbo_fake_quant_linear(
         rotation=rotation,
     )
 
-    # 原地 copy，保持 nn.Parameter 对象本身不变，减少对上层模型结构的影响。
     # if update == False, will not update the weight.
     quant_error = (linear.weight.data - qweight).pow(2)
     # quant_error = (linear.weight.data - qweight).abs()
@@ -136,7 +135,7 @@ def turboquant_outlier_activation_aware_rates(
 ) -> torch.Tensor:
     """Compute per-neuron TurboQuant outlier scores for one MoE expert."""
 
-    if mode not in ("aw", "output"):
+    if mode not in ("activation", "innerproduct"):
         raise ValueError(f"unknown TurboQuant outlier mode: {mode!r}")
 
     up_w = expert.up_proj.weight.data.float()
@@ -170,13 +169,13 @@ def turboquant_outlier_activation_aware_rates(
     z_w = expert.act_fn(gate_out) * up_out
     zw_norm2 = z_w.pow(2).mean(dim=0)
 
-    if mode == "aw":
+    if mode == "activation":
         up_loss = (up_w - up_q).pow(2)
         gate_loss = (gate_w - gate_q).pow(2)
         down_loss = (down_w - down_q).pow(2)
         weight_score = up_loss.sum(dim=1) + gate_loss.sum(dim=1) + down_loss.sum(dim=0)
         return weight_score * zw_norm2
-    else:
+    elif mode == "innerproduct":
         up_q_out = F.linear(flat_states, up_q)
         gate_q_out = F.linear(flat_states, gate_q)
         z_q = expert.act_fn(gate_q_out) * up_q_out

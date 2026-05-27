@@ -57,8 +57,8 @@ def reconstruct_moe_from_existing(model, layer, layer_idx, inps,
     probe_bit = 2
     dpscheme_list = None
     turboquant_outlier_modes = {
-        "turboquant_outlier_aw": "aw",
-        "turboquant_outlier_output": "output",
+        "turboquant_activation": "activation",
+        "turboquant_innerproduct": "innerproduct",
     }
     if args.rank_mode == "quant_outlier" or args.rank_mode in turboquant_outlier_modes:
         tick0 = time.time()
@@ -92,7 +92,7 @@ def reconstruct_moe_from_existing(model, layer, layer_idx, inps,
                 q_rates[0] = extrapolate_0bit_loss(q_rates, quant_type=outlier_label)
                 q_rates[0] = [torch.from_numpy(q_rates[0][i]).to(device) for i in range(len(q_rates[0]))]
             else:
-                print(f"Computing {outlier_label} outlier for layer {layer_idx}, wbits={x}")
+                print(f"Computing {outlier_label} outlier for layer {layer_idx}, wbits={x}, with inps shape {inps.shape}")
                 if turboquant_outlier_mode:
                     q_rates[x] = analyze_turboquant_outlier_activation_aware(
                         layer,

@@ -56,12 +56,12 @@ if __name__ == '__main__':
     )
     parser.add_argument(        '--rank-mode',
         type=str, default=None,
-        help='Rank mode for MoE reconstruction. activation|energy|quant_outlier|turboquant_outlier_aw|turboquant_outlier_output|random|neuron_index'
+        help='Rank mode for MoE reconstruction. activation|energy|quant_outlier|turboquant_activition|turboquant_innerproduct|random|neuron_index'
     )
     parser.add_argument(        '--standby-layer-cpu', action='store_true', default=False,
         help='Whether to move quant layers to CPU before and after quantization.' 
     )
-    parser.add_argument(        '--use-hybrid-moe', action='store_true', default=False,
+    parser.add_argument(        '--use-hybrid-moe', action='store_true', default=True,
         help='Use hybrid MoE structure with two-level experts.' 
     )
     parser.add_argument(        '--quantmode', type=str, default='gptq', choices=['gptq', 'turboquant'],

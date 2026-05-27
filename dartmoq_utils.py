@@ -418,12 +418,12 @@ def analyze_turboquant_outlier_activation_aware(
     hidden_states,
     ori_expert_num,
     wbits=2,
-    mode="aw",
+    mode="activation",
     if_dense=False,
     save_path=None,
 ):
     print(f"analyze_turboquant_outlier_{mode} layer: {layer_idx} with {wbits} bits")
-    assert mode in ("aw", "output"), f"Unknown TurboQuant outlier mode: {mode}"
+    assert mode in ("activation", "innerproduct"), f"Unknown TurboQuant outlier mode: {mode}"
 
     groupsize = 128
     flat_states = hidden_states.reshape(-1, hidden_states.shape[-1]).float()
