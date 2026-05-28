@@ -88,35 +88,40 @@ def eval_zero_shot(model, task_list, eval_method="hf", tokenizer=None):
         tqdm.tqdm,
         mininterval=5.0,
     )
-    eval_batch_size = 8
 
-    # Disable cache - loglikelihood tasks don't need it, and it causes compatibility issues
     use_cache_original = model.config.use_cache
     model.config.use_cache = False
 
-    # Only support hf method now
-    from lm_eval.models.huggingface import HFLM
-    eval_model = HFLM(
-        pretrained=model,
-        trust_remote_code=True,
-        device="cuda",
-        batch_size=eval_batch_size,
-    )
-    eval_model.model.config.use_cache = False
-
+    tick0 = time.time()
     for task in task_list:
-        tick0 = time.time()
-        results = evaluator.simple_evaluate(
-            model=eval_model,
-            tasks=[task],
-            num_fewshot=5,
-            batch_size="auto",
-            device="cuda"
-        )
-        tick1 = time.time()
+        for eval_batch_size in [8, 4, 2, 1]:
+            try:
+            # Only support hf method now
+                print(f"Evaluating {task} with batch size {eval_batch_size}")
+                from lm_eval.models.huggingface import HFLM
+                eval_model = HFLM(
+                    pretrained=model,
+                    trust_remote_code=True,
+                    device="cuda",
+                    batch_size=eval_batch_size,
+                )
+                eval_model.model.config.use_cache = False
 
-        print(task, results["results"][task], f"time: {tick1 - tick0}s")
+                tick_task = time.time()
+                results = evaluator.simple_evaluate(
+                    model=eval_model,
+                    tasks=[task],
+                    num_fewshot=5,
+                    batch_size="auto",
+                    device="cuda"
+                )
+                tick1 = time.time()
 
+                print(task, results["results"][task], f"time: {tick1 - tick_task}s")
+                break
+            except:
+                print(f"Error evaluating {task} with batch size {eval_batch_size}")
+                pass
     tick1 = time.time()
     print(f"Zero-shot evaluation time: {tick1 - tick0}")
 
