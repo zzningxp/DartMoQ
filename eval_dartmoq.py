@@ -13,7 +13,7 @@ def cmoe_ppl_eval(model, testloader, eval_set, args):
     tick0 = time.time()
     use_cache = model.config.use_cache
     model.config.use_cache = False
-    
+
     testenc = testloader.input_ids
     # print("testenc.shape: ", testenc.shape)
     nsamples = testenc.shape[1] // model.seqlen
@@ -39,7 +39,7 @@ def cmoe_ppl_eval(model, testloader, eval_set, args):
     #         hooks.append(model.model.layers[0].mlp.experts[i].gate_proj)
     # if hasattr(model.config, 'n_routed_experts'): ## Deepseek-v3 / Moonlight
     #     for i in range(model.config.n_routed_experts):
-    #         # for j 
+    #         # for j
     #         hooks.append(model.model.layers[1].mlp.experts[i].up_proj)
     #         hooks.append(model.model.layers[1].mlp.experts[i].gate_proj)
     # hooks.append(model.model.layers[0].self_attn.kv_a_proj_with_mqa)
@@ -47,7 +47,7 @@ def cmoe_ppl_eval(model, testloader, eval_set, args):
     # hooks.append(model.model.layers[0].self_attn.q_proj)
     # hooks.append(model.model.layers[0].self_attn.o_proj)
     # hooks.append(model.model.layers[0].mlp)
-    # 
+    #
     # print(model)
     nlls = []
 
@@ -70,7 +70,7 @@ def cmoe_ppl_eval(model, testloader, eval_set, args):
 
         for hook in hooks:
             hook_handles.pop().remove()
-    
+
     # print(nlls)
     ppl = torch.exp(torch.stack(nlls).sum() / (nsamples * model.seqlen))
     tick1 = time.time()
@@ -79,20 +79,35 @@ def cmoe_ppl_eval(model, testloader, eval_set, args):
 
     return ppl.item()
 
-def eval_zero_shot(model, task_list = ["arc_challenge", "arc_easy", "piqa", "boolq", "winogrande"]):
+def eval_zero_shot(model, task_list, eval_method="hf", tokenizer=None):
     tick0 = time.time()
     from lm_eval import tasks, evaluator, utils
+    import tqdm
+    from functools import partial
+    evaluator.tqdm = partial(
+        tqdm.tqdm,
+        mininterval=5.0,
+    )
+    eval_batch_size = 8
+
+    # Disable cache - loglikelihood tasks don't need it, and it causes compatibility issues
+    use_cache_original = model.config.use_cache
+    model.config.use_cache = False
+
+    # Only support hf method now
     from lm_eval.models.huggingface import HFLM
-    model = HFLM(
+    eval_model = HFLM(
         pretrained=model,
         trust_remote_code=True,
         device="cuda",
+        batch_size=eval_batch_size,
     )
+    eval_model.model.config.use_cache = False
 
     for task in task_list:
         tick0 = time.time()
         results = evaluator.simple_evaluate(
-            model=model,
+            model=eval_model,
             tasks=[task],
             num_fewshot=5,
             batch_size="auto",
@@ -100,10 +115,13 @@ def eval_zero_shot(model, task_list = ["arc_challenge", "arc_easy", "piqa", "boo
         )
         tick1 = time.time()
 
-        print(task, results["results"][task], f"time: {tick1 - tick0}s") 
-    
+        print(task, results["results"][task], f"time: {tick1 - tick0}s")
+
     tick1 = time.time()
     print(f"Zero-shot evaluation time: {tick1 - tick0}")
+
+    # Restore original use_cache setting
+    model.config.use_cache = use_cache_original
 
 def get_llama(model):
     def skip(*args, **kwargs):
@@ -353,10 +371,10 @@ def load_model(model_path):
         model.model_id = 'moonlight'
         print(model_path.lower(), model.model_id)
     else:
-        assert False, "Model type not supported."
+        model, tokenizer = get_auto(model_path)
     model.eval()
     if not model.model_id:
-        model.model_id = getattr(model.config, '_name_or_path', None) or getattr(model.config, 'name_or_path', None) or args.model
+        model.model_id = getattr(model.config, '_name_or_path', None) or getattr(model.config, 'name_or_path', None) or model_path
         model.model_id = str(model.model_id).split('/')[-1].split('\\')[-1]
     return model, tokenizer
 
@@ -378,10 +396,14 @@ if __name__ == '__main__':
     parser.add_argument(        '--val-samples',
         type=int, default=256, help='Evaluate performance on x samples.'
     )
+    parser.add_argument(        '--eval-method',
+        type=str, default='hf', choices=['hf', 'sglang', 'vllm'],
+        help='Evaluation method: hf (HuggingFace), sglang (custom in-memory wrapper), or vllm.'
+    )
 
 
     args = parser.parse_args()
-    
+
     print("", args.model)
 
     if not args.eval_zero:
@@ -407,17 +429,10 @@ if __name__ == '__main__':
             ppl.append(f"{dataset}: {ppl_i}")
 
     if args.eval_zero:
-
-        tokenizer = AutoTokenizer.from_pretrained(args.model)
-        model = AutoModelForCausalLM.from_pretrained(
-            args.model,
-            torch_dtype=torch.float16,
-            device_map="auto",
-            low_cpu_mem_usage=True,
-            trust_remote_code=True
-        )
+        print("Loading model: ", args.model.lower())
+        model, tokenizer = load_model(args.model)
 
         task_list = ["arc_challenge", "arc_easy", "piqa", "boolq", "winogrande", "sciq", "mnli", "hellaswag", "gsm8k", "mmlu", "triviaqa"]
         # task_list = ["arc_challenge", "arc_easy", "boolq", "winogrande", "piqa", "sciq", "hellaswag", "mmlu", "gsm8k", "triviaqa"]
         # task_list = ["mnli"]
-        eval_zero_shot(model, task_list)
+        eval_zero_shot(model, task_list, eval_method=args.eval_method, tokenizer=tokenizer)

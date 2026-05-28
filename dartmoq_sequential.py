@@ -116,7 +116,7 @@ def construct_moe(model, moe_model_flag, layer, layer_idx, inp,
     return moe_out
 
 @torch.no_grad()
-def cmoe_sequential(model, tokenizer, dataloader, args):
+def dartmoq_sequential(model, tokenizer, dataloader, args, test_ppl=True):
     print('Starting ...')
 
     use_cache = model.config.use_cache
@@ -176,7 +176,6 @@ def cmoe_sequential(model, tokenizer, dataloader, args):
     # model.cuda()
     # layers.cuda()
 
-    # MoE Carving
     moe_model_flag = False
     for layer in layers:
         moe_model_flag = moe_model_flag or hasattr(layer.mlp, 'gate') or hasattr(layer.mlp, 'experts')
@@ -316,15 +315,16 @@ def cmoe_sequential(model, tokenizer, dataloader, args):
         #     print(f"{name:<40} → {param.device}")
 
     # print('Training_free_ppl:')
-    pre_ppl = []
-    datasets = ['wikitext2', 'c4']
-    for dataset in datasets:
-        dataloader, testloader = get_loaders(
-            dataset, seed=args.seed, tokenizer=tokenizer, seqlen=model.seqlen
-        )
-        print(dataset)
-        eval_set = dataset
-        ppl_i = cmoe_ppl_eval(model, testloader, eval_set, args)
-        pre_ppl.append(f"{dataset}: {ppl_i}")
-    
+    if test_ppl:
+        pre_ppl = []
+        datasets = ['wikitext2', 'c4']
+        for dataset in datasets:
+            dataloader, testloader = get_loaders(
+                dataset, seed=args.seed, tokenizer=tokenizer, seqlen=model.seqlen
+            )
+            print(dataset)
+            eval_set = dataset
+            ppl_i = cmoe_ppl_eval(model, testloader, eval_set, args)
+            pre_ppl.append(f"{dataset}: {ppl_i}")
+
     return model

@@ -1,11 +1,10 @@
 import time
-
 import torch
 import torch.nn as nn
 
 from tqdm import *
 
-import os 
+import os
 
 import copy
 
@@ -13,6 +12,7 @@ from dartmoq_utils import *
 from dartmoq_sequential import *
 # from sft_utils import simple_sft
 from eval_dartmoq import eval_zero_shot, load_model
+from dartmoq_io import save_dartmoq_model, load_dartmoq_model
 
 def save_results(file_name, results):
     if results is not str:
@@ -67,6 +67,13 @@ if __name__ == '__main__':
     parser.add_argument(        '--quantmode', type=str, default='gptq', choices=['gptq', 'turboquant'],
         help='Quantization mode: gptq (default) or turboquant.'
     )
+    parser.add_argument(        '--eval-method',
+        type=str, default='hf', choices=['hf', 'custom'],
+        help='Evaluation method: hf (HuggingFace), custom (custom in-memory wrapper),.'
+    )
+    parser.add_argument(        '--save-model', action='store_true', default=False,
+        help='Whether to save the model to disk.'
+    )
 
     args = parser.parse_args()
     
@@ -91,21 +98,19 @@ if __name__ == '__main__':
     tick = time.time()
 
     with torch.no_grad():
-        carved_model = cmoe_sequential(model, tokenizer, dataloader, args)
-    save_carved_model = False
-    if save_carved_model:
-        carved_save_dir = f"model/carved_{model.config.model_type}_e{args.slices}_{args.quant_scheme}"
-        print(carved_model)
-        carved_model.save_pretrained(carved_save_dir)
-        tokenizer.save_pretrained(carved_save_dir)
+        dartmoq_model = dartmoq_sequential(model, tokenizer, dataloader, args) #, test_ppl=False)
+    
+    if args.save_model:
+        save_dir = f"models/dartmoq_{model.config.model_type}_{args.rank_mode}_{args.quant_scheme}"
+        print("###: Save dartmoq model to: ", save_dir)
+        save_dartmoq_model(dartmoq_model, tokenizer, save_dir, args)
 
     if args.eval_zero:
-        task_list = ["arc_challenge", "arc_easy", "piqa", "boolq", "winogrande", "sciq", "mnli", "hellaswag", "gsm8k", "mmlu", "triviaqa"]
-        # task_list = ["mnli", "gsm8k", "mmlu", "triviaqa"]
-        # task_list = ["arc_challenge", "arc_easy"]
-        eval_zero_shot(model, task_list)
-    
-    # print(carved_model)
+        task_list = ["arc_challenge", "arc_easy", "piqa", "boolq", "winogrande", "sciq", "mnli", "hellaswag", "mmlu"]
+        # task_list = ["gsm8k", "triviaqa"]
+        eval_zero_shot(dartmoq_model, task_list, eval_method=args.eval_method, tokenizer=tokenizer)
+
+    # print(model)
 
     tick1 = time.time()
 

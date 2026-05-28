@@ -30,6 +30,7 @@ import sys
 from typing import Any
 from .quantize import turboquant_quantize
 
+import time
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -188,4 +189,5 @@ def turboquant_outlier_activation_aware_rates(
         down_dot = (down_w * down_q).sum(dim=0)
         rates = zw_norm2 * wdown_norm2 + zq_norm2 * qdown_norm2 - 2 * zz * down_dot
         # rates = ((z_w * down_w - z_q * down_q)).norm2() ??
+        # time.sleep(0.1)
         return rates.clamp_min(0)
