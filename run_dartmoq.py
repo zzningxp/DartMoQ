@@ -78,6 +78,7 @@ if __name__ == '__main__':
     args = parser.parse_args()
     
     print("-" * 50)
+    print(f"Current start time: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())}")
     print("Loading model: (ppl)", args.model)
     print("slices/quant-scheme/rank-mode/moe-struct/quantmode: (ppl)", 
           args.slices, args.quant_scheme, args.rank_mode, "use_hybrid_moe" if args.use_hybrid_moe else " use_origin_moe", args.quantmode)
@@ -106,7 +107,8 @@ if __name__ == '__main__':
         save_dartmoq_model(dartmoq_model, tokenizer, save_dir, args)
 
     if args.eval_zero:
-        task_list = ["arc_challenge", "arc_easy", "piqa", "boolq", "winogrande", "sciq", "mnli", "hellaswag", "mmlu"]
+        # task_list = ["arc_challenge", "arc_easy", "piqa", "boolq", "winogrande", "mnli", "hellaswag", "mmlu", "sciq"]
+        task_list = ["mnli", "hellaswag", "mmlu", "sciq"]
         # task_list = ["gsm8k", "triviaqa"]
         eval_zero_shot(dartmoq_model, task_list, eval_method=args.eval_method, tokenizer=tokenizer)
 
@@ -114,6 +116,6 @@ if __name__ == '__main__':
 
     tick1 = time.time()
 
-    rt = time.time() - tick1
     print(f"Runtime of training-free construction (ppl): {tick1 - tick:.2f}")
-    # print(f"Runtime of fine-tuning construction: {rt:.2f}")
+    print(f"Current finish time: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())}")
+    time.sleep(120)
