@@ -16,6 +16,7 @@ import time
 import gc
 
 from gptq_utils import GPTQ, Quantizer, find_layers
+from turboquant_utils.dartmoq_backend import collect_expert_activation_inputs
 from turboquant_utils.dartmoq_backend import turbo_fake_quant_linear
 from turboquant_utils.dartmoq_backend import turboquant_outlier_activation_aware_rates
 
@@ -421,9 +422,10 @@ def analyze_turboquant_outlier_activation_aware(
     mode="activation",
     if_dense=False,
     save_path=None,
+    use_activation_hooks=False,
 ):
     print(f"analyze_turboquant_outlier_{mode} layer: {layer_idx} with {wbits} bits")
-    assert mode in ("activation", "innerproduct"), f"Unknown TurboQuant outlier mode: {mode}"
+    assert mode in ("activation", "innerproduct", "diagonal", "hessian", "qjl_sensitivity"), f"Unknown TurboQuant outlier mode: {mode}"
 
     groupsize = 128
     flat_states = hidden_states.reshape(-1, hidden_states.shape[-1]).float()
@@ -431,6 +433,12 @@ def analyze_turboquant_outlier_activation_aware(
     all_rates = []
     if if_dense:
         assert ori_expert_num == 1, "dense model n == 1"
+
+    expert_inputs = (
+        collect_expert_activation_inputs(layer, hidden_states, ori_expert_num, if_dense=if_dense)
+        if use_activation_hooks
+        else None
+    )
 
     for expert_idx in range(ori_expert_num):
         tick0 = time.time()
@@ -447,6 +455,9 @@ def analyze_turboquant_outlier_activation_aware(
             group_size=groupsize,
             seed=QSEED + layer_idx,
             rotation="qr",
+            hessian_samples=hidden_states.shape[0] if mode == "hessian" else None,
+            activation_inputs=expert_inputs[expert_idx] if expert_inputs is not None else None,
+            activation_sample_counts=expert_inputs[expert_idx]["sample_counts"] if expert_inputs is not None else None,
         )
 
         all_rates.append(rates)
@@ -472,7 +483,7 @@ def analyze_turboquant_outlier_activation_aware(
         plt.savefig(save_path)
         plt.close()
 
-    del flat_states
+    del flat_states, expert_inputs
     torch.cuda.empty_cache()
     gc.collect()
 

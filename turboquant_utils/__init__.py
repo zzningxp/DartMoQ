@@ -132,6 +132,7 @@ from .hash_table import (
 
 # DartMoQ 集成工具：只使用本项目内的 TurboQuant 源码
 from .dartmoq_backend import (
+    collect_expert_activation_inputs,
     get_linear_bit_from_dartmoq_quantizer,
     is_turbo_fake_quant_supported,
     turbo_fake_quant_linear,
@@ -211,6 +212,7 @@ __all__ = [
     "compute_bpw",
 
     # ============ DartMoQ 集成工具 ============
+    "collect_expert_activation_inputs",
     "get_linear_bit_from_dartmoq_quantizer",
     "is_turbo_fake_quant_supported",
     "quantize_linear_if_turbo_supported",

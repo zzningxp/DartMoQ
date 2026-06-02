@@ -58,7 +58,12 @@ def reconstruct_moe_from_existing(model, layer, layer_idx, inps,
     dpscheme_list = None
     turboquant_outlier_modes = {
         "turboquant_activation": "activation",
+        "turboquant_activation_hook": "activation",
         "turboquant_innerproduct": "innerproduct",
+        "turboquant_innerproduct_hook": "innerproduct",
+        "turboquant_diagonal_hook": "diagonal",
+        "turboquant_hessian_hook": "hessian",
+        "turboquant_qjl_sensitivity_hook": "qjl_sensitivity",
     }
     if args.rank_mode == "quant_outlier" or args.rank_mode in turboquant_outlier_modes:
         tick0 = time.time()
@@ -73,7 +78,8 @@ def reconstruct_moe_from_existing(model, layer, layer_idx, inps,
         print(f"simulate {outlier_label} outlier_bits {outlier_bits}")
 
         cache_root = f"quant_outlier_{quantmode}"
-        cache_dir = f"{cache_root}/{turboquant_outlier_mode}/{model.model_id}"
+        cache_mode = args.rank_mode if args.rank_mode.endswith("_hook") else turboquant_outlier_mode
+        cache_dir = f"{cache_root}/{cache_mode}/{model.model_id}"
         # print(f"cache_dir: {cache_dir}")
         os.makedirs(cache_dir, exist_ok=True)
 
@@ -102,6 +108,7 @@ def reconstruct_moe_from_existing(model, layer, layer_idx, inps,
                         wbits=x,
                         mode=turboquant_outlier_mode,
                         save_path=None,
+                        use_activation_hooks=args.rank_mode.endswith("_hook"),
                     )
                 else:
                     q_rates[x] = analyze_quant_outlier(layer, layer_idx, inps, ori_expert_num, wbits=x, quantmode=quantmode, save_path=None)
