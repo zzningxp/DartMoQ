@@ -274,8 +274,8 @@ def lowrank_compress_svd(weight_matrix, lowrank_sparsity, save_path=None):
     return low_rank_matrix.to(weight_matrix.dtype)
 
 @torch.no_grad()
-def analyze_quant_outlier(layer, layer_idx, hidden_states, ori_expert_num, wbits=2, quantmode='gptq', save_path=None):
-    print(f"analyze_quant_outlier layer: {layer_idx} with {wbits} bits")
+def analyze_gptq_quant_outlier(layer, layer_idx, hidden_states, ori_expert_num, wbits=2, quantmode='gptq', save_path=None):
+    print(f"analyze_gptq_quant_outlier layer: {layer_idx} with {wbits} bits")
     nsample = hidden_states.shape[0]
 
     gptq = {}
@@ -419,13 +419,13 @@ def analyze_turboquant_outlier_activation_aware(
     hidden_states,
     ori_expert_num,
     wbits=2,
-    mode="activation",
+    mode="innerproduct",
     if_dense=False,
     save_path=None,
     use_activation_hooks=False,
 ):
     print(f"analyze_turboquant_outlier_{mode} layer: {layer_idx} with {wbits} bits")
-    assert mode in ("activation", "innerproduct", "diagonal", "hessian", "qjl_sensitivity"), f"Unknown TurboQuant outlier mode: {mode}"
+    assert mode in ("innerproduct", "diagonal", "hessian", "qjl_sensitivity", "iipl"), f"Unknown TurboQuant outlier mode: {mode}"
 
     groupsize = 128
     flat_states = hidden_states.reshape(-1, hidden_states.shape[-1]).float()

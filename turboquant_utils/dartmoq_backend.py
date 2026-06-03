@@ -251,7 +251,7 @@ def turboquant_outlier_activation_aware_rates(
 ) -> torch.Tensor:
     """Compute per-neuron TurboQuant outlier scores for one MoE expert."""
 
-    if mode not in ("activation", "innerproduct", "diagonal", "hessian", "qjl_sensitivity"):
+    if mode not in ("iipl", "innerproduct", "diagonal", "hessian", "qjl_sensitivity"):
         raise ValueError(f"unknown TurboQuant outlier mode: {mode!r}")
     if sketch_dim <= 0:
         raise ValueError("sketch_dim must be > 0")
@@ -306,7 +306,7 @@ def turboquant_outlier_activation_aware_rates(
             return torch.zeros(up_w.shape[0], device=up_w.device, dtype=up_w.dtype)
         zw_norm2 = z_w.pow(2).mean(dim=0)
 
-        if mode == "activation":
+        if mode == "iipl":
             weight_score = up_loss.sum(dim=1) + gate_loss.sum(dim=1) + down_loss.sum(dim=0)
             return weight_score * zw_norm2
 
@@ -363,113 +363,120 @@ def turboquant_outlier_activation_aware_rates(
             down_score = z_energy * down_sketch.pow(2).sum(dim=0)
             return (up_score + gate_score + down_score).clamp_min(0)
 
-        up_q_out = F.linear(up_inputs, up_q)
-        gate_q_out = F.linear(gate_inputs, gate_q)
-        z_q = expert.act_fn(gate_q_out) * up_q_out
+        if mode == "innerproduct":
+            up_q_out = F.linear(up_inputs, up_q)
+            gate_q_out = F.linear(gate_inputs, gate_q)
+            z_q = expert.act_fn(gate_q_out) * up_q_out
 
-        zq_norm2 = z_q.pow(2).mean(dim=0)
-        zz = (z_w * z_q).mean(dim=0)
+            zq_norm2 = z_q.pow(2).mean(dim=0)
+            zz = (z_w * z_q).mean(dim=0)
 
-        wdown_norm2 = down_w.pow(2).sum(dim=0)
-        qdown_norm2 = down_q.pow(2).sum(dim=0)
-        down_dot = (down_w * down_q).sum(dim=0)
-        rates = zw_norm2 * wdown_norm2 + zq_norm2 * qdown_norm2 - 2 * zz * down_dot
-        return rates.clamp_min(0)
+            wdown_norm2 = down_w.pow(2).sum(dim=0)
+            qdown_norm2 = down_q.pow(2).sum(dim=0)
+            down_dot = (down_w * down_q).sum(dim=0)
+            rates = zw_norm2 * wdown_norm2 + zq_norm2 * qdown_norm2 - 2 * zz * down_dot
+            return rates.clamp_min(0)
+        
+        assert False, f"Unknown mode {mode}"
 
-    up_sq, up_count = _stream_sum_sq(up_inputs, up_w.device, up_w.shape[1])
-    gate_sq, gate_count = _stream_sum_sq(gate_inputs, gate_w.device, gate_w.shape[1])
-    z_sq, z_count = _stream_sum_sq(down_inputs, down_w.device, down_w.shape[1])
-    if z_count == 0:
-        return torch.zeros(up_w.shape[0], device=up_w.device, dtype=up_w.dtype)
-    zw_norm2 = z_sq / z_count
+    else:
+        up_sq, up_count = _stream_sum_sq(up_inputs, up_w.device, up_w.shape[1])
+        gate_sq, gate_count = _stream_sum_sq(gate_inputs, gate_w.device, gate_w.shape[1])
+        z_sq, z_count = _stream_sum_sq(down_inputs, down_w.device, down_w.shape[1])
+        if z_count == 0:
+            return torch.zeros(up_w.shape[0], device=up_w.device, dtype=up_w.dtype)
+        zw_norm2 = z_sq / z_count
 
-    if mode == "activation":
-        weight_score = up_loss.sum(dim=1) + gate_loss.sum(dim=1) + down_loss.sum(dim=0)
-        return weight_score * zw_norm2
+        if mode == "iipl":
+            weight_score = up_loss.sum(dim=1) + gate_loss.sum(dim=1) + down_loss.sum(dim=0)
+            return weight_score * zw_norm2
 
-    if mode == "diagonal":
-        up_energy = up_sq / max(up_count, 1)
-        gate_energy = gate_sq / max(gate_count, 1)
-        up_score = (up_loss * up_energy.unsqueeze(0)).sum(dim=1)
-        gate_score = (gate_loss * gate_energy.unsqueeze(0)).sum(dim=1)
-        down_score = down_loss.sum(dim=0) * zw_norm2
-        return up_score + gate_score + down_score
+        if mode == "diagonal":
+            up_energy = up_sq / max(up_count, 1)
+            gate_energy = gate_sq / max(gate_count, 1)
+            up_score = (up_loss * up_energy.unsqueeze(0)).sum(dim=1)
+            gate_score = (gate_loss * gate_energy.unsqueeze(0)).sum(dim=1)
+            down_score = down_loss.sum(dim=0) * zw_norm2
+            return up_score + gate_score + down_score
 
-    if mode == "hessian":
-        sample_count = hessian_samples if hessian_samples is not None else flat_states.shape[0]
-        up_count = activation_sample_counts.get("up_proj", sample_count) if activation_sample_counts else sample_count
-        gate_count = activation_sample_counts.get("gate_proj", sample_count) if activation_sample_counts else sample_count
-        down_count = activation_sample_counts.get("down_proj", sample_count) if activation_sample_counts else sample_count
-        up_hdiag = up_sq * (2.0 / max(up_count, 1))
-        gate_hdiag = gate_sq * (2.0 / max(gate_count, 1))
-        z_hdiag = z_sq * (2.0 / max(down_count, 1))
+        if mode == "hessian":
+            sample_count = hessian_samples if hessian_samples is not None else flat_states.shape[0]
+            up_count = activation_sample_counts.get("up_proj", sample_count) if activation_sample_counts else sample_count
+            gate_count = activation_sample_counts.get("gate_proj", sample_count) if activation_sample_counts else sample_count
+            down_count = activation_sample_counts.get("down_proj", sample_count) if activation_sample_counts else sample_count
+            up_hdiag = up_sq * (2.0 / max(up_count, 1))
+            gate_hdiag = gate_sq * (2.0 / max(gate_count, 1))
+            z_hdiag = z_sq * (2.0 / max(down_count, 1))
 
-        def hessian_score(W: torch.Tensor, Q: torch.Tensor, Hdiag: torch.Tensor) -> torch.Tensor:
-            Hdiag = Hdiag.float().clamp_min(0)
-            dead = Hdiag == 0
-            Hdiag[dead] = 1
-            W = W.clone()
-            Q = Q.clone()
-            W[:, dead] = 0
-            Q[:, dead] = 0
-            return (W - Q).pow(2) * Hdiag.unsqueeze(0)
+            def hessian_score(W: torch.Tensor, Q: torch.Tensor, Hdiag: torch.Tensor) -> torch.Tensor:
+                Hdiag = Hdiag.float().clamp_min(0)
+                dead = Hdiag == 0
+                Hdiag[dead] = 1
+                W = W.clone()
+                Q = Q.clone()
+                W[:, dead] = 0
+                Q[:, dead] = 0
+                return (W - Q).pow(2) * Hdiag.unsqueeze(0)
 
-        up_score = hessian_score(up_w, up_q, up_hdiag).sum(dim=1)
-        gate_score = hessian_score(gate_w, gate_q, gate_hdiag).sum(dim=1)
-        down_score = hessian_score(down_w, down_q, z_hdiag).sum(dim=0)
-        return up_score + gate_score + down_score
+            up_score = hessian_score(up_w, up_q, up_hdiag).sum(dim=1)
+            gate_score = hessian_score(gate_w, gate_q, gate_hdiag).sum(dim=1)
+            down_score = hessian_score(down_w, down_q, z_hdiag).sum(dim=0)
+            return up_score + gate_score + down_score
 
-    if mode == "qjl_sensitivity":
-        up_residual = up_w - up_q
-        gate_residual = gate_w - gate_q
-        down_residual = down_w - down_q
+        if mode == "qjl_sensitivity":
+            up_residual = up_w - up_q
+            gate_residual = gate_w - gate_q
+            down_residual = down_w - down_q
 
-        up_score = _stream_linear_sq_mean(up_inputs, up_residual)
-        gate_score = _stream_linear_sq_mean(gate_inputs, gate_residual)
-        z_energy = zw_norm2
+            up_score = _stream_linear_sq_mean(up_inputs, up_residual)
+            gate_score = _stream_linear_sq_mean(gate_inputs, gate_residual)
+            z_energy = zw_norm2
 
-        generator = torch.Generator(device=down_w.device)
-        generator.manual_seed(int(seed) + 104729)
-        sketch = torch.empty(
-            sketch_dim,
-            down_residual.shape[0],
-            device=down_residual.device,
-            dtype=down_residual.dtype,
-        )
-        sketch.bernoulli_(0.5, generator=generator)
-        sketch.mul_(2).sub_(1).div_(sketch_dim ** 0.5)
+            generator = torch.Generator(device=down_w.device)
+            generator.manual_seed(int(seed) + 104729)
+            sketch = torch.empty(
+                sketch_dim,
+                down_residual.shape[0],
+                device=down_residual.device,
+                dtype=down_residual.dtype,
+            )
+            sketch.bernoulli_(0.5, generator=generator)
+            sketch.mul_(2).sub_(1).div_(sketch_dim ** 0.5)
 
-        down_sketch = torch.matmul(sketch, down_residual)
-        down_score = z_energy * down_sketch.pow(2).sum(dim=0)
-        return (up_score + gate_score + down_score).clamp_min(0)
+            down_sketch = torch.matmul(sketch, down_residual)
+            down_score = z_energy * down_sketch.pow(2).sum(dim=0)
+            return (up_score + gate_score + down_score).clamp_min(0)
 
-    zq_sum = torch.zeros(down_w.shape[1], device=down_w.device, dtype=torch.float32)
-    zz_sum = torch.zeros(down_w.shape[1], device=down_w.device, dtype=torch.float32)
-    count = 0
-    for up_chunk, gate_chunk, down_chunk in zip(
-        _iter_activation_chunks(up_inputs, up_w.device),
-        _iter_activation_chunks(gate_inputs, gate_w.device),
-        _iter_activation_chunks(down_inputs, down_w.device),
-    ):
-        rows = min(up_chunk.shape[0], gate_chunk.shape[0], down_chunk.shape[0])
-        up_chunk = up_chunk[:rows].float()
-        gate_chunk = gate_chunk[:rows].float()
-        down_chunk = down_chunk[:rows].float()
-        up_q_out = F.linear(up_chunk, up_q)
-        gate_q_out = F.linear(gate_chunk, gate_q)
-        z_q = expert.act_fn(gate_q_out) * up_q_out
-        zq_sum += z_q.pow(2).sum(dim=0)
-        zz_sum += (down_chunk * z_q).sum(dim=0)
-        count += rows
-        del up_chunk, gate_chunk, down_chunk, up_q_out, gate_q_out, z_q
+        if mode == "innerproduct":
+            zq_sum = torch.zeros(down_w.shape[1], device=down_w.device, dtype=torch.float32)
+            zz_sum = torch.zeros(down_w.shape[1], device=down_w.device, dtype=torch.float32)
+            count = 0
+            for up_chunk, gate_chunk, down_chunk in zip(
+                _iter_activation_chunks(up_inputs, up_w.device),
+                _iter_activation_chunks(gate_inputs, gate_w.device),
+                _iter_activation_chunks(down_inputs, down_w.device),
+            ):
+                rows = min(up_chunk.shape[0], gate_chunk.shape[0], down_chunk.shape[0])
+                up_chunk = up_chunk[:rows].float()
+                gate_chunk = gate_chunk[:rows].float()
+                down_chunk = down_chunk[:rows].float()
+                up_q_out = F.linear(up_chunk, up_q)
+                gate_q_out = F.linear(gate_chunk, gate_q)
+                z_q = expert.act_fn(gate_q_out) * up_q_out
+                zq_sum += z_q.pow(2).sum(dim=0)
+                zz_sum += (down_chunk * z_q).sum(dim=0)
+                count += rows
+                del up_chunk, gate_chunk, down_chunk, up_q_out, gate_q_out, z_q
 
-    if count == 0:
-        return torch.zeros(up_w.shape[0], device=up_w.device, dtype=up_w.dtype)
-    zq_norm2 = zq_sum / count
-    zz = zz_sum / count
+            if count == 0:
+                return torch.zeros(up_w.shape[0], device=up_w.device, dtype=up_w.dtype)
+            zq_norm2 = zq_sum / count
+            zz = zz_sum / count
 
-    wdown_norm2 = down_w.pow(2).sum(dim=0)
-    qdown_norm2 = down_q.pow(2).sum(dim=0)
-    down_dot = (down_w * down_q).sum(dim=0)
-    rates = zw_norm2 * wdown_norm2 + zq_norm2 * qdown_norm2 - 2 * zz * down_dot
-    return rates.clamp_min(0)
+            wdown_norm2 = down_w.pow(2).sum(dim=0)
+            qdown_norm2 = down_q.pow(2).sum(dim=0)
+            down_dot = (down_w * down_q).sum(dim=0)
+            rates = zw_norm2 * wdown_norm2 + zq_norm2 * qdown_norm2 - 2 * zz * down_dot
+            return rates.clamp_min(0)
+        
+        assert False, f"Unknown mode {mode}"

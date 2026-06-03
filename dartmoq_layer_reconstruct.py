@@ -7,7 +7,7 @@ import numpy as np
 from dartmoq_utils import analyze_experts_activation
 from dartmoq_utils import construct_experts_by_rates
 from dartmoq_utils import analyze_neuron_activations
-from dartmoq_utils import analyze_quant_outlier
+from dartmoq_utils import analyze_gptq_quant_outlier
 from dartmoq_utils import analyze_turboquant_outlier_activation_aware
 from camera_utils import analyze_expert_energy
 from dp_utils import enum_optimal_m_scheme_separate_fast
@@ -57,15 +57,15 @@ def reconstruct_moe_from_existing(model, layer, layer_idx, inps,
     probe_bit = 2
     dpscheme_list = None
     turboquant_outlier_modes = {
-        "turboquant_activation": "activation",
-        "turboquant_activation_hook": "activation",
+        "turboquant_iipl_fea": "iipl",
+        "turboquant_iipl": "iipl",
+        "turboquant_innerproduct_fea": "innerproduct",
         "turboquant_innerproduct": "innerproduct",
-        "turboquant_innerproduct_hook": "innerproduct",
-        "turboquant_diagonal_hook": "diagonal",
-        "turboquant_hessian_hook": "hessian",
-        "turboquant_qjl_sensitivity_hook": "qjl_sensitivity",
+        "turboquant_diagonal": "diagonal",
+        "turboquant_hessian": "hessian",
+        "turboquant_qjl_sensitivity": "qjl_sensitivity",
     }
-    if args.rank_mode == "quant_outlier" or args.rank_mode in turboquant_outlier_modes:
+    if args.rank_mode == "gptq_quant_outlier" or args.rank_mode in turboquant_outlier_modes:
         tick0 = time.time()
         turboquant_outlier_mode = turboquant_outlier_modes.get(args.rank_mode, "")
 
@@ -78,8 +78,7 @@ def reconstruct_moe_from_existing(model, layer, layer_idx, inps,
         print(f"simulate {outlier_label} outlier_bits {outlier_bits}")
 
         cache_root = f"quant_outlier_{quantmode}"
-        cache_mode = args.rank_mode if args.rank_mode.endswith("_hook") else turboquant_outlier_mode
-        cache_dir = f"{cache_root}/{cache_mode}/{model.model_id}"
+        cache_dir = f"{cache_root}/{args.rank_mode}/{model.model_id}"
         # print(f"cache_dir: {cache_dir}")
         os.makedirs(cache_dir, exist_ok=True)
 
@@ -108,10 +107,10 @@ def reconstruct_moe_from_existing(model, layer, layer_idx, inps,
                         wbits=x,
                         mode=turboquant_outlier_mode,
                         save_path=None,
-                        use_activation_hooks=args.rank_mode.endswith("_hook"),
+                        use_activation_hooks=not args.rank_mode.endswith("_fea"),
                     )
                 else:
-                    q_rates[x] = analyze_quant_outlier(layer, layer_idx, inps, ori_expert_num, wbits=x, quantmode=quantmode, save_path=None)
+                    q_rates[x] = analyze_gptq_quant_outlier(layer, layer_idx, inps, ori_expert_num, wbits=x, quantmode=quantmode, save_path=None)
             torch.save(q_rates[x], cache_path)
             print(f"Saved {outlier_label} outlier data to {cache_path}")
 
@@ -189,7 +188,7 @@ def reconstruct_moe_from_existing(model, layer, layer_idx, inps,
 
     for expert_idx, expert in enumerate(layer.mlp.experts):
         # print(f"\nProcessing original expert {expert_idx} / {ori_expert_num}")
-        if args.rank_mode == "activation":
+        if args.rank_mode == "expert_activation":
             ori_gate_proj_weights = expert.gate_proj.weight
             ori_up_proj_weights = expert.up_proj.weight
             ori_down_proj_weights = expert.down_proj.weight
@@ -198,7 +197,7 @@ def reconstruct_moe_from_existing(model, layer, layer_idx, inps,
             rates = analyze_neuron_activations(expert.act_fn, inps, ori_gate_proj_weights, ori_up_proj_weights, sparsity=analyze_sparsity)
         elif args.rank_mode == "energy":
             rates = analyze_expert_energy(expert, inps)
-        elif args.rank_mode == "quant_outlier" or args.rank_mode in turboquant_outlier_modes:
+        elif args.rank_mode == "gptq_quant_outlier" or args.rank_mode in turboquant_outlier_modes:
             rates = all_rates[expert_idx]
         elif args.rank_mode == "random":
             rates = torch.randn(layer.mlp.intermediate_size, device=device)

@@ -56,7 +56,19 @@ if __name__ == '__main__':
     )
     parser.add_argument(        '--rank-mode',
         type=str, default=None,
-        help='Rank mode for MoE reconstruction. activation|energy|quant_outlier|turboquant_activition|turboquant_activation_hook|turboquant_innerproduct|turboquant_innerproduct_hook|turboquant_diagonal_hook|turboquant_hessian_hook|turboquant_qjl_sensitivity_hook|random|neuron_index'
+        help='Rank mode for MoE reconstruction. Available modes:\n' \
+        '  - expert_activation: Rank neurons by activation frequency in input samples\n' \
+        '  - energy: Rank neurons by energy (from CAMERA) to the output\n' \
+        '  - random: Random ordering for baseline testing\n' \
+        '  - neuron_index: Original neuron index order\n' \
+        '  - gptq_quant_outlier: Rank by GPTQ quantization loss, identifying error-sensitive neurons\n' \
+        '  - turboquant_iipl: TurboQuant outlier analysis with IIPL (Input-Intermediate Product Loss)\n' \
+        '  - turboquant_innerproduct: TurboQuant outlier analysis using inner product mode (**RECOMMENED**)\n' \
+        '  - turboquant_diagonal: TurboQuant outlier analysis with diagonal Hessian approximation\n' \
+        '  - turboquant_hessian: TurboQuant outlier analysis with full Hessian computation\n' \
+        '  - turboquant_qjl_sensitivity: TurboQuant analysis with quantized Johnson-Lindenstrauss sensitivity\n' \
+        '  - turboquant_iipl_fea: TurboQuant IIPL (Input-Intermediate Product Loss) mode with full experts activation (not recommended)\n' \
+        '  - turboquant_innerproduct_fea: TurboQuant inner product mode with full experts activation (not recommended)\n'
     )
     parser.add_argument(        '--standby-layer-cpu', action='store_true', default=False,
         help='Whether to move quant layers to CPU before and after quantization.' 
@@ -107,8 +119,8 @@ if __name__ == '__main__':
         save_dartmoq_model(dartmoq_model, tokenizer, save_dir, args)
 
     if args.eval_zero:
-        # task_list = ["arc_challenge", "arc_easy", "piqa", "boolq", "winogrande", "mnli", "hellaswag", "mmlu", "sciq"]
-        task_list = ["mnli", "hellaswag", "mmlu", "sciq"]
+        task_list = ["arc_challenge", "arc_easy", "piqa", "boolq", "winogrande", "mnli", "hellaswag", "mmlu"]
+        # task_list = ["mnli", "hellaswag", "mmlu", "sciq"]
         # task_list = ["gsm8k", "triviaqa"]
         eval_zero_shot(dartmoq_model, task_list, eval_method=args.eval_method, tokenizer=tokenizer)
 

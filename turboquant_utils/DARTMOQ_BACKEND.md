@@ -14,7 +14,6 @@ dequantized TurboQuant approximation.
 ## What stays unchanged
 
 - DartMoQ MoE reconstruction.
-- `rank_mode=quant_outlier`, including GPTQ-based loss collection.
 - Mixed-bit scheme parsing and search.
 - 8-bit / 16-bit handling.
 
