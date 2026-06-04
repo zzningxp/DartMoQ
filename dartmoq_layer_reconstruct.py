@@ -200,9 +200,11 @@ def reconstruct_moe_from_existing(model, layer, layer_idx, inps,
         elif args.rank_mode == "gptq_quant_outlier" or args.rank_mode in turboquant_outlier_modes:
             rates = all_rates[expert_idx]
         elif args.rank_mode == "random":
-            rates = torch.randn(layer.mlp.intermediate_size, device=device)
+            # print("intermediate_size: ", expert.gate_proj.weight.shape)
+            rates = torch.randn(expert.gate_proj.weight.shape[0], device=device)
         elif args.rank_mode == "neuron_index":
-            rates = torch.arange(layer.mlp.intermediate_size, device=device)
+            # print("intermediate_size: ", expert.gate_proj.weight.shape)
+            rates = torch.arange(expert.gate_proj.weight.shape[0], device=device)
         else:
             assert False, f"Unknown rank mode: {args.rank_mode}"
 

@@ -255,7 +255,7 @@ def dartmoq_sequential(model, tokenizer, dataloader, args, test_ppl=True):
         qscheme['attn'] = [int(aa)]
         qscheme['share'] = [int(ss)]
         if 'bpw' not in qscheme_str:
-            assert len(ee) == slice_expert_num
+            assert len(ee) == slice_expert_num, f"Quant scheme {qscheme_str} should have {slice_expert_num} parts for expert quantization config."
             qscheme['econfig'] = [int(e) for e in ee]
             bpw = sum(qscheme['econfig']) * 1.0 / slice_expert_num
         else:
