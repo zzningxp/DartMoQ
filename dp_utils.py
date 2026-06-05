@@ -44,25 +44,41 @@ def extrapolate_0bit_loss(rates: Dict[int, List[np.ndarray]], quant_type: str = 
 
         for i in range(n_neurons):
             loss_array = np.array([expert_rates[b][i] for b in bits])
+            positive_mask = loss_array > 0
+
+            if not np.any(positive_mask):
+                expert_L0[i] = 0.0
+                continue
+
+            reference_bit = bits[0]
+            if 1 in expert_rates:
+                reference_bit = 1
+
+            reference_loss = expert_rates[reference_bit][i]
+            fallback_l0 = max(reference_loss * 2.0, 1e-12)
 
             # --------------------- log quadratic fit ---------------------
             # function: log(loss) = p*b^2 + q*b + r
             # loss(b) = exp(p*b^2 + q*b + r)
             # -------------------------------------------------------------
+            p = q = r = np.nan
             try:
-                log_loss = np.log(loss_array)
+                if positive_mask.sum() >= 3:
+                    fit_bits = b_array[positive_mask]
+                    fit_loss = loss_array[positive_mask]
+                    log_loss = np.log(fit_loss)
 
-                p, q, r = np.polyfit(b_array, log_loss, deg=2)
+                    p, q, r = np.polyfit(fit_bits, log_loss, deg=2)
+                    l0 = np.exp(r)
+                else:
+                    l0 = fallback_l0
 
-                l0 = np.exp(r)
+                if reference_loss > 0:
+                    if l0 < reference_loss:
+                        l0 = fallback_l0
 
-                l1 = expert_rates[1][i] if 1 in expert_rates else expert_rates[bits[0]][i]
-                if l0 < l1:
-                    l0 = l1 * 2.0
-
-            except (RuntimeError, ValueError, np.linalg.LinAlgError):
-                l1 = expert_rates[1][i] if 1 in expert_rates else expert_rates[bits[0]][i]
-                l0 = l1 * 2.0
+            except (RuntimeError, ValueError, np.linalg.LinAlgError, FloatingPointError):
+                l0 = fallback_l0
 
             expert_L0[i] = l0
 
@@ -77,9 +93,13 @@ def extrapolate_0bit_loss(rates: Dict[int, List[np.ndarray]], quant_type: str = 
                 plt.plot(b_dense, y_dense, 'b-', label=f'Log-quad fit (exp(pb²+qb+r))')
 
                 plt.scatter(0, l0, color='green', s=10, label=f'L0 = {l0:.2f}')
-                plt.scatter(1, l1, color='orange', s=10, label=f'L1 = {l1:.2f}')
+                plt.scatter(reference_bit, reference_loss, color='orange', s=10,
+                            label=f'L{reference_bit} = {reference_loss:.2f}')
 
-                plt.title(f'Expert {expert_idx} | Neuron {i} | L0={l0:.2f}, L1={l1:.2f}')
+                plt.title(
+                    f'Expert {expert_idx} | Neuron {i} | '
+                    f'L0={l0:.2f}, L{reference_bit}={reference_loss:.2f}'
+                )
                 plt.xlabel('bit')
                 plt.ylabel('loss')
                 plt.yscale('log')
