@@ -108,9 +108,12 @@ def reconstruct_moe_from_existing(model, layer, layer_idx, inps,
                         mode=turboquant_outlier_mode,
                         save_path=None,
                         use_activation_hooks=not args.rank_mode.endswith("_fea"),
+                        seed=args.seed,
                     )
                 else:
-                    q_rates[x] = analyze_gptq_quant_outlier(layer, layer_idx, inps, ori_expert_num, wbits=x, quantmode=quantmode, save_path=None)
+                    q_rates[x] = analyze_gptq_quant_outlier(
+                        layer, layer_idx, inps, ori_expert_num, wbits=x, 
+                        quantmode=quantmode, save_path=None, seed=args.seed)
             torch.save(q_rates[x], cache_path)
             print(f"Saved {outlier_label} outlier data to {cache_path}")
 

@@ -39,7 +39,7 @@ if __name__ == '__main__':
         help='Where to extract calibration data from.'
     )
     parser.add_argument(        '--seed',
-        type=int, default=0, help='Seed for sampling the calibration data.'
+        type=int, default=42, help='Seed for sampling the calibration data.'
     )
     parser.add_argument(        '--nsamples', type=int, default=128,
         help='Number of Fine-tuning data for CMoE.'

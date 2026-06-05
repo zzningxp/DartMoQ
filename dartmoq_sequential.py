@@ -87,8 +87,8 @@ def construct_moe(model, moe_model_flag, layer, layer_idx, inp,
     tick0 = time.time()
     if_quant_attn = True
     quant_layer_mix_precision(layer, layer_idx, if_quant_attn, n_experts, slice_expert_num,
-                hidden_states_inorm, hidden_states, attention_mask, position_ids, position_embeddings, 
-                qscheme, use_hybrid_moe, quantmode)
+                hidden_states_inorm, hidden_states, attention_mask, position_ids, position_embeddings,
+                qscheme, use_hybrid_moe, quantmode, seed=args.seed)
     gc.collect()
     torch.cuda.empty_cache()
     tick1 = time.time()

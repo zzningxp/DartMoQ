@@ -21,7 +21,6 @@ from turboquant_utils.dartmoq_backend import turbo_fake_quant_linear
 from turboquant_utils.dartmoq_backend import turboquant_outlier_activation_aware_rates
 
 QBATCH = 256
-QSEED = 42
 DEV = torch.device('cuda:0')
 
 @torch.no_grad()
@@ -274,7 +273,7 @@ def lowrank_compress_svd(weight_matrix, lowrank_sparsity, save_path=None):
     return low_rank_matrix.to(weight_matrix.dtype)
 
 @torch.no_grad()
-def analyze_gptq_quant_outlier(layer, layer_idx, hidden_states, ori_expert_num, wbits=2, quantmode='gptq', save_path=None):
+def analyze_gptq_quant_outlier(layer, layer_idx, hidden_states, ori_expert_num, wbits=2, quantmode='gptq', save_path=None, seed=42):
     print(f"analyze_gptq_quant_outlier layer: {layer_idx} with {wbits} bits")
     nsample = hidden_states.shape[0]
 
@@ -327,7 +326,7 @@ def analyze_gptq_quant_outlier(layer, layer_idx, hidden_states, ori_expert_num, 
                         gptq[name].layer,
                         bit_width=gptq[name].quantizer.bits,
                         group_size=groupsize,
-                        seed=QSEED+layer_idx,
+                        seed=seed+layer_idx,
                         rotation="qr",
                         update=False,
                     )
@@ -423,6 +422,7 @@ def analyze_turboquant_outlier_activation_aware(
     if_dense=False,
     save_path=None,
     use_activation_hooks=False,
+    seed=42,
 ):
     print(f"analyze_turboquant_outlier_{mode} layer: {layer_idx} with {wbits} bits")
     assert mode in ("innerproduct", "diagonal", "hessian", "qjl_sensitivity", "iipl"), f"Unknown TurboQuant outlier mode: {mode}"
@@ -453,7 +453,7 @@ def analyze_turboquant_outlier_activation_aware(
             bit_width=wbits,
             mode=mode,
             group_size=groupsize,
-            seed=QSEED + layer_idx,
+            seed=seed+layer_idx,
             rotation="qr",
             hessian_samples=hidden_states.shape[0] if mode == "hessian" else None,
             activation_inputs=expert_inputs[expert_idx] if expert_inputs is not None else None,
@@ -491,8 +491,8 @@ def analyze_turboquant_outlier_activation_aware(
 
 @torch.no_grad()
 def quant_layer_mix_precision(layer, layer_idx, quant_attn, n_experts, slice_expert_num,
-                attn_hidden_states, ffn_hidden_states, attention_mask, position_ids, position_embeddings, 
-                qscheme, use_hybrid_moe, quantmode):
+                attn_hidden_states, ffn_hidden_states, attention_mask, position_ids, position_embeddings,
+                qscheme, use_hybrid_moe, quantmode, seed=42):
     print(f"Quantize layer {layer_idx}")
     nsample = attn_hidden_states.shape[0]
     assert attn_hidden_states.shape[0] == ffn_hidden_states.shape[0], f"attn_hidden_states.shape: {attn_hidden_states.shape}, ffn_hidden_states.shape: {ffn_hidden_states.shape}"
@@ -624,7 +624,7 @@ def quant_layer_mix_precision(layer, layer_idx, quant_attn, n_experts, slice_exp
                                 gptq[name].layer,
                                 bit_width=gptq[name].quantizer.bits,
                                 group_size=groupsize,
-                                seed=QSEED+layer_idx,
+                                seed=seed+layer_idx,
                                 rotation="qr",
                             )
                         else:
