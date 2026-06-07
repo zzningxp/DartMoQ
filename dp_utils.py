@@ -44,6 +44,90 @@ def extrapolate_0bit_loss(rates: Dict[int, List[np.ndarray]], quant_type: str = 
 
         for i in range(n_neurons):
             loss_array = np.array([expert_rates[b][i] for b in bits])
+
+            # --------------------- log quadratic fit ---------------------
+            # function: log(loss) = p*b^2 + q*b + r
+            # loss(b) = exp(p*b^2 + q*b + r)
+            # -------------------------------------------------------------
+            try:
+                log_loss = np.log(loss_array)
+
+                p, q, r = np.polyfit(b_array, log_loss, deg=2)
+
+                l0 = np.exp(r)
+
+                l1 = expert_rates[1][i] if 1 in expert_rates else expert_rates[bits[0]][i]
+                if l0 < l1:
+                    l0 = l1 * 2.0
+
+            except (RuntimeError, ValueError, np.linalg.LinAlgError):
+                l1 = expert_rates[1][i] if 1 in expert_rates else expert_rates[bits[0]][i]
+                l0 = l1 * 2.0
+
+            expert_L0[i] = l0
+
+            if save_plots:
+                print(p, q, r)
+                plt.figure(figsize=(7, 4))
+
+                plt.scatter(bits, loss_array, color='red', s=10, label='Original loss (1,2,3,4...)')
+
+                b_dense = np.linspace(0.001, max(bits), 100)
+                y_dense = np.exp(p * b_dense ** 2 + q * b_dense + r)
+                plt.plot(b_dense, y_dense, 'b-', label=f'Log-quad fit (exp(pb²+qb+r))')
+
+                plt.scatter(0, l0, color='green', s=10, label=f'L0 = {l0:.2f}')
+                plt.scatter(1, l1, color='orange', s=10, label=f'L1 = {l1:.2f}')
+
+                plt.title(f'Expert {expert_idx} | Neuron {i} | L0={l0:.2f}, L1={l1:.2f}')
+                plt.xlabel('bit')
+                plt.ylabel('loss')
+                plt.yscale('log')
+                plt.grid(True)
+                plt.legend()
+                plt.tight_layout()
+                os.makedirs(f'plot/{quant_type}_bit_loss_fit', exist_ok=True)
+                plt.savefig(f'plot/{quant_type}_bit_loss_fit/exp2_expert_{expert_idx}_neuron_{i}.png', dpi=150)
+                plt.close()
+
+        L0.append(expert_L0)
+
+    return L0
+
+def extrapolate_0bit_loss_fix(rates: Dict[int, List[np.ndarray]], quant_type: str = "gptq", save_plots: bool = False) -> List[np.ndarray]:
+    bits = sorted(rates.keys())
+    if 0 in bits:
+        bits.remove(0)
+        rates.pop(0)
+    # print(bits)
+    assert len(bits) >= 2, "at least 2 bits are required for extrapolation of 0bit loss"
+
+    x_max = max(bits) + 1.0
+
+    n_experts = len(rates[bits[0]])
+    for b in bits:
+        assert len(rates[b]) == n_experts, f"bit {b} has inconsistent number of experts"
+
+    L0 = []
+
+    for expert_idx in range(n_experts):
+        print(f"Processing extrapolate 0bit loss for expert {expert_idx}")
+
+        expert_rates = {}
+        n_neurons = None
+        for b in bits:
+            expert_rates[b] = rates[b][expert_idx].detach().cpu().float().numpy()
+            if n_neurons is None:
+                n_neurons = len(expert_rates[b])
+            else:
+                assert len(expert_rates[b]) == n_neurons, \
+                    f"expert {expert_idx}, bit {b} has inconsistent loss array length"
+
+        b_array = np.array(bits, dtype=float)
+        expert_L0 = np.zeros(n_neurons, dtype=float)
+
+        for i in range(n_neurons):
+            loss_array = np.array([expert_rates[b][i] for b in bits])
             positive_mask = loss_array > 0
 
             if not np.any(positive_mask):
