@@ -116,9 +116,9 @@ The figures above show perplexity vs. bits-per-weight (bpw) comparisons between 
 
 | Model | Method | WikiText2 | C4 | Avg. | ARC-Challenge | ARC-Easy | PIQA | BoolQ | Winogrande | MNLI | Hellaswag | MMLU |
 |-------|--------|-----------|----|-------|----------|---------------|------|-------|------------|-----------|------|-------|
-| DSMoE-v1 | Energy | 278.704 | 573.5555 | 0.346737 | 0.244881 | 0.255892 | 0.519042 | 0.378899 | 0.505919 | 0.362506 | 0.27146 | 0.235294 |
-| DSMoE-v1 | GPTQ | 13.2548 | 24.7183 | 0.487514 | 0.313993 | 0.602273 | 0.67519 | 0.61315 | 0.589582 | 0.362506 | 0.485262 | 0.258154 |
-| DSMoE-v1 | IPE-TQ | **10.992** | **23.6676** | **0.508849** | 0.360068 | 0.65404 | 0.661045 | 0.674006 | 0.614838 | 0.393174 | 0.470922 | 0.2427 |
+| DSMoEv1 | Energy | 278.704 | 573.5555 | 0.346737 | 0.244881 | 0.255892 | 0.519042 | 0.378899 | 0.505919 | 0.362506 | 0.27146 | 0.235294 |
+| DSMoEv1 | GPTQ | 13.2548 | 24.7183 | 0.487514 | 0.313993 | 0.602273 | 0.67519 | 0.61315 | 0.589582 | 0.362506 | 0.485262 | 0.258154 |
+| DSMoEv1 | IPE-TQ | **10.992** | **23.6676** | **0.508849** | 0.360068 | 0.65404 | 0.661045 | 0.674006 | 0.614838 | 0.393174 | 0.470922 | 0.2427 |
 | DSv2-Lite | Energy | 37.7916 | 51.5081 | 0.384198 | 0.229522 | 0.315657 | 0.550054 | 0.571865 | 0.504341 | 0.335914 | 0.306513 | 0.259721 |
 | DSv2-Lite | GPTQ | 47.3629 | 80.3963 | 0.375537 | 0.206485 | 0.294613 | 0.536997 | 0.574618 | 0.520126 | 0.340397 | 0.288787 | 0.242273 |
 | DSv2-Lite | IPE-TQ | **9.6862** | **20.8551** | **0.487446** | 0.346416 | 0.635101 | 0.657236 | 0.534862 | 0.550908 | 0.369435 | 0.480084 | 0.325523 |
@@ -136,9 +136,9 @@ The figures above show perplexity vs. bits-per-weight (bpw) comparisons between 
 
 | Model | Method | WikiText2 | C4 | Avg. | ARC-Challenge | ARC-Easy | PIQA | BoolQ | Winogrande | MNLI | Hellaswag | MMLU |
 |-------|--------|-----------|----|-------|----------|---------------|------|-------|------------|-----------|------|-------|
-| DSMoE-v1 | Energy | 9.5556 | 15.5672 | 0.559036 | 0.401877 | 0.686869 | 0.695865 | 0.714679 | 0.681137 | 0.412532 | 0.612627 | 0.2667 |
-| DSMoE-v1 | GPTQ | 9.1824 | **14.5733** | 0.556436 | 0.379693 | 0.671296 | 0.739935 | 0.629969 | 0.653512 | 0.418849 | 0.649871 | 0.308361 |
-| DSMoE-v1 | IPE-TQ | **8.3029** | 14.5563 | **0.582868** | 0.43686 | 0.750842 | 0.735582 | 0.724465 | 0.670087 | 0.395721 | 0.628062 | 0.321322 |
+| DSMoEv1 | Energy | 9.5556 | 15.5672 | 0.559036 | 0.401877 | 0.686869 | 0.695865 | 0.714679 | 0.681137 | 0.412532 | 0.612627 | 0.2667 |
+| DSMoEv1 | GPTQ | 9.1824 | **14.5733** | 0.556436 | 0.379693 | 0.671296 | 0.739935 | 0.629969 | 0.653512 | 0.418849 | 0.649871 | 0.308361 |
+| DSMoEv1 | IPE-TQ | **8.3029** | 14.5563 | **0.582868** | 0.43686 | 0.750842 | 0.735582 | 0.724465 | 0.670087 | 0.395721 | 0.628062 | 0.321322 |
 | DSv2-Lite | Energy | 8.9815 | 14.2178 | 0.599845 | 0.438567 | 0.720539 | 0.714908 | 0.77156 | 0.640095 | 0.441671 | 0.638219 | 0.4332 |
 | DSv2-Lite | GPTQ | 10.9595 | 19.3183 | 0.484888 | 0.350683 | 0.610269 | 0.662133 | 0.525382 | 0.553275 | 0.341416 | 0.514838 | 0.321108 |
 | DSv2-Lite | IPE-TQ | **7.5585** | **13.2008** | **0.599571** | 0.462457 | 0.75968 | 0.735038 | 0.712538 | 0.646409 | 0.411717 | 0.640012 | 0.428714 |
@@ -156,9 +156,9 @@ The figures above show perplexity vs. bits-per-weight (bpw) comparisons between 
 
 | Model | Method | WikiText2 | C4 | Avg. | ARC-Challenge | ARC-Easy | PIQA | BoolQ | Winogrande | MNLI | Hellaswag | MMLU |
 |-------|--------|-----------|----|-------|----------|---------------|------|-------|------------|-----------|------|-------|
-| DSMoE-v1 | Energy | 7.8037 | 11.8563 | 0.623815 | 0.464164 | 0.750421 | 0.76333 | 0.763914 | 0.711918 | 0.44972 | 0.728839 | 0.358211 |
-| DSMoE-v1 | GPTQ | 8.0116 | 12.27 | 0.604907 | 0.435154 | 0.738636 | 0.784548 | 0.679511 | 0.700079 | 0.424554 | 0.724258 | 0.352514 |
-| DSMoE-v1 | IPE-TQ | **7.3066** | **11.4685** | **0.631659** | 0.475256 | 0.776094 | 0.784004 | 0.756881 | 0.708761 | 0.459501 | 0.71669 | 0.376086 |
+| DSMoEv1 | Energy | 7.8037 | 11.8563 | 0.623815 | 0.464164 | 0.750421 | 0.76333 | 0.763914 | 0.711918 | 0.44972 | 0.728839 | 0.358211 |
+| DSMoEv1 | GPTQ | 8.0116 | 12.27 | 0.604907 | 0.435154 | 0.738636 | 0.784548 | 0.679511 | 0.700079 | 0.424554 | 0.724258 | 0.352514 |
+| DSMoEv1 | IPE-TQ | **7.3066** | **11.4685** | **0.631659** | 0.475256 | 0.776094 | 0.784004 | 0.756881 | 0.708761 | 0.459501 | 0.71669 | 0.376086 |
 | DSv2-Lite | Energy | 7.3503 | 11.267 | 0.66488 | 0.504266 | 0.789983 | 0.773667 | 0.796636 | 0.707182 | 0.502191 | 0.741984 | 0.503133 |
 | DSv2-Lite | GPTQ | 8.0724 | 12.5196 | 0.598768 | 0.467577 | 0.742003 | 0.759521 | 0.607951 | 0.68824 | 0.377789 | 0.699761 | 0.447301 |
 | DSv2-Lite | IPE-TQ | **6.8507** | **10.827** | **0.6863** | 0.505973 | 0.800084 | 0.784548 | 0.773394 | 0.704815 | 0.501172 | 0.734117 | - |
@@ -172,7 +172,7 @@ The figures above show perplexity vs. bits-per-weight (bpw) comparisons between 
 | Qwen3 | GPTQ | 11.4401 | 18.3998 | 0.619412 | 0.451365 | 0.726852 | 0.752448 | 0.822936 | 0.662983 | 0.575853 | 0.508365 | 0.454494 |
 | Qwen3 | IPE-TQ | **9.4174** | **13.7852** | **0.762076** | 0.673208 | 0.867003 | 0.792709 | 0.884709 | 0.69929 | 0.743556 | 0.737801 | 0.698334 |
 
-We prioritize outputting acc_norm from LM-Evaluation-Harness, Avg. and ARC-Challenge, ARC-Easy, PIQA, Hellaswag
+We prioritize outputting acc_norm from LM-Evaluation-Harness. Tasks like ARC-Challenge, ARC-Easy, PIQA, and Hellaswag use acc_norm.
 
 ### random seed effect
 
@@ -239,7 +239,7 @@ python run_dartmoq.py \
 | `--slices` | Number of sub-experts to slice (S) | 1 |
 | `--rank-mode` | Neuron ranking mode for expert reordering | None |
 | `--quant-scheme` | Quantization scheme (fixed or global) | None |
-| `--quantmode` | Quantization algorithm: `gptq` or `turboquant` | `gptq` |
+| `--quantmode` | Quantization algorithm: `gptq` or `turboquant` | `turboquant` |
 | `--eval-zero` | Enable zero-shot task evaluation | False |
 | `--save-model` | Save quantized model to disk | False |
 | `--standby-layer-cpu` | Move layers to CPU during quantization | False |
@@ -343,7 +343,7 @@ Examples:
 
 ## Recommended Combinations
 
-### For 2-bit Industry Deployment
+### For 2-bit ManualDeployment
 
 ```bash
 # TurboQuant version (recommended for best quality)
@@ -353,7 +353,7 @@ python run_dartmoq.py \
     --slices 8 \
     --nsamples 64 \
     --rank-mode turboquant_innerproduct \
-    --quant-scheme a8s8m22222222 \
+    --quant-scheme a8s8m32222221 \
     --quantmode turboquant \
     --eval-zero
 
@@ -364,10 +364,11 @@ python run_dartmoq.py \
     --slices 8 \
     --nsamples 64 \
     --rank-mode gptq_quant_outlier \
-    --quant-scheme a8s8m22222222 \
+    --quant-scheme a8s8m44222220 \
     --quantmode gptq \
     --eval-zero
 ```
+a8s8m32222221 is the quantization scheme closest to 2 + 0.25 bpw in Camera-Q.
 
 ### For Global Optimal Search (Any BPW)
 
@@ -397,15 +398,15 @@ python run_dartmoq.py \
 
 ### For BPW Sweep
 
-See `run.sh` for examples of sweeping across bpw values from 0.5 to 3.0.
+See `run.sh` for examples of sweeping across bpw values from 0.5 to 4.0.
 
 ## Supported Models
 
-- DeepSeek-MoE-16B
-- DeepSeek-V2-Lite
-- OLMoE-1B-7B
-- Moonlight-16B-A3B
-- Qwen3-30B-A3B
+- `DeepSeek-MoE-16B` (16B-A3B)
+- `DeepSeek-V2-Lite` (16B-A3B)
+- `OLMoE-1B-7B` (7B-A1B)
+- `Moonlight-16B-A3B`
+- `Qwen3-30B-A3B`
 - Most other MoE architectures with expert FFNs
 
 ## Calibration Datasets
@@ -466,6 +467,6 @@ This project is released under the same license as the base models it quantizes.
 
 - GPTQ for the per-row quantization baseline
 - TurboQuant for the vector quantization approach
-- CAMERA for energy-based importance estimation (for comparison only)
+- CAMERA (http://arxiv.org/abs/2508.02322) for energy-based importance estimation (for comparison only)
 - All the MoE model authors for their open-source contributions
 
