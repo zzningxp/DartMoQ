@@ -6,6 +6,7 @@ viz/
 ├── _cache_io.py               # shared helpers: cache loading, model registry, plot style
 ├── headroom.py                # 4 motivation panels  — see table below
 ├── metric_geometry.py         # G.1 – G.4 — Challenge 1 (sensitivity geometry)
+├── seed_stability.py          # S.1 – S.5 — TurboQuant seed variance diagnosis
 ├── dump_activation_rates.py   # one-off dumper: per-layer expert activation rates → logs/
 └── legacy.py                  # re-exports of the old per-layer plotting functions
 ```
@@ -30,6 +31,7 @@ rates materialised by `viz/dump_activation_rates.py` (one-time cost per model).
 |---|---|---|
 | `headroom`        | `amgm`, `top10ratio`, `act_vs_sens`, `layer_expert_neuron_compare` | **Motivation** (§1 intro / §3.1 preliminary) |
 | `metric_geometry` | G.1 – G.4 | **Challenge 1** (§4.1: finding the right sensitivity metric)       |
+| `seed_stability`  | S.1 – S.5 | **Analysis**: why DartMoQ slicing reduces TurboQuant QR seed variance |
 | `dp_utils` internal | —      | **Challenge 2** (§4.2: quadratic log-fit & 0-bit extrapolation)    |
 | `legacy`          | —         | Appendix (supplementary per-layer debugging figures)               |
 
@@ -101,6 +103,33 @@ rates materialised by `viz/dump_activation_rates.py` (one-time cost per model).
 > (`viz/metric_geometry.py::_synthesize_tq_mse_from_cache`). This keeps the
 > figure honest: any remaining ranking signal comes from the quantizer
 > geometry itself, not from activations.
+
+### S.* — TurboQuant seed stability after DartMoQ slicing (`viz/seed_stability.py`)
+
+| Figure | Type | What it shows | How to generate |
+|---|---|---|---|
+| **S.1 `seed_sweep`** | line plot | Across the same QR seed set, full-expert TurboQuant has larger sensitivity-weighted error variation than DartMoQ neuron slices. | `python -m viz.seed_stability --skip good_bad alignment homogeneity aggregate` |
+| **S.2 `good_bad`** | sorted per-neuron error | Bad full-matrix seeds place more error on the high-sensitivity neurons than good seeds; slice quantization dampens this effect. | `python -m viz.seed_stability --skip seed_sweep alignment homogeneity aggregate` |
+| **S.3 `alignment`** | log-log scatter | Error–sensitivity rank alignment explains why a seed with similar raw MSE can be worse in sensitivity-weighted loss. | `python -m viz.seed_stability --skip seed_sweep good_bad homogeneity aggregate` |
+| **S.4 `homogeneity`** | dispersion bars | DP slices have lower within-slice sensitivity dispersion than the full expert, supporting the “less heterogeneous submatrix” explanation. | `python -m viz.seed_stability --skip seed_sweep good_bad alignment aggregate` |
+| **S.5 `aggregate`** | paired bars | Across high-loss DeepSeekMoE targets, slice quantization reduces weighted-error CV, max/min ratio, and bad–good seed gap. | `python -m viz.seed_stability --skip seed_sweep good_bad alignment homogeneity` |
+
+This module is a diagnostic, not another end-to-end benchmark. It loads one
+model only to access selected MoE expert weights, combines them with cached
+per-neuron sensitivity, and compares full up/gate/down matrices against
+DartMoQ-style neuron slices under the same TurboQuant QR seed sweep.
+
+Quick target-only check (no model load):
+```bash
+python -m viz.seed_stability --model deepseek-v1-moe-16b --dry-run-targets
+```
+
+Small smoke run:
+```bash
+python -m viz.seed_stability --model deepseek-v1-moe-16b \
+  --layers 17 --experts 2 --seeds 0 1 --bit 2 --wbits 2 \
+  --slice-expert-num 8 --skip aggregate
+```
 
 ---
 

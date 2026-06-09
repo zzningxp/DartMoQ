@@ -73,8 +73,8 @@ if __name__ == '__main__':
     parser.add_argument(        '--standby-layer-cpu', action='store_true', default=False,
         help='Whether to move quant layers to CPU before and after quantization.' 
     )
-    parser.add_argument(        '--use-hybrid-moe', action='store_true', default=True,
-        help='Use hybrid MoE structure with two-level experts.' 
+    parser.add_argument(        '--no-use-hybrid-moe', dest='use_hybrid_moe', action='store_false', default=True,
+        help='Disable hybrid MoE structure and use original experts instead.'
     )
     parser.add_argument(        '--quantmode', type=str, default='gptq', choices=['gptq', 'turboquant'],
         help='Quantization mode: gptq (default) or turboquant.'
