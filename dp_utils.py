@@ -1445,33 +1445,23 @@ def plot_block_losses_overlap(
     plt.close()
 
 if __name__ == "__main__":
+    # Sanity checks for the DP / extrapolation logic. The per-layer plot_* helpers
+    # below are kept for backwards compatibility (and re-exported through
+    # `viz.legacy`); for publication-quality figures use:
+    #     python -m viz.headroom
+    #     python -m viz.metric_geometry
     # test_read_rates_from_file()
     # test_dp_utils()
     # test_global_dp_utils()
 
-    # for l in range(1, 20):
-    #     for q in ["turboquant"]:
-    #         for s in ["", "-whole-pow2"]:
-    #             plot_neuron_rates_across_bits(
-    #             model_id="deepseek-v1-moe-16b",
-    #             layer_idx=l,
-    #             quant_type=q,
-    #             expert_idx=2,
-    #             p=10,
-    #             outlier_bits={0, 1, 2, 3, 4},
-    #             use_0bit=True,
-    #             dir_suffix=s
-    #         )
-
-    # Example: Plot bit overlap visualization
-    for l in range(1, 27):
-            # for s in ["", "-whole-pow2"]:
-                # plot_bit_overlap(
-                plot_block_losses_overlap(
-                    model_id="deepseek-v1-moe-16b",
-                    layer_idx=l,
-                    quant_types=["gptq", "turboquant"],
-                    outlier_bits={1, 2, 3, 4},
-                    use_0bit=True,
-                    dir_suffix=""
-                )
+    # Example: legacy per-layer scatter (kept commented; uncomment to regenerate)
+    # for l in range(1, 27):
+    #     plot_block_losses_overlap(
+    #         model_id="deepseek-v1-moe-16b",
+    #         layer_idx=l,
+    #         quant_types=["gptq", "turboquant"],
+    #         outlier_bits={1, 2, 3, 4},
+    #         use_0bit=True,
+    #         dir_suffix="",
+    #     )
+    pass
