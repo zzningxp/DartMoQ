@@ -3,6 +3,8 @@
 
 DartMoQP is a Mixture-of-Experts-native unified quantization and structured pruning framework. It brings quantization and pruning into a single mathematical framework for joint sensitivity modeling and global optimal search, with neuron-level expert reordering.
 
+**Note on Implementation**: The current implementation is a simulated quantization framework. All quantized operations are dequantized back to fp16 for actual inference. While this does not provide real inference speedup, it enables accurate evaluation of quantization error and can guide the design of practical quantization algorithms.
+
 ## Key Contributions
 
 ### Challenges Addressed
@@ -17,7 +19,7 @@ DartMoQP is a Mixture-of-Experts-native unified quantization and structured prun
    - For vector quantization algorithms like TurboQuant: Global random rotation causes energy homogenization, making element-wise MSE sensitivity poorly differentiated; an inner product loss based on the calibration input manifold is more suitable
 
 2. **Unified Loss Space**:
-   - For all major quantization algorithms, quantization loss follows a perfect quadratic distribution in the log domain
+   - For major quantization algorithms (GPTQ and TurboQuant), quantization loss follows a perfect quadratic distribution in the log domain
    - This allows reliable extrapolation of 0bit loss without any manual hyperparameters
    - Enables unified loss modeling of quantization and pruning for the first time
 
@@ -60,6 +62,8 @@ DartMoQP uses a wrapper-based approach that is compatible with all Transformers 
    - The wrapper preserves all original model interfaces
    - Works seamlessly with HuggingFace `generate()` and evaluation pipelines
    - Can be disabled with `--no-use-hybrid-moe` to use original experts
+
+##
 
 ## Loss Caching Mechanism
 
@@ -112,8 +116,8 @@ conda activate dartmoq
 
 ```bash
 python run_dartmoq.py \
-    &lt;model_path&gt; \
-    &lt;dataset&gt; \
+    <model_path> \
+    <dataset> \
     [--slices N] \
     [--nsamples N] \
     [--rank-mode MODE] \
@@ -198,7 +202,7 @@ Uses the global DP optimizer with monotonic non-increasing bit allocation constr
 - `S`: Number of slices per expert
 - `BPW`: Target average bits per weight (can be fractional)
 
-**Important Note**: The bpw values in the `global-bpw` scheme refer to the weight bit allocation only. They do **not** include the additional overhead of:
+**Important Note**: The bpw values in all schemes (both fixed and `global-bpw`) refer to the weight bit allocation only. They do **not** include the additional overhead of:
 - GPTQ: ~0.25 bpw for quantization parameters
 - TurboQuant: ~0.252 bpw for quantization parameters
 
@@ -306,8 +310,8 @@ See `run.sh` for examples of sweeping across bpw values from 0.5 to 3.0.
 ## Calibration Datasets
 
 - `wikitext2`: Wikitext-2 (recommended for most use cases)
-- `ptb`: Penn Treebank
 - `c4`: C4 (Colossal Clean Crawled Corpus)
+- `ptb`: Penn Treebank
 
 64-128 samples are typically sufficient for good calibration.
 
@@ -335,16 +339,21 @@ python -m viz.distribution
 python -m viz.dump_activation_rates
 ```
 
+## Dense Model Quantization Support
+
+DartMoQP is specifically designed for **Mixture-of-Experts (MoE) models** and does not support dense (non-MoE) models. For mixed-precision quantization of dense models, please refer to our dedicated method:
+
+[DartMQ](https://github.com/zzningxp/DartMQ) — A unified framework for mixed-precision quantization of dense transformer models.
+
 ## Citation
 
 If you use DartMoQP in your research, please cite:
 
 ```bibtex
 @article{dartmoqp2024,
-  title={DartMoQP: A MoE-Native Unified Framework for Mixed-Precision Quantization \&amp; Structured Pruning},
-  author={Anonymous},
-  journal={arXiv preprint},
-  year={2024}
+  title={DartMoQP: A MoE-Native Unified Framework for Mixed-Precision Quantization and Structured Pruning},
+  author={Zhaoning Zhang},
+  year={2026}
 }
 ```
 
