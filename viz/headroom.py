@@ -500,8 +500,7 @@ def layer_expert_neuron_compare(
     axes[-1].legend(loc="upper right", fontsize=8)
     if layer_start is not None:
         layer_str = f"start={layer_start}, n={len(layers)}"
-    else:
-        layer_str = f"first {max_layers} layers"
+
     fig.suptitle(f"Granularity headroom — {rank_mode}, {layer_str}",
                  fontsize=11, y=1.02)
 
@@ -686,7 +685,6 @@ def bucket_sweep(
     bit) and `layer_expert_neuron_compare` (DP, discrete bit, slice=8).
 
     DP cost is roughly O((s · n_experts)² · bits) per layer-per-slice, so
-    `max_layers` defaults to 4 to keep total runtime under ~5 minutes.
     """
     fig, axes = _multi_model_axes(models, width_per=4.5, height=4.0)
 

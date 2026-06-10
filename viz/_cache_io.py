@@ -219,7 +219,6 @@ def load_all_layers(
     bits: Iterable[int] = (1, 2, 3, 4),
     layer_start: Optional[int] = None,
     num_layers: Optional[int] = None,
-    max_layers: Optional[int] = None,  # keep for backward compatibility
     layer_end: Optional[int] = None,  # keep for backward compatibility
     dir_suffix: str = "",
 ) -> List[LayerSensitivity]:
@@ -232,8 +231,7 @@ def load_all_layers(
         layers = [li for li in layers if li >= layer_start]
     if layer_end is not None:  # backward compatibility
         layers = [li for li in layers if li < layer_end]
-    if max_layers is not None:  # backward compatibility
-        layers = layers[:max_layers]
+
     out = []
     for li in layers:
         if num_layers is not None and len(out) >= num_layers:

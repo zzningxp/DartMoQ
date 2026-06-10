@@ -33,11 +33,11 @@ class DartMoQHybridWrapper(nn.Module):
 
     def __getitem__(self, idx):
         """Allow indexing like a list to get sub-experts of an expert."""
-        return self.experts[idx]
+        return self.sub_experts[idx]
 
     def __len__(self):
-        """Return number of experts."""
-        return len(self.experts)
+        """Return number of sub-experts."""
+        return len(self.sub_experts)
 
 def restructure_hybrid_qscheme(qscheme_expert, slice_expert_num):
 

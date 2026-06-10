@@ -103,7 +103,7 @@ def analyze_neuron_activations(act_fn, inps, gate_proj_weights, up_proj_weights,
 
     flat_states = scores.reshape(-1, inter_size)
     activation_markers = torch.zeros_like(flat_states)
-    # activation_values = torch.zeros_like(flat_states)
+    activation_values = torch.zeros_like(flat_states)
     
     for i in range(total_samples):
         sample_values = flat_states[i]
@@ -112,12 +112,12 @@ def analyze_neuron_activations(act_fn, inps, gate_proj_weights, up_proj_weights,
         # Get indices of top-k absolute values
         top_values, top_indices = torch.topk(abs_values, k=K)
         activation_markers[i, top_indices] = 1.0
-        # for idx in top_indices:
-        #     activation_values[i, idx] = abs_values[idx]
+        for idx in top_indices:
+            activation_values[i, idx] = abs_values[idx]
 
     # Sum up activations across all samples
     activation_counts = activation_markers.sum(dim=0)
-    # activation_values = activation_values.sum(dim=0)
+    activation_values = activation_values.sum(dim=0)
     activation_rates = activation_counts / total_samples
 
     if save_path:

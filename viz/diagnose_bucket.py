@@ -66,9 +66,8 @@ def _dp_uniform_over_dp(layer, bits, bpw, slice_expert_num):
 
 
 def diagnose_model(model_id: str, quantmode: str, rank_mode: str, bpw: int = 2,
-                   bucket_counts=(1, 2, 4, 8, 16, 32), max_layers: int = 4):
-    layers = load_all_layers(model_id, quantmode, rank_mode, bits=(1, 2, 3, 4),
-                             max_layers=max_layers)
+                   bucket_counts=(1, 2, 4, 8, 16, 32)):
+    layers = load_all_layers(model_id, quantmode, rank_mode, bits=(1, 2, 3, 4))
     if not layers:
         print("No layers found for", model_id)
         return
