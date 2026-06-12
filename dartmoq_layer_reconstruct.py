@@ -132,7 +132,8 @@ def reconstruct_moe_from_existing(model, layer, layer_idx, inps,
                         expert_rates_list,
                         expert_activation_rates,
                         slice_expert_num,
-                        target_bpw=qscheme['target_bpw']
+                        target_bpw=qscheme['target_bpw'],
+                        enable_0bit_compensation=not getattr(args, 'disable_0bit_compensation', False)
                     )
 
                 # Convert to torch tensors
@@ -177,7 +178,8 @@ def reconstruct_moe_from_existing(model, layer, layer_idx, inps,
                 expert_energy_list,
                 expert_activation_rates,
                 slice_expert_num,
-                target_bpw=qscheme['target_bpw']
+                target_bpw=qscheme['target_bpw'],
+                enable_0bit_compensation=not getattr(args, 'disable_0bit_compensation', False)
             )
 
         print(f"built dpscheme_list for energy mode target_bpw {qscheme['target_bpw']} for {ori_expert_num} experts")

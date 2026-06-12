@@ -21,6 +21,7 @@ from turboquant_utils.dartmoq_backend import turbo_fake_quant_linear
 from turboquant_utils.dartmoq_backend import turboquant_outlier_activation_aware_rates
 
 QBATCH = 256
+GROUPSIZE = 128
 DEV = torch.device('cuda:0')
 
 @torch.no_grad()
@@ -278,7 +279,7 @@ def analyze_gptq_quant_outlier(layer, layer_idx, hidden_states, ori_expert_num, 
     nsample = hidden_states.shape[0]
 
     gptq = {}
-    groupsize = 128
+    groupsize = GROUPSIZE
     act_order = True
     static_groups = False
     filters = ['up_proj', 'gate_proj', 'down_proj']
@@ -427,7 +428,7 @@ def analyze_turboquant_outlier_activation_aware(
     print(f"analyze_turboquant_outlier_{mode} layer: {layer_idx} with {wbits} bits")
     assert mode in ("innerproduct", "diagonal", "hessian", "qjl_sensitivity", "iipl"), f"Unknown TurboQuant outlier mode: {mode}"
 
-    groupsize = 128
+    groupsize = GROUPSIZE
     flat_states = hidden_states.reshape(-1, hidden_states.shape[-1]).float()
 
     all_rates = []
@@ -497,7 +498,7 @@ def quant_layer_mix_precision(layer, layer_idx, quant_attn, n_experts, slice_exp
     nsample = attn_hidden_states.shape[0]
     assert attn_hidden_states.shape[0] == ffn_hidden_states.shape[0], f"attn_hidden_states.shape: {attn_hidden_states.shape}, ffn_hidden_states.shape: {ffn_hidden_states.shape}"
 
-    groupsize = 128
+    groupsize = GROUPSIZE
     act_order = True
     static_groups = False
     sym = False

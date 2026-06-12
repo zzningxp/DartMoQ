@@ -244,6 +244,7 @@ python run_dartmoq.py \
 | `--save-model` | Save quantized model to disk | False |
 | `--standby-layer-cpu` | Move layers to CPU during quantization | False |
 | `--no-use-hybrid-moe` | Disable hybrid MoE structure and use original experts | False (hybrid enabled by default) |
+| `--disable-0bit-compensation` | Disable 0bit compensation (0bit weights incur quantization overhead) | False (0bit compensation enabled by default) |
 
 ## Rank Modes (`--rank-mode`)
 
@@ -322,6 +323,36 @@ Examples:
 2. **Global sub-expert sorting**: All sub-experts are globally sorted by importance (sensitivity × expert activation rate)
 3. **Monotonic DP search**: Find optimal bit allocation with non-increasing bit constraint
 4. **Remap to per-expert schemes**: Map global allocation back to each expert
+
+## 0bit Compensation
+
+DartMoQP supports **0bit compensation** (enabled by default), which treats pruning (0bit) differently from quantization in the DP search:
+
+- **0bit (pruned) weights**: Do not incur quantization overhead in the effective bit calculation
+- **Non-zero bit weights**: Incur quantization overhead (typically ~0.25 bpw)
+
+This means the DP search can more aggressively use 0bit for less important neurons without being penalized by the overhead cost, leading to better overall quality at the same effective bpw.
+
+To disable 0bit compensation (treat 0bit the same as other bit widths), use:
+```bash
+--disable-0bit-compensation
+```
+
+### How 0bit Compensation Works
+
+1. **Effective bit calculation**:
+   - 0bit: `0.0` (no overhead)
+   - 1bit: `1.25` (1 bit + 0.25 overhead)
+   - 2bit: `2.25` (2 bits + 0.25 overhead)
+   - ... and so on
+
+2. **Target calculation**:
+   - The input `target_bpw` is the raw bpw (no overhead)
+   - The DP uses an effective target of `target_bpw + 0.25` (assuming all bits are non-zero)
+   - During DP search, 0bit can be used to save overhead for unimportant neurons
+
+3. **Performance optimization**:
+   - Uses discretization with `search_scale_factor=20` (0.05 bit precision) for a good balance of speed and accuracy
 
 ## Quantization Modes (`--quantmode`)
 

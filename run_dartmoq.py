@@ -70,6 +70,12 @@ if __name__ == '__main__':
         '  - turboquant_iipl_fea: TurboQuant IIPL (Input-Intermediate Product Loss) mode with full experts activation (not recommended)\n' \
         '  - turboquant_innerproduct_fea: TurboQuant inner product mode with full experts activation (not recommended)\n'
     )
+    parser.add_argument(
+        '--disable-0bit-compensation',
+        action='store_true',
+        default=False,
+        help='Disable 0bit compensation: 0bit weights incur quantization overhead'
+    )
     parser.add_argument(        '--standby-layer-cpu', action='store_true', default=False,
         help='Whether to move quant layers to CPU before and after quantization.' 
     )
