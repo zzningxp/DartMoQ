@@ -178,19 +178,19 @@ We prioritize outputting acc_norm from LM-Evaluation-Harness. Tasks like ARC-Cha
 
 **Model**: deepseek-moe-16b-base/
 
-#### Random seed stability comparison (2.000 bpw)
+#### Random seed stability comparison (2.0 +0.25 bpw)
 
-| Seed | Fixed scheme (a8s8m2) | | Global DP scheme (global-bpw-a8s8m2) | |
-|------|-----------|----|----------|---------------|
-| | WikiText2 | C4 | WikiText2 | C4 |
-| 0 | 24.297 | 33.808 | 7.332 | 11.441 |
-| 42 | 11.761 | 16.495 | 7.282 | 11.461 |
-| 84 | 13.471 | 22.129 | 7.353 | 11.472 |
-| 126 | 15.611 | 23.108 | 7.301 | 11.418 |
-| 168 | 21.978 | 32.428 | 7.316 | 11.449 |
-| 210 | 11.719 | 18.977 | 7.316 | 11.481 |
-| 252 | 11.957 | 19.228 | 7.335 | 11.524 |
-| 294 | 11.169 | 17.529 | 7.303 | 11.438 |
+| Seed | Fixed scheme<br>(2slice) | | Fixed scheme<br>（8slices） | | Global DP scheme<br>(global-bpw-a8s8m2) | |
+|------|-----------|----|----------|---------------|----|----|
+| | WikiText2 | C4 | WikiText2 | C4 | WikiText2 | C4 |
+| 0 | 24.297 | 33.808 | 23.944 | 33.586 | 7.332 | 11.441 |
+| 42 | 11.761 | 16.495 | 11.620 | 16.665 | 7.282 | 11.461 |
+| 84 | 13.471 | 22.129 | 13.319 | 22.085 | 7.353 | 11.472 |
+| 126 | 15.611 | 23.108 | 15.648 | 23.039 | 7.301 | 11.418 |
+| 168 | 21.978 | 32.428 | 21.296 | 32.163 | 7.316 | 11.449 |
+| 210 | 11.719 | 18.977 | 11.612 | 18.716 | 7.316 | 11.481 |
+| 252 | 11.957 | 19.228 | 11.971 | 19.062 | 7.335 | 11.524 |
+| 294 | 11.169 | 17.529 | 11.121 | 17.327 | 7.303 | 11.438 |
 
 ## Installation
 
@@ -353,7 +353,7 @@ python run_dartmoq.py \
     --slices 8 \
     --nsamples 64 \
     --rank-mode turboquant_innerproduct \
-    --quant-scheme a8s8m32222221 \
+    --quant-scheme global-a8s8m32222221 \
     --quantmode turboquant \
     --eval-zero
 
@@ -368,7 +368,7 @@ python run_dartmoq.py \
     --quantmode gptq \
     --eval-zero
 ```
-a8s8m32222221 is the quantization scheme closest to 2 + 0.25 bpw in Camera-Q.
+`global-a8s8m32222221` is the quantization scheme closest to 2 + 0.25 bpw in paper Camera-Q.
 
 ### For Global Optimal Search (Any BPW)
 
