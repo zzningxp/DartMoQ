@@ -5,6 +5,7 @@ result_logs/
 test/
 model/
 logs/
+intermediate_result/
 
 run.*.sh
 *.out

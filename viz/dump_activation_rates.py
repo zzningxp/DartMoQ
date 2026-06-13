@@ -1,4 +1,4 @@
-"""Dump per-layer expert activation rates to ``logs/activation_rates/{model_id}/``.
+"""Dump per-layer expert activation rates to ``intermediate_result/expert_activate/{model_id}/``.
 
 H.3 (activation × sensitivity correlation, see ``viz/headroom.py``) needs the
 per-layer expert activation rate measured on the calibration set. The main
@@ -18,7 +18,7 @@ Usage
     python -m viz.dump_activation_rates --model olmoe-7b-1b --nsamples 64
 
 If the output file already exists for a layer, that layer is skipped. Delete
-the ``logs/activation_rates/<model_id>/`` directory to force a re-dump.
+the ``intermediate_result/expert_activate/<model_id>/`` directory to force a re-dump.
 """
 
 from __future__ import annotations
@@ -27,7 +27,6 @@ import argparse
 import os
 import sys
 
-import numpy as np
 import torch
 import torch.nn as nn
 
@@ -47,7 +46,7 @@ def dump(
     model_path_or_id: str,
     nsamples: int = 64,
     seqlen: int = 2048,
-    out_root: str = "logs/activation_rates",
+    out_root: str = "intermediate_result/expert_activate",
     seed: int = 0,
     overwrite: bool = False,
 ) -> str:
@@ -119,7 +118,7 @@ def dump(
 
     new_inps = torch.zeros_like(inps)
     for layer_idx, layer in enumerate(layers):
-        out_path = os.path.join(out_dir, f"L{layer_idx}.npy")
+        out_path = os.path.join(out_dir, f"{short_id}_L{layer_idx}.pt")
         skip = os.path.exists(out_path) and not overwrite
 
         dev = next(layer.parameters()).device
@@ -164,7 +163,7 @@ def dump(
                 rates = analyze_experts_activation(
                     layer, layer_idx, h_all, top_k, modeltype, save_path=None,
                 )
-                np.save(out_path, rates.detach().cpu().float().numpy())
+                torch.save(rates.detach().cpu(), out_path)
                 print(f"  L{layer_idx}: saved {out_path}  (shape={tuple(rates.shape)})")
             except Exception as e:
                 print(f"  L{layer_idx}: failed ({e}); skipping")
@@ -187,9 +186,9 @@ def main():
     parser.add_argument("--nsamples", type=int, default=64)
     parser.add_argument("--seqlen", type=int, default=2048)
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--out-root", default="logs/activation_rates")
+    parser.add_argument("--out-root", default="intermediate_result/expert_activate")
     parser.add_argument("--overwrite", action="store_true",
-                        help="re-dump even if Lx.npy already exists")
+                        help="re-dump even if layer .pt already exists")
     args = parser.parse_args()
     dump(args.model, args.nsamples, args.seqlen,
          out_root=args.out_root, seed=args.seed, overwrite=args.overwrite)

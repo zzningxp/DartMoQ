@@ -67,7 +67,7 @@ DartMoQP uses a wrapper-based approach that is compatible with all Transformers 
    - Can be disabled with `--no-use-hybrid-moe` to use original experts
 
 
-## Note on Implementation**: 
+**Note on Implementation**: 
 
 The current implementation is a simulated quantization framework. All quantized operations are dequantized back to fp16 for actual inference. While this does not provide real inference speedup, it enables accurate evaluation of quantization error and can guide the design of practical quantization algorithms.
 
@@ -75,19 +75,21 @@ The current implementation is a simulated quantization framework. All quantized 
 
 To avoid redundant computation during parameter sweeps, DartMoQP implements a loss caching mechanism:
 
-1. **Cache Location**: Cached losses are stored in `quant_outlier_{gptq,turboquant}/{model_id}/`
-2. **Cache Format**: Separate cache files for each bit width: `{model_id}_L{layer_idx}_b{bit}.pt`
-3. **Contents**: Each cache file contains per-neuron quantization loss for all experts in that layer
-4. **Reuse**: The cache is automatically reused for different rank modes, quant schemes, and seed values
-5. **Groupsize**: All cache computations use a consistent groupsize of 128
+1. **Cache Location**: Cached losses are stored in `intermediate_result/quant_outlier_{gptq,turboquant}/{rank_mode}/{model_id}/`
+2. **Activation Cache**: Expert activation rates are stored in `intermediate_result/expert_activate/{model_id}/`
+3. **Cache Format**: Separate cache files for each bit width: `{model_id}_L{layer_idx}_b{bit}.pt`; activation-rate files use `{model_id}_L{layer_idx}.pt`
+4. **Contents**: Each quant cache file contains per-neuron quantization loss for all experts in that layer
+5. **Reuse**: The cache is automatically reused for different rank modes, quant schemes, and seed values
+6. **Groupsize**: All cache computations use a consistent groupsize of 128
 
 This caching significantly speeds up hyperparameter searches and ablation studies.
 
 ## Results
 
 DartMoQP achieves state-of-the-art performance across the full 0.5-4.0 bpw range on multiple mainstream MoE models:
-- OLMoE-7B
-- DeepSeekMoE-v1/v2 (16B-A3B)
+- OLMoE-1B-7B (7B-A1B)
+- DeepSeekMoE-v1 (16B-A3B)
+- DeepSeekMoE-v2 (16B-A3B)
 - Moonlight (16B-A3B)
 - Qwen3-30B-A3B
 
@@ -112,23 +114,29 @@ The figures above show perplexity vs. bits-per-weight (bpw) comparisons between 
 
 ### eval-zero tasks
 
+IPE-TQ means inner product encoding with TurboQuant quantization.
+
 #### 1.0 bpw (+0.25)
 
 | Model | Method | WikiText2 | C4 | Avg. | ARC-Challenge | ARC-Easy | PIQA | BoolQ | Winogrande | MNLI | Hellaswag | MMLU |
 |-------|--------|-----------|----|-------|----------|---------------|------|-------|------------|-----------|------|-------|
-| DSMoEv1 | Energy | 278.704 | 573.556 | 0.347 | 0.245 | 0.256 | 0.519 | 0.379 | 0.506 | 0.363 | 0.271 | 0.235 |
+| DSMoEv1 | Energy-DP | 278.704 | 573.556 | 0.347 | 0.245 | 0.256 | 0.519 | 0.379 | 0.506 | 0.363 | 0.271 | 0.235 |
 | DSMoEv1 | GPTQ | 13.255 | 24.718 | 0.488 | 0.314 | 0.602 | 0.675 | 0.613 | 0.590 | 0.363 | 0.485 | 0.258 |
 | DSMoEv1 | IPE-TQ | **10.992** | **23.668** | **0.509** | 0.360 | 0.654 | 0.661 | 0.674 | 0.615 | 0.393 | 0.471 | 0.243 |
-| DSv2-Lite | Energy | 37.792 | 51.508 | 0.384 | 0.230 | 0.316 | 0.550 | 0.572 | 0.504 | 0.336 | 0.307 | 0.260 |
+||
+| DSv2-Lite | Energy-DP | 37.792 | 51.508 | 0.384 | 0.230 | 0.316 | 0.550 | 0.572 | 0.504 | 0.336 | 0.307 | 0.260 |
 | DSv2-Lite | GPTQ | 47.363 | 80.396 | 0.376 | 0.206 | 0.295 | 0.537 | 0.575 | 0.520 | 0.340 | 0.289 | 0.242 |
 | DSv2-Lite | IPE-TQ | **9.686** | **20.855** | **0.487** | 0.346 | 0.635 | 0.657 | 0.535 | 0.551 | 0.369 | 0.480 | 0.326 |
-| Moonlight | Energy | 249.477 | 333.547 | 0.384 | 0.218 | 0.340 | 0.552 | 0.556 | 0.501 | 0.354 | 0.296 | 0.254 |
+||
+| Moonlight | Energy-DP | 249.477 | 333.547 | 0.384 | 0.218 | 0.340 | 0.552 | 0.556 | 0.501 | 0.354 | 0.296 | 0.254 |
 | Moonlight | GPTQ | 69.867 | 145.503 | 0.383 | 0.235 | 0.324 | 0.535 | 0.585 | 0.484 | 0.344 | 0.301 | 0.255 |
 | Moonlight | IPE-TQ | **17.770** | **44.966** | **0.453** | 0.282 | 0.552 | 0.597 | 0.621 | 0.517 | 0.361 | 0.405 | 0.286 |
-| OLMoE | Energy | 16753.113 | 8156.675 | 0.374 | 0.264 | 0.292 | 0.521 | 0.565 | 0.504 | 0.319 | 0.262 | 0.263 |
+||
+| OLMoE | Energy-DP | 16753.113 | 8156.675 | 0.374 | 0.264 | 0.292 | 0.521 | 0.565 | 0.504 | 0.319 | 0.262 | 0.263 |
 | OLMoE | GPTQ | 157.633 | 278.536 | 0.388 | 0.228 | 0.341 | 0.534 | 0.603 | 0.514 | 0.347 | 0.293 | 0.244 |
 | OLMoE | IPE-TQ | **26.214** | **50.927** | **0.467** | 0.338 | 0.571 | 0.618 | 0.614 | 0.553 | 0.365 | 0.407 | 0.269 |
-| Qwen3 | Energy | 1886.718 | 1422.791 | 0.355 | 0.230 | 0.303 | 0.527 | 0.417 | 0.513 | 0.336 | 0.268 | 0.243 |
+||
+| Qwen3 | Energy-DP | 1886.718 | 1422.791 | 0.355 | 0.230 | 0.303 | 0.527 | 0.417 | 0.513 | 0.336 | 0.268 | 0.243 |
 | Qwen3 | GPTQ | 14.977 | 26.547 | 0.502 | 0.303 | 0.526 | 0.638 | 0.703 | 0.636 | 0.405 | 0.522 | 0.286 |
 | Qwen3 | IPE-TQ | **11.683** | **20.935** | **0.593** | 0.436 | 0.703 | 0.666 | 0.805 | 0.666 | 0.473 | 0.550 | 0.447 |
 
@@ -136,19 +144,23 @@ The figures above show perplexity vs. bits-per-weight (bpw) comparisons between 
 
 | Model | Method | WikiText2 | C4 | Avg. | ARC-Challenge | ARC-Easy | PIQA | BoolQ | Winogrande | MNLI | Hellaswag | MMLU |
 |-------|--------|-----------|----|-------|----------|---------------|------|-------|------------|-----------|------|-------|
-| DSMoEv1 | Energy | 9.556 | 15.567 | 0.559 | 0.402 | 0.687 | 0.696 | 0.715 | 0.681 | 0.413 | 0.613 | 0.267 |
+| DSMoEv1 | Energy-DP | 9.556 | 15.567 | 0.559 | 0.402 | 0.687 | 0.696 | 0.715 | 0.681 | 0.413 | 0.613 | 0.267 |
 | DSMoEv1 | GPTQ | 9.182 | **14.573** | 0.556 | 0.380 | 0.671 | 0.740 | 0.630 | 0.654 | 0.419 | 0.650 | 0.308 |
 | DSMoEv1 | IPE-TQ | **8.303** | 14.556 | **0.583** | 0.437 | 0.751 | 0.736 | 0.724 | 0.670 | 0.396 | 0.628 | 0.321 |
-| DSv2-Lite | Energy | 8.982 | 14.218 | 0.600 | 0.439 | 0.721 | 0.715 | 0.772 | 0.640 | 0.442 | 0.638 | 0.433 |
+||
+| DSv2-Lite | Energy-DP | 8.982 | 14.218 | 0.600 | 0.439 | 0.721 | 0.715 | 0.772 | 0.640 | 0.442 | 0.638 | 0.433 |
 | DSv2-Lite | GPTQ | 10.960 | 19.318 | 0.485 | 0.351 | 0.610 | 0.662 | 0.525 | 0.553 | 0.341 | 0.515 | 0.321 |
 | DSv2-Lite | IPE-TQ | **7.559** | **13.201** | **0.600** | 0.462 | 0.760 | 0.735 | 0.713 | 0.646 | 0.412 | 0.640 | 0.429 |
-| Moonlight | Energy | 17.359 | 31.791 | 0.518 | 0.358 | 0.640 | 0.675 | 0.672 | 0.569 | 0.379 | 0.507 | 0.341 |
+||
+| Moonlight | Energy-DP | 17.359 | 31.791 | 0.518 | 0.358 | 0.640 | 0.675 | 0.672 | 0.569 | 0.379 | 0.507 | 0.341 |
 | Moonlight | GPTQ | 21.825 | 48.189 | 0.454 | 0.290 | 0.488 | 0.619 | 0.635 | 0.512 | 0.372 | 0.409 | 0.309 |
 | Moonlight | IPE-TQ | **11.069** | **24.682** | **0.544** | 0.393 | 0.701 | 0.700 | 0.637 | 0.572 | 0.385 | 0.556 | 0.404 |
-| OLMoE | Energy | 33.461 | 46.650 | 0.517 | 0.375 | 0.611 | 0.683 | 0.654 | 0.586 | 0.400 | 0.541 | 0.287 |
+||
+| OLMoE | Energy-DP | 33.461 | 46.650 | 0.517 | 0.375 | 0.611 | 0.683 | 0.654 | 0.586 | 0.400 | 0.541 | 0.287 |
 | OLMoE | GPTQ | 24.131 | 38.991 | 0.470 | 0.306 | 0.539 | 0.632 | 0.584 | 0.549 | 0.412 | 0.468 | 0.266 |
 | OLMoE | IPE-TQ | **15.985** | **23.934** | **0.566** | 0.439 | 0.707 | 0.695 | 0.665 | 0.655 | 0.438 | 0.585 | 0.344 |
-| Qwen3 | Energy | 12.143 | 19.126 | 0.675 | 0.563 | 0.807 | 0.733 | 0.851 | 0.677 | 0.660 | 0.480 | 0.626 |
+||
+| Qwen3 | Energy-DP | 12.143 | 19.126 | 0.675 | 0.563 | 0.807 | 0.733 | 0.851 | 0.677 | 0.660 | 0.480 | 0.626 |
 | Qwen3 | GPTQ | 14.849 | 26.743 | 0.488 | 0.302 | 0.520 | 0.667 | 0.724 | 0.584 | 0.407 | 0.418 | 0.286 |
 | Qwen3 | IPE-TQ | **10.037** | **15.522** | **0.717** | 0.607 | 0.843 | 0.762 | 0.872 | 0.709 | 0.659 | 0.681 | 0.607 |
 
@@ -156,19 +168,23 @@ The figures above show perplexity vs. bits-per-weight (bpw) comparisons between 
 
 | Model | Method | WikiText2 | C4 | Avg. | ARC-Challenge | ARC-Easy | PIQA | BoolQ | Winogrande | MNLI | Hellaswag | MMLU |
 |-------|--------|-----------|----|-------|----------|---------------|------|-------|------------|-----------|------|-------|
-| DSMoEv1 | Energy | 7.804 | 11.856 | 0.624 | 0.464 | 0.750 | 0.763 | 0.764 | 0.712 | 0.450 | 0.729 | 0.358 |
+| DSMoEv1 | Energy-DP | 7.804 | 11.856 | 0.624 | 0.464 | 0.750 | 0.763 | 0.764 | 0.712 | 0.450 | 0.729 | 0.358 |
 | DSMoEv1 | GPTQ | 8.012 | 12.270 | 0.605 | 0.435 | 0.739 | 0.785 | 0.680 | 0.700 | 0.425 | 0.724 | 0.353 |
 | DSMoEv1 | IPE-TQ | **7.307** | **11.469** | **0.632** | 0.475 | 0.776 | 0.784 | 0.757 | 0.709 | 0.460 | 0.717 | 0.376 |
-| DSv2-Lite | Energy | 7.350 | 11.267 | 0.665 | 0.504 | 0.790 | 0.774 | 0.797 | 0.707 | 0.502 | 0.742 | 0.503 |
+||
+| DSv2-Lite | Energy-DP | 7.350 | 11.267 | 0.665 | 0.504 | 0.790 | 0.774 | 0.797 | 0.707 | 0.502 | 0.742 | 0.503 |
 | DSv2-Lite | GPTQ | 8.072 | 12.520 | 0.599 | 0.468 | 0.742 | 0.760 | 0.608 | 0.688 | 0.378 | 0.700 | 0.447 |
 | DSv2-Lite | IPE-TQ | **6.851** | **10.827** | **0.686** | 0.506 | 0.800 | 0.785 | 0.773 | 0.705 | 0.501 | 0.734 | - |
-| Moonlight | Energy | 10.357 | 20.762 | 0.607 | 0.468 | 0.747 | 0.733 | 0.734 | 0.594 | 0.428 | 0.628 | 0.526 |
+||
+| Moonlight | Energy-DP | 10.357 | 20.762 | 0.607 | 0.468 | 0.747 | 0.733 | 0.734 | 0.594 | 0.428 | 0.628 | 0.526 |
 | Moonlight | GPTQ | 10.297 | 25.400 | 0.541 | 0.386 | 0.689 | 0.678 | 0.656 | 0.572 | 0.375 | 0.531 | 0.438 |
 | Moonlight | IPE-TQ | **8.228** | **17.386** | **0.616** | 0.493 | 0.772 | 0.746 | 0.671 | 0.618 | 0.438 | 0.649 | 0.537 |
-| OLMoE | Energy | 17.284 | 22.748 | 0.613 | 0.468 | 0.734 | 0.721 | 0.748 | 0.648 | 0.496 | 0.682 | 0.410 |
+||
+| OLMoE | Energy-DP | 17.284 | 22.748 | 0.613 | 0.468 | 0.734 | 0.721 | 0.748 | 0.648 | 0.496 | 0.682 | 0.410 |
 | OLMoE | GPTQ | 15.960 | 22.287 | 0.553 | 0.380 | 0.642 | 0.686 | 0.671 | 0.601 | 0.445 | 0.624 | 0.377 |
 | OLMoE | IPE-TQ | **12.561** | **17.461** | **0.639** | 0.509 | 0.761 | 0.762 | 0.740 | 0.685 | 0.506 | 0.702 | 0.451 |
-| Qwen3 | Energy | 10.330 | 14.973 | 0.746 | 0.660 | 0.862 | 0.798 | 0.883 | 0.700 | 0.788 | 0.537 | 0.742 |
+||
+| Qwen3 | Energy-DP | 10.330 | 14.973 | 0.746 | 0.660 | 0.862 | 0.798 | 0.883 | 0.700 | 0.788 | 0.537 | 0.742 |
 | Qwen3 | GPTQ | 11.440 | 18.400 | 0.619 | 0.451 | 0.727 | 0.752 | 0.823 | 0.663 | 0.576 | 0.508 | 0.454 |
 | Qwen3 | IPE-TQ | **9.417** | **13.785** | **0.762** | 0.673 | 0.867 | 0.793 | 0.885 | 0.699 | 0.744 | 0.738 | 0.698 |
 
@@ -450,7 +466,9 @@ See `run.sh` for examples of sweeping across bpw values from 0.5 to 4.0.
 
 ## Output Files
 
-- Quantization cache: `quant_outlier_{gptq,turboquant}/{model_id}/`
+- Intermediate results: `intermediate_result/`
+  - Quantization cache: `intermediate_result/quant_outlier_{gptq,turboquant}/{rank_mode}/{model_id}/`
+  - Expert activation cache: `intermediate_result/expert_activate/{model_id}/`
 - Visualizations: `plot/`
 - Saved models: `models/dartmoq_{model_type}_{rank_mode}_{quant_scheme}/`
 

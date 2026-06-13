@@ -29,7 +29,7 @@ y-axis = bit-width, each expert offset slightly along the bit axis and
 coloured by a viridis index so the per-expert structure is visible.
 
 All data sourced from the cached sensitivity tensors under
-``quant_outlier_{quantmode}/{rank_mode}/{model_id}/``; no model is reloaded.
+``intermediate_result/quant_outlier_{quantmode}/{rank_mode}/{model_id}/``; no model is reloaded.
 
 Usage
 -----

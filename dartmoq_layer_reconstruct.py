@@ -18,13 +18,31 @@ from collections import Counter
 from dartmoq_hybridmoe import DartMoQHybridWrapper
 from dartmoq_hybridmoe import restructure_hybrid_qscheme
 
+INTERMEDIATE_RESULT_DIR = "intermediate_result"
+
 @torch.no_grad()
-def reconstruct_moe_from_existing(model, layer, layer_idx, inps, 
-                                  n_experts, n_activated, slice_expert_num, 
-                                  ori_activated, device, qscheme, 
+def reconstruct_moe_from_existing(model, layer, layer_idx, inps,
+                                  n_experts, n_activated, slice_expert_num,
+                                  ori_activated, device, qscheme,
                                   use_hybrid_moe, global_mode, quantmode, args):
     if global_mode:
-        expert_activation_rates = analyze_experts_activation(layer, layer_idx, inps, ori_activated, model.config.model_type)
+        cache_dir = os.path.join(INTERMEDIATE_RESULT_DIR, "expert_activate", model.model_id)
+        cache_path = os.path.join(cache_dir, f"{model.model_id}_L{layer_idx}.pt")
+        os.makedirs(cache_dir, exist_ok=True)
+        if os.path.exists(cache_path):
+            try:
+                expert_activation_rates = torch.load(cache_path, map_location="cpu")
+                expert_activation_rates = torch.as_tensor(expert_activation_rates).detach().cpu()
+                print(f"Loading cached expert activation rates for layer {layer_idx}", flush=True)
+            except Exception as e:
+                print(f"Failed to load cached expert activation rates {e}")
+                expert_activation_rates = analyze_experts_activation(layer, layer_idx, inps, ori_activated, model.config.model_type)
+                torch.save(expert_activation_rates.detach().cpu(), cache_path)
+                print(f"Saved expert activation rates to {cache_path}")
+        else:
+            expert_activation_rates = analyze_experts_activation(layer, layer_idx, inps, ori_activated, model.config.model_type)
+            torch.save(expert_activation_rates.detach().cpu(), cache_path)
+            print(f"Saved expert activation rates to {cache_path}")
 
     ori_expert_num = len(layer.mlp.experts)
     
@@ -77,8 +95,8 @@ def reconstruct_moe_from_existing(model, layer, layer_idx, inps,
         outlier_label = args.rank_mode if turboquant_outlier_mode else quantmode
         print(f"simulate {outlier_label} outlier_bits {outlier_bits}")
 
-        cache_root = f"quant_outlier_{quantmode}"
-        cache_dir = f"{cache_root}/{args.rank_mode}/{model.model_id}"
+        cache_root = os.path.join(INTERMEDIATE_RESULT_DIR, f"quant_outlier_{quantmode}")
+        cache_dir = os.path.join(cache_root, args.rank_mode, model.model_id)
         # print(f"cache_dir: {cache_dir}")
         os.makedirs(cache_dir, exist_ok=True)
 

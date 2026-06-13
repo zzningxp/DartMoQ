@@ -10,6 +10,8 @@ import numpy as np
 from scipy.optimize import curve_fit
 from typing import Dict
 
+INTERMEDIATE_RESULT_DIR = "intermediate_result"
+
 def calculate_quant_overhead(groupsize: int, quant_type: str = "gptq") -> float:
 
     # Currently both use the same formula, but we keep the quant_type parameter
@@ -1197,7 +1199,7 @@ def plot_neuron_rates_across_bits(
 
     print(f"Plotting neuron rates: model={model_id}, layer={layer_idx}, quant={quant_type}, expert={expert_idx}, p={p}")
 
-    cache_dir = f"quant_outlier_{quant_type}/{model_id}{dir_suffix}"
+    cache_dir = os.path.join(INTERMEDIATE_RESULT_DIR, f"quant_outlier_{quant_type}", f"{model_id}{dir_suffix}")
     rates = {}
 
     # Load data for each bit
@@ -1301,7 +1303,7 @@ def test_read_rates_from_file():
     model_id = "deepseek-v1-moe-16b"
     layer_idx = 1
     quant_type = "turboquant"
-    cache_dir = f"quant_outlier_{quant_type}/{model_id}"
+    cache_dir = os.path.join(INTERMEDIATE_RESULT_DIR, f"quant_outlier_{quant_type}", model_id)
 
     p = 20
     expert_idx = 0
@@ -1476,7 +1478,7 @@ def plot_bit_overlap(
     for quant_type in quant_types:
         print(f"Plotting bit overlap: model={model_id}, layer={layer_idx}, quant={quant_type}, expert={expert_idx}")
 
-        cache_dir = f"quant_outlier_{quant_type}/{model_id}{dir_suffix}"
+        cache_dir = os.path.join(INTERMEDIATE_RESULT_DIR, f"quant_outlier_{quant_type}", f"{model_id}{dir_suffix}")
         rates = {}
 
         # Load data for each bit
@@ -1611,7 +1613,7 @@ def plot_block_losses_overlap(
     for quant_type in quant_types:
         print(f"Plotting block losses: model={model_id}, layer={layer_idx}, quant={quant_type}")
 
-        cache_dir = f"quant_outlier_{quant_type}/{model_id}{dir_suffix}"
+        cache_dir = os.path.join(INTERMEDIATE_RESULT_DIR, f"quant_outlier_{quant_type}", f"{model_id}{dir_suffix}")
 
         # First, load one bit to get number of experts
         n_experts = None

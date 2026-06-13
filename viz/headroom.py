@@ -30,7 +30,7 @@ Four motivation figures (each is one panel in the paper):
                                   by going one level finer.
 
 All figures are driven by the cached sensitivity tensors in
-``quant_outlier_{quantmode}/{rank_mode}/{model_id}/``; no model needs to be
+``intermediate_result/quant_outlier_{quantmode}/{rank_mode}/{model_id}/``; no model needs to be
 reloaded. ``act_vs_sens`` additionally consumes per-expert activation-rate
 tensors materialised by ``viz/dump_activation_rates.py``.
 
@@ -50,12 +50,13 @@ from typing import Dict, List, Optional, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
+import torch
 
 # Make sibling modules importable when run as a script.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from viz._cache_io import (
-    LayerSensitivity, apply_paper_style, discover_layers, discover_models,
+    EXPERT_ACTIVATE_ROOT, LayerSensitivity, apply_paper_style, discover_layers, discover_models,
     expert_total_loss, load_all_layers, load_layer, model_label,
     neuron_loss_matrix, resolve_model_id,
 )
@@ -223,22 +224,25 @@ def amgm(
 def _load_activation_rates(model_id: str) -> Dict[int, np.ndarray]:
     """Load per-layer expert activation rates dumped by viz/dump_activation_rates.py.
 
-    Expected files:  logs/activation_rates/{model_id}/L{layer}.npy
+    Expected files:  intermediate_result/expert_activate/{model_id}/{model_id}_L{layer}.pt
                      shape = (n_experts,), values in [0,1] summing to top_k.
     """
     out = {}
-    root = f"logs/activation_rates/{model_id}"
+    root = os.path.join(EXPERT_ACTIVATE_ROOT, model_id)
     if not os.path.isdir(root):
         return out
     for fn in sorted(os.listdir(root)):
-        if not fn.endswith(".npy"):
+        if not fn.endswith(".pt"):
             continue
-        m = fn.replace(".npy", "")
+        prefix = f"{model_id}_L"
+        if not fn.startswith(prefix):
+            continue
         try:
-            li = int(m.replace("L", ""))
+            li = int(fn[len(prefix):-3])
         except ValueError:
             continue
-        out[li] = np.load(os.path.join(root, fn))
+        data = torch.load(os.path.join(root, fn), map_location="cpu")
+        out[li] = data.detach().float().cpu().numpy() if torch.is_tensor(data) else np.asarray(data)
     return out
 
 
@@ -271,7 +275,7 @@ def act_vs_sens(
 
     act_rates = _load_activation_rates(model_id)
     if not act_rates:
-        print(f"[act_vs_sens] no activation-rate data at logs/activation_rates/{model_id}/; "
+        print(f"[act_vs_sens] no activation-rate data at {EXPERT_ACTIVATE_ROOT}/{model_id}/; "
               f"run `python -m viz.dump_activation_rates --model {model_id}` first")
         return ""
 

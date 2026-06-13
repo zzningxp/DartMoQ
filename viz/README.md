@@ -7,7 +7,7 @@ viz/
 ├── headroom.py                # 4 motivation panels  — see table below
 ├── metric_geometry.py         # G.1 – G.4 — Challenge 1 (sensitivity geometry)
 ├── seed_stability.py          # S.1 – S.5 — TurboQuant seed variance diagnosis
-├── dump_activation_rates.py   # one-off dumper: per-layer expert activation rates → logs/
+├── dump_activation_rates.py   # one-off dumper: per-layer expert activation rates → intermediate_result/
 └── legacy.py                  # re-exports of the old per-layer plotting functions
 ```
 
@@ -19,9 +19,10 @@ the full model path** you would pass to `run_dartmoq.py`
 (e.g. `--model /home/.../OLMoE-1B-7B-0924/`). The path → id mapping lives in
 `viz/_cache_io.py::resolve_model_id` and mirrors `eval_dartmoq.load_model`.
 
-All inputs come from the `quant_outlier_{quantmode}/{rank_mode}/{model_id}/`
+All inputs come from the `intermediate_result/quant_outlier_{quantmode}/{rank_mode}/{model_id}/`
 cache directories. **`act_vs_sens` additionally requires** per-layer activation
-rates materialised by `viz/dump_activation_rates.py` (one-time cost per model).
+rates materialised under `intermediate_result/expert_activate/{model_id}/` by
+`viz/dump_activation_rates.py` (one-time cost per model).
 
 ---
 
@@ -69,7 +70,7 @@ rates materialised by `viz/dump_activation_rates.py` (one-time cost per model).
 > ```bash
 > python -m viz.dump_activation_rates --model deepseek-v1-moe-16b
 > ```
-> Output goes to `logs/activation_rates/<short_id>/L<layer>.npy`. If absent,
+> Output goes to `intermediate_result/expert_activate/<short_id>/<short_id>_L<layer>.pt`. If absent,
 > `act_vs_sens` prints a hint and is silently skipped.
 
 > ⚠️ **`layer_expert_neuron_compare`** runs the loss-model oracle (DP on
@@ -136,13 +137,14 @@ python -m viz.seed_stability --model deepseek-v1-moe-16b \
 ## Cache directory layout
 
 ```
-quant_outlier_{quantmode}/
-  {rank_mode}/
+intermediate_result/
+  quant_outlier_{quantmode}/
+    {rank_mode}/
+      {model_id}/
+        {model_id}_L{layer}_b{bit}.pt # list[Tensor], length = n_experts
+  expert_activate/
     {model_id}/
-      {model_id}_L{layer}_b{bit}.pt   # list[Tensor], length = n_experts
-logs/activation_rates/
-  {model_id}/
-    L{layer}.npy                      # shape = (n_experts,)
+      {model_id}_L{layer}.pt          # shape = (n_experts,)
 ```
 
 `viz._cache_io.load_layer()` abstracts the sensitivity cache. The activation

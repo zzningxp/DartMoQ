@@ -3,7 +3,7 @@
 The DartMoQ pipeline ([dartmoq_layer_reconstruct.py:80](../dartmoq_layer_reconstruct.py#L80))
 caches per-(model, layer, bit) sensitivity tensors under
 
-    quant_outlier_{quantmode}/{rank_mode}/{model_id}/{model_id}_L{layer}_b{bit}.pt
+    intermediate_result/quant_outlier_{quantmode}/{rank_mode}/{model_id}/{model_id}_L{layer}_b{bit}.pt
 
 Each `.pt` file is a `List[Tensor]` whose length equals the number of experts and
 each element has shape `(n_neurons,)`. We never recompute these from scratch in the
@@ -30,7 +30,9 @@ import numpy as np
 import torch
 
 
-CACHE_ROOT_PATTERN = "quant_outlier_{quantmode}/{rank_mode}/{model_id}"
+INTERMEDIATE_RESULT_DIR = "intermediate_result"
+CACHE_ROOT_PATTERN = os.path.join(INTERMEDIATE_RESULT_DIR, "quant_outlier_{quantmode}", "{rank_mode}", "{model_id}")
+EXPERT_ACTIVATE_ROOT = os.path.join(INTERMEDIATE_RESULT_DIR, "expert_activate")
 
 
 # -------- model registry ----------------------------------------------------
@@ -59,7 +61,7 @@ _PATH_TO_ID = [
 def resolve_model_id(name_or_path: str) -> str:
     """Accept either a short cache id (e.g. ``olmoe-7b-1b``) or a full model
     path (e.g. ``/home/user/models/OLMoE-1B-7B-0924/``), and return the short
-    cache id that the pipeline uses for ``quant_outlier_*/{rank}/{id}/``.
+    cache id that the pipeline uses for ``intermediate_result/quant_outlier_*/{rank}/{id}/``.
 
     Raises ``ValueError`` if no mapping is found, so the caller fails loudly
     rather than silently searching a non-existent cache directory.
@@ -204,7 +206,7 @@ def discover_layers(quantmode: str, rank_mode: str, model_id: str,
 
 def discover_models(quantmode: str, rank_mode: str) -> List[str]:
     """Return all model ids that have cached data for (quantmode, rank_mode)."""
-    base = f"quant_outlier_{quantmode}/{rank_mode}"
+    base = os.path.join(INTERMEDIATE_RESULT_DIR, f"quant_outlier_{quantmode}", rank_mode)
     if not os.path.isdir(base):
         return []
     return sorted(
@@ -280,8 +282,8 @@ def apply_paper_style() -> None:
 
 
 __all__ = [
-    "LayerSensitivity", "KNOWN_MODELS",
-    "cache_dir", "load_layer", "load_all_layers",
+    "LayerSensitivity", "KNOWN_MODELS", "INTERMEDIATE_RESULT_DIR",
+    "EXPERT_ACTIVATE_ROOT", "cache_dir", "load_layer", "load_all_layers",
     "discover_layers", "discover_models",
     "resolve_model_id", "resolve_model_path",
     "expert_total_loss", "neuron_loss_matrix",
