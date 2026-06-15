@@ -33,6 +33,7 @@ import torch
 INTERMEDIATE_RESULT_DIR = "intermediate_result"
 CACHE_ROOT_PATTERN = os.path.join(INTERMEDIATE_RESULT_DIR, "quant_outlier_{quantmode}", "{rank_mode}", "{model_id}")
 EXPERT_ACTIVATE_ROOT = os.path.join(INTERMEDIATE_RESULT_DIR, "expert_activate")
+expert_cosine_ROOT = os.path.join(INTERMEDIATE_RESULT_DIR, "expert_cosine")
 
 
 # -------- model registry ----------------------------------------------------
@@ -281,11 +282,148 @@ def apply_paper_style() -> None:
     })
 
 
+# -------- expert_cosine cache -------------------------------------------------
+def expert_cosine_cache_path(
+    model_id: str,
+    quantmode: str,
+    rank_mode: str,
+    bit: int,
+    task_name: str,
+    layers: Optional[Sequence[int]] = None,
+    experts: Optional[Sequence[int]] = None,
+    seeds: Optional[Sequence[int]] = None,
+    preserve_fracs: Optional[Sequence[float]] = None,
+) -> str:
+    """Get cache path for expert_cosine summary."""
+    sanitized_task = _slug(task_name)
+    parts = [model_id, quantmode, rank_mode, f"b{bit}"]
+    if layers:
+        layer_str = "_".join(str(l) for l in sorted(layers))
+        parts.append(f"L{layer_str}")
+    if experts:
+        expert_str = "_".join(str(e) for e in sorted(experts))
+        parts.append(f"E{expert_str}")
+    if seeds:
+        seed_str = "_".join(str(s) for s in sorted(seeds))
+        parts.append(f"S{seed_str}")
+    if preserve_fracs:
+        frac_str = "_".join(f"{f:.4f}".rstrip('0').rstrip('.') if '.' in f"{f:.4f}" else f"{f:.4f}" for f in preserve_fracs)
+        parts.append(f"F{frac_str}")
+    parts.append(sanitized_task)
+    filename = "_".join(parts) + ".json"
+    return os.path.join(expert_cosine_ROOT, filename)
+
+
+def _validate_cache_compatibility(
+    cache: dict,
+    seeds: Optional[Sequence[int]] = None,
+    preserve_fracs: Optional[Sequence[float]] = None,
+    strategies: Optional[Sequence[str]] = None,
+) -> bool:
+    """Validate if cache is compatible with requested parameters."""
+    # Check seeds if provided
+    if seeds is not None:
+        cache_seeds = cache.get("seeds", [])
+        if sorted(cache_seeds) != sorted(seeds):
+            return False
+
+    # Check preserve_fracs if provided
+    if preserve_fracs is not None:
+        cache_fracs = cache.get("preserve_fracs", [])
+        # Convert both to float for comparison
+        cache_fracs_float = [float(f) for f in cache_fracs]
+        req_fracs_float = [float(f) for f in preserve_fracs]
+        if cache_fracs_float != req_fracs_float:
+            return False
+
+    # Check strategies if provided (check first target)
+    if strategies is not None and cache.get("targets"):
+        first_target = cache["targets"][0]
+        cache_strategies = set(first_target.get("strategies", {}).keys())
+        req_strategies = set(strategies)
+        if not req_strategies.issubset(cache_strategies):
+            return False
+
+    return True
+
+
+def load_expert_cosine_cache(
+    model_id: str,
+    quantmode: str,
+    rank_mode: str,
+    bit: int,
+    task_name: str,
+    layers: Optional[Sequence[int]] = None,
+    experts: Optional[Sequence[int]] = None,
+    seeds: Optional[Sequence[int]] = None,
+    preserve_fracs: Optional[Sequence[float]] = None,
+    strategies: Optional[Sequence[str]] = None,
+) -> Optional[dict]:
+    """Load expert_cosine summary from cache if exists and compatible."""
+    # First try with all parameters
+    cache_path = expert_cosine_cache_path(
+        model_id, quantmode, rank_mode, bit, task_name,
+        layers, experts, seeds, preserve_fracs
+    )
+    if os.path.exists(cache_path):
+        with open(cache_path, "r") as f:
+            import json
+            cache = json.load(f)
+            if _validate_cache_compatibility(cache, seeds, preserve_fracs, strategies):
+                return cache
+
+    # If not found or incompatible, try legacy path (without seeds/fracs)
+    legacy_path = expert_cosine_cache_path(
+        model_id, quantmode, rank_mode, bit, task_name, layers, experts
+    )
+    if os.path.exists(legacy_path):
+        with open(legacy_path, "r") as f:
+            import json
+            cache = json.load(f)
+            if _validate_cache_compatibility(cache, seeds, preserve_fracs, strategies):
+                return cache
+
+    return None
+
+
+def save_expert_cosine_cache(
+    summary: dict,
+    model_id: str,
+    quantmode: str,
+    rank_mode: str,
+    bit: int,
+    task_name: str,
+    layers: Optional[Sequence[int]] = None,
+    experts: Optional[Sequence[int]] = None,
+) -> str:
+    """Save expert_cosine summary to cache."""
+    seeds = summary.get("seeds")
+    preserve_fracs = summary.get("preserve_fracs")
+    cache_path = expert_cosine_cache_path(
+        model_id, quantmode, rank_mode, bit, task_name,
+        layers, experts, seeds, preserve_fracs
+    )
+    os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+    with open(cache_path, "w") as f:
+        import json
+        json.dump(summary, f, indent=2)
+    print(f"[expert_cosine] cache saved to {cache_path}")
+    return cache_path
+
+
+def _slug(text: object) -> str:
+    """Sanitize text for use in filenames."""
+    import re
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", str(text)).strip("_") or "unknown"
+
+
 __all__ = [
     "LayerSensitivity", "KNOWN_MODELS", "INTERMEDIATE_RESULT_DIR",
-    "EXPERT_ACTIVATE_ROOT", "cache_dir", "load_layer", "load_all_layers",
+    "EXPERT_ACTIVATE_ROOT", "expert_cosine_ROOT",
+    "cache_dir", "load_layer", "load_all_layers",
     "discover_layers", "discover_models",
     "resolve_model_id", "resolve_model_path",
+    "expert_cosine_cache_path", "load_expert_cosine_cache", "save_expert_cosine_cache",
     "expert_total_loss", "neuron_loss_matrix",
     "model_label", "apply_paper_style",
 ]

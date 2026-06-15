@@ -112,8 +112,9 @@ def _block_loss_scatter(
     all_block_losses: List[np.ndarray],
     *,
     expert_cmap_name: str = "viridis",
-    marker_size: float = 40.0,
+    marker_size: float = 20.0,
     alpha: float = 0.5,
+    show_legend: bool = True,
 ) -> None:
     """Render the block-loss scatter into ax (replicates plot_block_losses_overlap)."""
     n_experts = len(all_block_losses)
@@ -125,16 +126,26 @@ def _block_loss_scatter(
     expert_spacing = 0.8 / max(n_experts, 1)
     expert_cmap = plt.get_cmap(expert_cmap_name, n_experts)
 
+    # Draw scatter points (no labels here - we'll create legend manually)
     for bit in bits_sorted:
         for expert_idx, block_losses in enumerate(all_block_losses):
             loss_values = block_losses[bit_to_idx[bit], :]
             y_pos = float(bit) - 0.4 + expert_idx * expert_spacing + expert_spacing / 2
             r, g, b, _ = expert_cmap(expert_idx)
-            label = f"{bit}-bit" if expert_idx == 0 else None
             ax.scatter(loss_values, np.full(len(loss_values), y_pos),
                        color=(r, g, b, alpha),
-                       s=marker_size, alpha=alpha,
-                       label=label)
+                       s=marker_size, alpha=alpha)
+
+    # Create legend for experts (show a few representative ones, reversed order)
+    if show_legend:
+        n_experts = len(all_block_losses)
+        legend_experts = min(16, n_experts)  # show up to 16 experts in legend
+        step = max(1, n_experts // legend_experts)
+        expert_indices = list(range(0, n_experts, step))[:legend_experts]
+        for expert_idx in reversed(expert_indices):
+            r, g, b, _ = expert_cmap(expert_idx)
+            ax.scatter([], [], color=(r, g, b, alpha), s=marker_size,
+                       label=f"Expert {expert_idx}")
 
 
 # ----------------------------------------------------------------------------
@@ -151,6 +162,7 @@ def dist_quant_compare(
     bits: Tuple[int, ...] = (0, 1, 2, 3, 4),  # note: bit 0 is used for scatter,
     # but global x-range is computed from bit>0 to avoid axis stretching
     out_dir: str = OUT_ROOT,
+    use_pdf: bool = False,
 ) -> str:
     """Compare per-neuron sensitivity distributions across quant algorithms.
 
@@ -234,7 +246,9 @@ def dist_quant_compare(
         ])
         g = _gini(flat)
 
-        _block_loss_scatter(ax, bits_sorted, bit_to_idx, all_block_losses)
+        # Only show legend on the last plot
+        is_last = (ax == axes[-1])
+        _block_loss_scatter(ax, bits_sorted, bit_to_idx, all_block_losses, show_legend=is_last)
 
         ax.set_xscale("log")
         if global_min is not None:
@@ -263,7 +277,8 @@ def dist_quant_compare(
     )
 
     os.makedirs(out_dir, exist_ok=True)
-    fp = os.path.join(out_dir, f"quant_compare_{model_id}_L{layer_idx}.png")
+    ext = "pdf" if use_pdf else "png"
+    fp = os.path.join(out_dir, f"quant_compare_{model_id}_L{layer_idx}.{ext}")
     plt.tight_layout()
     plt.savefig(fp)
     plt.close(fig)
@@ -282,6 +297,7 @@ def dist_quadratic_fit(
     num_blocks: int = DEFAULT_NUM_BLOCKS,
     bits: Tuple[int, ...] = (1, 2, 3, 4),
     out_dir: str = OUT_ROOT,
+    use_pdf: bool = False,
 ) -> str:
     """Evidence that per-block log-loss is well-fit by a quadratic in bit-width.
 
@@ -367,7 +383,8 @@ def dist_quadratic_fit(
     )
 
     os.makedirs(out_dir, exist_ok=True)
-    fp = os.path.join(out_dir, f"quadratic_fit_{model_id}_L{layer_idx}.png")
+    ext = "pdf" if use_pdf else "png"
+    fp = os.path.join(out_dir, f"quadratic_fit_{model_id}_L{layer_idx}.{ext}")
     plt.tight_layout()
     plt.savefig(fp)
     plt.close(fig)
@@ -388,17 +405,19 @@ def main():
     parser.add_argument("--skip", nargs="+", default=[],
                         choices=["quant_compare", "quadratic_fit"],
                         help="panel names to skip")
+    parser.add_argument("--pdf", action="store_true",
+                        help="save as PDF instead of PNG")
     args = parser.parse_args()
 
     model_id = resolve_model_id(args.model)
 
     if "quant_compare" not in args.skip:
         print("\n=== dist_quant_compare ===")
-        dist_quant_compare(model_id, args.layer, num_blocks=args.num_blocks)
+        dist_quant_compare(model_id, args.layer, num_blocks=args.num_blocks, use_pdf=args.pdf)
 
     if "quadratic_fit" not in args.skip:
         print("\n=== dist_quadratic_fit ===")
-        dist_quadratic_fit(model_id, args.layer, num_blocks=args.num_blocks)
+        dist_quadratic_fit(model_id, args.layer, num_blocks=args.num_blocks, use_pdf=args.pdf)
 
 
 if __name__ == "__main__":

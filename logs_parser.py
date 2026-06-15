@@ -295,7 +295,7 @@ def _format_value(field: str, value) -> str:
 
 
 def _format_plain_value(record: RunRecord, field: str, value) -> str:
-    if record.status == "failed":
+    if record.status in ("failed", "partial", "incomplete"):
         if field in ("runtime_ppl", "error"):
             return "----"
         if field != "status" and value == "":

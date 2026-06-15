@@ -492,6 +492,35 @@ python -m viz.distribution
 python -m viz.dump_activation_rates
 ```
 
+## Log Parser
+
+DartMoQP provides a log parser to parse Slurm log files into aligned benchmark rows.
+
+```bash
+# Basic usage - plain text output to stdout
+python logs_parser.py slurm-*.out
+
+# CSV output (writes to <logfile>.csv)
+python logs_parser.py --format csv slurm-*.out
+
+# JSON output (writes to <logfile>.json)
+python logs_parser.py --format json slurm-*.out
+
+# Markdown table output (writes to <logfile>.md)
+python logs_parser.py --format md slurm-*.out
+
+# Only include complete runs (filter out failed/partial)
+python logs_parser.py --complete-only slurm-*.out
+```
+
+The parser extracts:
+- Model configuration (model path, slices, quant scheme, rank mode, quant mode, bpw)
+- Perplexity results (WikiText2, C4)
+- Zero-shot task metrics (ARC-Challenge, ARC-Easy, PIQA, BoolQ, Winogrande, MNLI, Hellaswag, MMLU)
+- Runtime information
+- Error status and messages
+- The parser handles incomplete/crashed runs gracefully by leaving missing metrics empty instead of misaligning columns.
+
 ## Dense Model Quantization Support
 
 DartMoQP is specifically designed for **Mixture-of-Experts (MoE) models** and does not support dense (non-MoE) models. For mixed-precision quantization of dense models, please refer to our dedicated method:
@@ -519,5 +548,6 @@ This project is released under the same license as the base models it quantizes.
 - GPTQ for the per-row quantization baseline
 - TurboQuant for the vector quantization approach
 - CAMERA (http://arxiv.org/abs/2508.02322) for energy-based importance estimation (for comparison only)
+- ExLlamaV3 (https://github.com/turboderp-org/exllamav3)
 - All the MoE model authors for their open-source contributions
 
