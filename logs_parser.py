@@ -1,0 +1,389 @@
+#!/usr/bin/env python3
+"""Parse DartMoQ slurm logs into aligned benchmark rows.
+
+The parser scans each log sequentially and starts a new row at every
+"Loading model: (ppl) ..." line. Metrics that are missing because a run crashed
+or skipped downstream evaluation are left empty instead of being shifted onto a
+neighboring row.
+"""
+
+from __future__ import annotations
+
+import argparse
+import csv
+import html
+import json
+import os
+import re
+import sys
+from dataclasses import asdict, dataclass, field
+from typing import Iterable
+
+
+TASK_ALIASES = {
+    "arc_challenge": "arc_c",
+    "arc_easy": "arc_e",
+    "piqa": "piqa",
+    "boolq": "boolq",
+    "winogrande": "wino",
+    "mnli": "mnli",
+    "hellaswag": "hella",
+    "mmlu": "mmlu",
+}
+
+TASK_FIELDS = [
+    "arc_c_acc", "arc_c_acc_norm",
+    "arc_e_acc", "arc_e_acc_norm",
+    "piqa_acc", "piqa_acc_norm",
+    "boolq_acc",
+    "wino_acc",
+    "mnli_acc",
+    "hella_acc", "hella_acc_norm",
+    "mmlu_acc",
+]
+
+FIELDNAMES = [
+    "source", "run_idx", "start_line", "end_line", "status", "start_time",
+    "model_path", "model_name", "slices", "quant_scheme", "rank_mode",
+    "moe_struct", "quantmode", "bpw", "ppl_wikitext2", "ppl_c4",
+    *TASK_FIELDS,
+    "runtime_ppl", "error",
+]
+
+LOADING_RE = re.compile(r"Loading model:\s*\(ppl\)\s*(?P<path>\S+)")
+QUANTMODE_RE = re.compile(
+    r"slices/quant-scheme/rank-mode/moe-struct/quantmode:\s*\(ppl\)\s+"
+    r"(?P<slices>\S+)\s+(?P<quant_scheme>\S+)\s+(?P<rank_mode>\S+)\s+"
+    r"(?P<moe_struct>\S+)\s+(?P<quantmode>\S+)"
+)
+BPW_RE = re.compile(r"\bwith bpw\s+(?P<bpw>[-+0-9.eE]+)")
+PPL_RE = re.compile(r"ppl on (?P<dataset>wikitext2|c4):\s*(?P<value>[-+0-9.eE]+)")
+TASK_RE = re.compile(r"^(?P<task>[A-Za-z0-9_]+)\s+\{(?P<body>.*)\}\s+time:")
+METRIC_RE_TEMPLATE = r"['\"]{name}['\"]:\s*(?:np\.float64\()?([-+0-9.eE]+)"
+RUNTIME_RE = re.compile(r"Runtime of training-free construction \(ppl\):\s*(?P<value>[-+0-9.eE]+)")
+START_TIME_RE = re.compile(r"Current start time:\s*(?P<value>.+)")
+FATAL_RE = re.compile(r"Segmentation fault|Traceback|RuntimeError|CUDA out of memory|Killed", re.IGNORECASE)
+MODEL_NAME_RE = re.compile(r"^model:\s+(?P<path>\S+)\s+(?P<name>\S+)")
+NUMERIC_RE = re.compile(r"^[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?$")
+
+
+@dataclass
+class RunRecord:
+    source: str
+    run_idx: int
+    start_line: int
+    end_line: int = 0
+    status: str = "incomplete"
+    start_time: str = ""
+    model_path: str = ""
+    model_name: str = ""
+    slices: str = ""
+    quant_scheme: str = ""
+    rank_mode: str = ""
+    moe_struct: str = ""
+    quantmode: str = ""
+    bpw: str = ""
+    ppl_wikitext2: str = ""
+    ppl_c4: str = ""
+    arc_c_acc: str = ""
+    arc_c_acc_norm: str = ""
+    arc_e_acc: str = ""
+    arc_e_acc_norm: str = ""
+    piqa_acc: str = ""
+    piqa_acc_norm: str = ""
+    boolq_acc: str = ""
+    wino_acc: str = ""
+    mnli_acc: str = ""
+    hella_acc: str = ""
+    hella_acc_norm: str = ""
+    mmlu_acc: str = ""
+    runtime_ppl: str = ""
+    error: str = ""
+    _fatal: bool = field(default=False, repr=False)
+
+    def finalize(self, end_line: int) -> None:
+        self.end_line = end_line
+        if self._fatal:
+            self.status = "failed"
+        elif self.runtime_ppl or self.mmlu_acc or self.ppl_wikitext2 or self.ppl_c4:
+            missing = [name for name in TASK_FIELDS if not getattr(self, name)]
+            if not self.ppl_wikitext2 or not self.ppl_c4 or missing:
+                self.status = "partial"
+            else:
+                self.status = "ok"
+        else:
+            self.status = "incomplete"
+
+    def public_dict(self) -> dict[str, str | int]:
+        row = asdict(self)
+        row.pop("_fatal", None)
+        return row
+
+
+def _clean_line(line: str) -> str:
+    return line.replace("\r", "").strip()
+
+
+def _last_path_component(path: str) -> str:
+    return os.path.basename(path.rstrip("/"))
+
+
+def _metric(body: str, name: str) -> str:
+    match = re.search(METRIC_RE_TEMPLATE.format(name=re.escape(name)), body)
+    return match.group(1) if match else ""
+
+
+def _append_error(record: RunRecord, line: str) -> None:
+    message = line.strip()
+    if not message:
+        return
+    if record.error:
+        record.error += " | " + message
+    else:
+        record.error = message
+
+
+def parse_log(path: str) -> list[RunRecord]:
+    records: list[RunRecord] = []
+    current: RunRecord | None = None
+    pending_start_time = ""
+    source = os.path.basename(path)
+    last_line_no = 0
+
+    with open(path, "r", encoding="utf-8", errors="replace") as f:
+        for line_no, raw_line in enumerate(f, 1):
+            last_line_no = line_no
+            line = _clean_line(raw_line)
+            if not line:
+                continue
+
+            start_match = START_TIME_RE.search(line)
+            if start_match:
+                pending_start_time = start_match.group("value").strip()
+
+            loading_match = LOADING_RE.search(line)
+            if loading_match:
+                if current is not None:
+                    current.finalize(line_no - 1)
+                    records.append(current)
+                current = RunRecord(
+                    source=source,
+                    run_idx=len(records) + 1,
+                    start_line=line_no,
+                    start_time=pending_start_time,
+                    model_path=loading_match.group("path"),
+                )
+                current.model_name = _last_path_component(current.model_path)
+                continue
+
+            if current is None:
+                continue
+
+            quantmode_match = QUANTMODE_RE.search(line)
+            if quantmode_match:
+                for key, value in quantmode_match.groupdict().items():
+                    setattr(current, key, value)
+                continue
+
+            bpw_match = BPW_RE.search(line)
+            if bpw_match and not current.bpw:
+                current.bpw = bpw_match.group("bpw")
+                continue
+
+            model_name_match = MODEL_NAME_RE.search(line)
+            if model_name_match:
+                current.model_name = model_name_match.group("name")
+                continue
+
+            ppl_match = PPL_RE.search(line)
+            if ppl_match:
+                dataset = ppl_match.group("dataset")
+                setattr(current, f"ppl_{dataset}", ppl_match.group("value"))
+                continue
+
+            task_match = TASK_RE.search(line)
+            if task_match:
+                task = task_match.group("task")
+                prefix = TASK_ALIASES.get(task)
+                if prefix:
+                    body = task_match.group("body")
+                    acc = _metric(body, "acc,none")
+                    acc_norm = _metric(body, "acc_norm,none")
+                    if acc:
+                        setattr(current, f"{prefix}_acc", acc)
+                    if acc_norm and f"{prefix}_acc_norm" in TASK_FIELDS:
+                        setattr(current, f"{prefix}_acc_norm", acc_norm)
+                continue
+
+            runtime_match = RUNTIME_RE.search(line)
+            if runtime_match:
+                current.runtime_ppl = runtime_match.group("value")
+                continue
+
+            if FATAL_RE.search(line):
+                current._fatal = True
+                _append_error(current, line)
+
+    if current is not None:
+        current.finalize(last_line_no)
+        records.append(current)
+
+    return records
+
+
+def parse_logs(paths: Iterable[str]) -> list[RunRecord]:
+    records: list[RunRecord] = []
+    for path in paths:
+        records.extend(parse_log(path))
+    return records
+
+
+def _format_row(record: RunRecord, fields: list[str]) -> dict[str, str]:
+    row = record.public_dict()
+    return {field: _format_value(field, row.get(field, "")) for field in fields}
+
+
+def write_csv(records: list[RunRecord], out) -> None:
+    writer = csv.DictWriter(out, fieldnames=FIELDNAMES, extrasaction="ignore")
+    writer.writeheader()
+    for record in records:
+        writer.writerow(_format_row(record, FIELDNAMES))
+
+
+DISPLAY_FIELDS = [
+    "model_name", "slices", "quant_scheme", "rank_mode", "quantmode", "bpw",
+    "ppl_wikitext2", "ppl_c4",
+    "arc_c_acc", "arc_c_acc_norm", "arc_e_acc", "arc_e_acc_norm",
+    "piqa_acc", "piqa_acc_norm", "boolq_acc", "wino_acc", "mnli_acc",
+    "hella_acc", "hella_acc_norm", "mmlu_acc", "status", "runtime_ppl", "error",
+]
+
+PLAIN_HEADERS = {
+    "model_name": "model",
+    "slices": "sli",
+    "quant_scheme": "qsch",
+    "rank_mode": "rank",
+    "quantmode": "qmode",
+    "bpw": "bpw",
+    "ppl_wikitext2": "wiki",
+    "ppl_c4": "c4",
+    "arc_c_acc": "arc_c",
+    "arc_c_acc_norm": "arc_c_n",
+    "arc_e_acc": "arc_e",
+    "arc_e_acc_norm": "arc_e_n",
+    "piqa_acc": "piqa",
+    "piqa_acc_norm": "piqa_n",
+    "boolq_acc": "boolq",
+    "wino_acc": "wino",
+    "mnli_acc": "mnli",
+    "hella_acc": "hella",
+    "hella_acc_norm": "hella_n",
+    "mmlu_acc": "mmlu",
+    "status": "status",
+    "runtime_ppl": "time",
+    "error": "err",
+}
+
+
+def _format_value(field: str, value) -> str:
+    if field == "error":
+        return ""
+    text = str(value)
+    if NUMERIC_RE.match(text):
+        text = f"{float(text):.4f}".rstrip("0").rstrip(".")
+    return text.replace("\t", " ")
+
+
+def _format_plain_value(record: RunRecord, field: str, value) -> str:
+    if record.status == "failed":
+        if field in ("runtime_ppl", "error"):
+            return "----"
+        if field != "status" and value == "":
+            return "----"
+    return _format_value(field, value)
+
+
+def _tab_padding(text: str, width: int, tab_size: int = 8) -> str:
+    tabs = (width - len(text)) // tab_size + 1
+    return "\t" * tabs
+
+
+def write_plain(records: list[RunRecord], out) -> None:
+    rows: list[list[str]] = []
+    for record in records:
+        row = record.public_dict()
+        rows.append([_format_plain_value(record, col, row.get(col, "")) for col in DISPLAY_FIELDS])
+    rows.append([PLAIN_HEADERS[field] for field in DISPLAY_FIELDS])
+
+    widths = [max(len(row[i]) for row in rows) for i in range(len(DISPLAY_FIELDS))]
+    for row in rows:
+        pieces = []
+        for i, value in enumerate(row):
+            pieces.append(value)
+            if i != len(row) - 1:
+                pieces.append(_tab_padding(value, widths[i]))
+        print("".join(pieces), file=out)
+
+
+def write_markdown(records: list[RunRecord], out) -> None:
+    print("<table>", file=out)
+    print("  <thead>", file=out)
+    print("    <tr>", file=out)
+    for field in DISPLAY_FIELDS:
+        print(f"      <th>{html.escape(PLAIN_HEADERS[field])}</th>", file=out)
+    print("    </tr>", file=out)
+    print("  </thead>", file=out)
+    print("  <tbody>", file=out)
+    for record in records:
+        row = record.public_dict()
+        print("    <tr>", file=out)
+        for field in DISPLAY_FIELDS:
+            value = _format_plain_value(record, field, row.get(field, ""))
+            print(f"      <td>{html.escape(value)}</td>", file=out)
+        print("    </tr>", file=out)
+    print("  </tbody>", file=out)
+    print("</table>", file=out)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="Parse DartMoQ slurm logs without positional grep/awk alignment."
+    )
+    parser.add_argument("logs", nargs="+", help="slurm log files to parse")
+    parser.add_argument(
+        "--format", "-f", choices=("plain", "csv", "json", "md"), default="plain",
+        help="output format. plain prints to stdout; csv/json/md write to <logfile>.<format>.",
+    )
+    parser.add_argument(
+        "--complete-only", action="store_true",
+        help="only emit rows whose status is ok",
+    )
+    args = parser.parse_args(argv)
+
+    if args.format == "plain":
+        records = parse_logs(args.logs)
+        if args.complete_only:
+            records = [record for record in records if record.status == "ok"]
+        write_plain(records, sys.stdout)
+        return 0
+
+    for log_path in args.logs:
+        records = parse_log(log_path)
+        if args.complete_only:
+            records = [record for record in records if record.status == "ok"]
+
+        output_path = f"{log_path}.{args.format}"
+        with open(output_path, "w", newline="", encoding="utf-8") as out:
+            if args.format == "json":
+                json.dump([_format_row(record, FIELDNAMES) for record in records], out, indent=2, ensure_ascii=False)
+                print(file=out)
+            elif args.format == "md":
+                write_markdown(records, out)
+            else:
+                write_csv(records, out)
+
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
