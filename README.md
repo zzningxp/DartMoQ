@@ -35,6 +35,8 @@ DartMoQP is a Mixture-of-Experts-native unified quantization and structured prun
 ### Framework Design
 
 DartMoQP adopts a quantization-method-agnostic global dynamic programming search pipeline that automatically matches the optimal sensitivity metric and bit allocation scheme for any quantization algorithm.
+<img src="figs/slice-moe-arch1.svg">
+<img src="figs/slice-moe-arch2.svg">
 
 ## Neuron-Level Expert Reordering
 
