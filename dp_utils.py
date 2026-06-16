@@ -1769,23 +1769,8 @@ def plot_block_losses_overlap(
     plt.close()
 
 if __name__ == "__main__":
-    # Sanity checks for the DP / extrapolation logic. The per-layer plot_* helpers
-    # below are kept for backwards compatibility (and re-exported through
-    # `viz.legacy`); for publication-quality figures use:
-    #     python -m viz.headroom
-    #     python -m viz.metric_geometry
+    # Sanity checks for the DP / extrapolation logic.
     # test_read_rates_from_file()
     # test_dp_utils()
     # test_global_dp_utils()
-
-    # Example: legacy per-layer scatter (kept commented; uncomment to regenerate)
-    # for l in range(1, 27):
-    #     plot_block_losses_overlap(
-    #         model_id="deepseek-v1-moe-16b",
-    #         layer_idx=l,
-    #         quant_types=["gptq", "turboquant"],
-    #         outlier_bits={1, 2, 3, 4},
-    #         use_0bit=True,
-    #         dir_suffix="",
-    #     )
     pass

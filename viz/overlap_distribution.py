@@ -1,8 +1,8 @@
-"""Distribution-of-sensitivity visualizations.
+"""Loss overlap and distribution visualizations.
 
 Two motivation figures (each is one panel in the paper):
 
-    dist_quant_compare    — *Observation 2.* Different quantization algorithms
+    overlap_quant_compare — *Observation 2.* Different quantization algorithms
                               (GPTQ vs TurboQuant) yield qualitatively different
                               per-neuron loss distributions for the same model
                               and layer. Tight clustering along the bit axis ⇒
@@ -13,7 +13,7 @@ Two motivation figures (each is one panel in the paper):
                               with a Gini coefficient in each title to quantify
                               the spread.
 
-    dist_quadratic_fit    — *Observation 3.* Per-block log-loss is well-fit by
+    overlap_quadratic_fit — *Observation 3.* Per-block log-loss is well-fit by
                               a quadratic in bit-width:
                                   log L(b) = p·b² + q·b + r.
                               Each (expert, block) gets a scatter of its
@@ -33,9 +33,9 @@ All data sourced from the cached sensitivity tensors under
 
 Usage
 -----
-    python -m viz.distribution                           # default model & layer
-    python -m viz.distribution --model olmoe-7b-1b --layer 8
-    python -m viz.distribution --skip quadratic_fit
+    python -m viz.overlap_distribution                   # default model & layer
+    python -m viz.overlap_distribution --model olmoe-7b-1b --layer 8
+    python -m viz.overlap_distribution --skip quadratic_fit
 """
 
 from __future__ import annotations
@@ -57,7 +57,7 @@ from viz._cache_io import (
     resolve_model_id,
 )
 
-OUT_ROOT = "plot/distribution"
+OUT_ROOT = "plot/overlap_distribution"
 DEFAULT_NUM_BLOCKS = 8
 
 
@@ -151,7 +151,7 @@ def _block_loss_scatter(
 # ----------------------------------------------------------------------------
 # Observation 2 — different quantizers, different distributions
 # ----------------------------------------------------------------------------
-def dist_quant_compare(
+def overlap_quant_compare(
     model_id: str,
     layer_idx: int,
     quants: Sequence[Tuple[str, str, str]] = (
@@ -282,14 +282,14 @@ def dist_quant_compare(
     plt.tight_layout()
     plt.savefig(fp)
     plt.close(fig)
-    print(f"[dist_quant_compare] saved {fp}")
+    print(f"[overlap_quant_compare] saved {fp}")
     return fp
 
 
 # ----------------------------------------------------------------------------
 # Observation 3 — log-quadratic fit
 # ----------------------------------------------------------------------------
-def dist_quadratic_fit(
+def overlap_quadratic_fit(
     model_id: str,
     layer_idx: int,
     quantmode: str = "turboquant",
@@ -388,7 +388,7 @@ def dist_quadratic_fit(
     plt.tight_layout()
     plt.savefig(fp)
     plt.close(fig)
-    print(f"[dist_quadratic_fit] saved {fp}  |  median R² = {median_r2:.3f}")
+    print(f"[overlap_quadratic_fit] saved {fp}  |  median R² = {median_r2:.3f}")
     return fp
 
 
@@ -412,12 +412,12 @@ def main():
     model_id = resolve_model_id(args.model)
 
     if "quant_compare" not in args.skip:
-        print("\n=== dist_quant_compare ===")
-        dist_quant_compare(model_id, args.layer, num_blocks=args.num_blocks, use_pdf=args.pdf)
+        print("\n=== overlap_quant_compare ===")
+        overlap_quant_compare(model_id, args.layer, num_blocks=args.num_blocks, use_pdf=args.pdf)
 
     if "quadratic_fit" not in args.skip:
-        print("\n=== dist_quadratic_fit ===")
-        dist_quadratic_fit(model_id, args.layer, num_blocks=args.num_blocks, use_pdf=args.pdf)
+        print("\n=== overlap_quadratic_fit ===")
+        overlap_quadratic_fit(model_id, args.layer, num_blocks=args.num_blocks, use_pdf=args.pdf)
 
 
 if __name__ == "__main__":

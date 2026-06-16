@@ -242,23 +242,19 @@ def _format_row(record: RunRecord, fields: list[str]) -> dict[str, str]:
 
 
 def _format_export_row(record: RunRecord) -> dict[str, str]:
-    """格式化用于导出的行，使用 EXPORT_HEADERS 中的名称"""
     row = record.public_dict()
     return {EXPORT_HEADERS[field]: _format_value(field, row.get(field, "")) for field in FIELDNAMES}
 
 
 def _csv_escape(value: str) -> str:
-    """简单的 CSV 转义"""
     if "," in value or '"' in value or "\n" in value:
-        return f'"{value.replace('"', '""')}"'
+        return f'"{value.replace(chr(34), chr(34)*2)}"'
     return value
 
 
 def write_csv(records: list[RunRecord], out) -> None:
-    # 先写出表头
     headers = [EXPORT_HEADERS[field] for field in FIELDNAMES]
     out.write(",".join([_csv_escape(h) for h in headers]) + "\n")
-    # 再写出数据
     for record in records:
         row = _format_row(record, FIELDNAMES)
         out.write(",".join([_csv_escape(row.get(field, "")) for field in FIELDNAMES]) + "\n")
@@ -299,7 +295,6 @@ PLAIN_HEADERS = {
     "error": "err",
 }
 
-# 用于 CSV/JSON/Markdown 输出的表头名称
 EXPORT_HEADERS = {
     "model_name": "model",
     "slices": "slices",
@@ -350,7 +345,6 @@ def _format_plain_value(record: RunRecord, field: str, value) -> str:
 
 def write_plain(records: list[RunRecord], out) -> None:
     rows: list[list[str]] = []
-    # 先加表头，这样 widths 计算更准确
     rows.append([PLAIN_HEADERS[field] for field in DISPLAY_FIELDS])
     for record in records:
         row = record.public_dict()
@@ -362,7 +356,6 @@ def write_plain(records: list[RunRecord], out) -> None:
         for i, value in enumerate(row):
             pieces.append(value)
             if i != len(row) - 1:
-                # 直接用空格对齐，更稳妥
                 padding = " " * (widths[i] - len(value) + 2)
                 pieces.append(padding)
         print("".join(pieces), file=out)
