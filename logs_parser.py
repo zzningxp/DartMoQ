@@ -10,7 +10,6 @@ neighboring row.
 from __future__ import annotations
 
 import argparse
-import csv
 import html
 import json
 import os
@@ -43,11 +42,10 @@ TASK_FIELDS = [
 ]
 
 FIELDNAMES = [
-    "source", "run_idx", "start_line", "end_line", "status", "start_time",
-    "model_path", "model_name", "slices", "quant_scheme", "rank_mode",
+    "model_name", "slices", "quant_scheme", "rank_mode",
     "moe_struct", "quantmode", "bpw", "ppl_wikitext2", "ppl_c4",
     *TASK_FIELDS,
-    "runtime_ppl", "error",
+    "status", "runtime_ppl",
 ]
 
 LOADING_RE = re.compile(r"Loading model:\s*\(ppl\)\s*(?P<path>\S+)")
@@ -243,11 +241,27 @@ def _format_row(record: RunRecord, fields: list[str]) -> dict[str, str]:
     return {field: _format_value(field, row.get(field, "")) for field in fields}
 
 
+def _format_export_row(record: RunRecord) -> dict[str, str]:
+    """格式化用于导出的行，使用 EXPORT_HEADERS 中的名称"""
+    row = record.public_dict()
+    return {EXPORT_HEADERS[field]: _format_value(field, row.get(field, "")) for field in FIELDNAMES}
+
+
+def _csv_escape(value: str) -> str:
+    """简单的 CSV 转义"""
+    if "," in value or '"' in value or "\n" in value:
+        return f'"{value.replace('"', '""')}"'
+    return value
+
+
 def write_csv(records: list[RunRecord], out) -> None:
-    writer = csv.DictWriter(out, fieldnames=FIELDNAMES, extrasaction="ignore")
-    writer.writeheader()
+    # 先写出表头
+    headers = [EXPORT_HEADERS[field] for field in FIELDNAMES]
+    out.write(",".join([_csv_escape(h) for h in headers]) + "\n")
+    # 再写出数据
     for record in records:
-        writer.writerow(_format_row(record, FIELDNAMES))
+        row = _format_row(record, FIELDNAMES)
+        out.write(",".join([_csv_escape(row.get(field, "")) for field in FIELDNAMES]) + "\n")
 
 
 DISPLAY_FIELDS = [
@@ -263,6 +277,7 @@ PLAIN_HEADERS = {
     "slices": "sli",
     "quant_scheme": "qsch",
     "rank_mode": "rank",
+    "moe_struct": "moe",
     "quantmode": "qmode",
     "bpw": "bpw",
     "ppl_wikitext2": "wiki",
@@ -284,13 +299,43 @@ PLAIN_HEADERS = {
     "error": "err",
 }
 
+# 用于 CSV/JSON/Markdown 输出的表头名称
+EXPORT_HEADERS = {
+    "model_name": "model",
+    "slices": "slices",
+    "quant_scheme": "quant_scheme",
+    "rank_mode": "rank_mode",
+    "moe_struct": "moe_struct",
+    "quantmode": "quantmode",
+    "bpw": "bpw",
+    "ppl_wikitext2": "ppl_wikitext2",
+    "ppl_c4": "ppl_c4",
+    "arc_c_acc": "arc_c_acc",
+    "arc_c_acc_norm": "arc_c_acc_norm",
+    "arc_e_acc": "arc_e_acc",
+    "arc_e_acc_norm": "arc_e_acc_norm",
+    "piqa_acc": "piqa_acc",
+    "piqa_acc_norm": "piqa_acc_norm",
+    "boolq_acc": "boolq_acc",
+    "wino_acc": "wino_acc",
+    "mnli_acc": "mnli_acc",
+    "hella_acc": "hella_acc",
+    "hella_acc_norm": "hella_acc_norm",
+    "mmlu_acc": "mmlu_acc",
+    "status": "status",
+    "runtime_ppl": "total_time",
+}
+
 
 def _format_value(field: str, value) -> str:
     if field == "error":
         return ""
     text = str(value)
-    if NUMERIC_RE.match(text):
-        text = f"{float(text):.4f}".rstrip("0").rstrip(".")
+    if NUMERIC_RE.fullmatch(text):
+        try:
+            text = f"{float(text):.4f}".rstrip("0").rstrip(".")
+        except (ValueError, TypeError):
+            pass
     return text.replace("\t", " ")
 
 
@@ -303,17 +348,13 @@ def _format_plain_value(record: RunRecord, field: str, value) -> str:
     return _format_value(field, value)
 
 
-def _tab_padding(text: str, width: int, tab_size: int = 8) -> str:
-    tabs = (width - len(text)) // tab_size + 1
-    return "\t" * tabs
-
-
 def write_plain(records: list[RunRecord], out) -> None:
     rows: list[list[str]] = []
+    # 先加表头，这样 widths 计算更准确
+    rows.append([PLAIN_HEADERS[field] for field in DISPLAY_FIELDS])
     for record in records:
         row = record.public_dict()
         rows.append([_format_plain_value(record, col, row.get(col, "")) for col in DISPLAY_FIELDS])
-    rows.append([PLAIN_HEADERS[field] for field in DISPLAY_FIELDS])
 
     widths = [max(len(row[i]) for row in rows) for i in range(len(DISPLAY_FIELDS))]
     for row in rows:
@@ -321,7 +362,9 @@ def write_plain(records: list[RunRecord], out) -> None:
         for i, value in enumerate(row):
             pieces.append(value)
             if i != len(row) - 1:
-                pieces.append(_tab_padding(value, widths[i]))
+                # 直接用空格对齐，更稳妥
+                padding = " " * (widths[i] - len(value) + 2)
+                pieces.append(padding)
         print("".join(pieces), file=out)
 
 
@@ -329,15 +372,15 @@ def write_markdown(records: list[RunRecord], out) -> None:
     print("<table>", file=out)
     print("  <thead>", file=out)
     print("    <tr>", file=out)
-    for field in DISPLAY_FIELDS:
-        print(f"      <th>{html.escape(PLAIN_HEADERS[field])}</th>", file=out)
+    for field in FIELDNAMES:
+        print(f"      <th>{html.escape(EXPORT_HEADERS[field])}</th>", file=out)
     print("    </tr>", file=out)
     print("  </thead>", file=out)
     print("  <tbody>", file=out)
     for record in records:
         row = record.public_dict()
         print("    <tr>", file=out)
-        for field in DISPLAY_FIELDS:
+        for field in FIELDNAMES:
             value = _format_plain_value(record, field, row.get(field, ""))
             print(f"      <td>{html.escape(value)}</td>", file=out)
         print("    </tr>", file=out)
@@ -375,7 +418,7 @@ def main(argv: list[str] | None = None) -> int:
         output_path = f"{log_path}.{args.format}"
         with open(output_path, "w", newline="", encoding="utf-8") as out:
             if args.format == "json":
-                json.dump([_format_row(record, FIELDNAMES) for record in records], out, indent=2, ensure_ascii=False)
+                json.dump([_format_export_row(record) for record in records], out, indent=2, ensure_ascii=False)
                 print(file=out)
             elif args.format == "md":
                 write_markdown(records, out)

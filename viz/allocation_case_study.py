@@ -10,9 +10,10 @@ strategies:
 
 Usage
 -----
-    python -m viz.allocation_case_study                    # all models
-    python -m viz.allocation_case_study --model dsv1      # one model
+    python -m viz.allocation_case_study                    # all models (PNG)
+    python -m viz.allocation_case_study --model dsv1      # one model (PNG)
     python -m viz.allocation_case_study --pdf             # save as PDF
+    python -m viz.allocation_case_study --svg             # save as SVG
 """
 
 from __future__ import annotations
@@ -35,14 +36,27 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 OUT_ROOT = "plot/allocation_case_study"
 DATA_ROOT = "logs/allocation_case_study"
 
-# Custom colormap for bit widths: 0-bit is purple, 1-bit blue, 2-bit green,
-# 3-bit orange, 4-bit red
+# Original color scheme (commented out):
+# BIT_COLORS = [
+#     (0.85, 0.85, 0.85),   # 0-bit: light gray
+#     (1.00, 0.87, 0.47),   # 1-bit: #FFDF79
+#     (0.96, 0.78, 0.68),   # 2-bit: #F6C6AD
+#     (0.90, 0.50, 0.15),   # 3-bit: orange
+#     (0.85, 0.20, 0.25),   # 4-bit: red
+# ]
+# BIT_COLORS = [
+#     (0.85, 0.85, 0.85),   # 0-bit: light gray
+#     (0.55, 0.72, 0.90),   # 1-bit: light blue
+#     (0.20, 0.65, 0.35),   # 2-bit: green
+#     (0.90, 0.50, 0.15),   # 3-bit: orange
+#     (0.31, 0.65, 0.18),   # 4-bit: #4EA72E
+# ]
 BIT_COLORS = [
-    (0.45, 0.30, 0.60),   # 0-bit: deep purple
-    (0.25, 0.45, 0.70),   # 1-bit: blue
-    (0.20, 0.65, 0.35),   # 2-bit: green
-    (0.90, 0.50, 0.15),   # 3-bit: orange
-    (0.85, 0.20, 0.25),   # 4-bit: red
+    (0.95, 0.95, 0.95),   # 0-bit: very light gray
+    (0.84, 0.96, 0.69),   # 1-bit: #D7F5B1
+    (0.62, 0.89, 0.81),   # 2-bit: #9EE2CF
+    (1.00, 0.75, 0.00),   # 3-bit: #FFC000
+    (0.97, 0.55, 0.49),   # 4-bit: #F78D7C
 ]
 BIT_CMAP = ListedColormap(BIT_COLORS, name="bitwidth")
 
@@ -65,6 +79,8 @@ def apply_paper_style():
         "savefig.bbox": "tight",
         "pdf.fonttype": 42,
         "ps.fonttype": 42,
+        # SVG settings for better PPT compatibility
+        "svg.fonttype": "none",  # Keep text as text, not convert to paths
     })
 
 
@@ -136,9 +152,10 @@ def plot_single_panel(ax, matrix: np.ndarray, stats: dict, method_name: str) -> 
     # Gap between squares (relative to square size)
     gap = 0.15
 
-    # Set axes limits to fit all squares with gaps
-    ax.set_xlim(-gap, n_slices - 1 + gap)
-    ax.set_ylim(n_experts - 1 + gap, -gap)  # Reverse y-axis for imshow-like orientation
+    # Set axes limits with extra margin to avoid clipping
+    margin = 0.6
+    ax.set_xlim(-margin, n_slices - 1 + margin)
+    ax.set_ylim(n_experts - 1 + margin, -margin)  # Reverse y-axis for imshow-like orientation
 
     # Square size = 1 - gap on each side
     square_size = 1.0 - 2 * gap
@@ -167,22 +184,31 @@ def plot_single_panel(ax, matrix: np.ndarray, stats: dict, method_name: str) -> 
     ax.set_xticklabels([str(t) for t in slice_ticks])
 
     # Stats annotation - place BELOW the plot
-    zero_pct = stats.get("zero_bit_percent", 0.0)
-    high_bit_pct = stats.get("high_bit_percent", 0.0)
+    counts = stats.get("counts", {})
+    c0 = counts.get("0", 0)
+    c1 = counts.get("1", 0)
+    c2 = counts.get("2", 0)
+    c3 = counts.get("3", 0)
+    c4 = counts.get("4", 0)
 
-    stats_text = (
-        f"0-bit: {zero_pct:.0f}% | ≥3-bit: {high_bit_pct:.0f}%"
-    )
+    stats_line1 = f"0bit:{c0} | 1bit:{c1} | 2bit:{c2}"
+    stats_line2 = f"3bit:{c3} | 4bit:{c4}"
+    stats_text = f"{stats_line1}\n{stats_line2}"
+
     ax.text(
         0.5, -0.10, stats_text,
         transform=ax.transAxes,
         fontsize=7,
         verticalalignment="top",
         horizontalalignment="center",
-        bbox=dict(boxstyle="round", facecolor="white", alpha=0.9, pad=0.3),
+        bbox=dict(boxstyle="round", facecolor="white", alpha=0.2, pad=1, linewidth=0.5),
     )
 
     ax.set_title(method_name, fontsize=9, fontweight="bold", pad=6)
+
+    # Make axes spines semi-transparent
+    for spine in ax.spines.values():
+        spine.set_alpha(0.3)
 
     # Return a dummy im object for colorbar compatibility
     dummy_im = ax.imshow([[0]], cmap=BIT_CMAP, vmin=0, vmax=4, visible=False)
@@ -193,9 +219,10 @@ def plot_allocation_comparison(
     data: AllocationData,
     out_dir: str = OUT_ROOT,
     use_pdf: bool = False,
+    use_svg: bool = False,
 ) -> str:
     """Main visualization: 1 row × 6 columns (3 flat + 3 skew)."""
-    fig = plt.figure(figsize=(16, 8))
+    fig = plt.figure(figsize=(16, 7))
 
     # 6 panels in one row: [flat ×3, skew ×3] + colorbar
     gs = fig.add_gridspec(1, 7, width_ratios=[1, 1, 1, 0.05, 1, 1, 1], wspace=0.18)
@@ -259,6 +286,10 @@ def plot_allocation_comparison(
     cbar.set_ticklabels(["0-bit", "1-bit", "2-bit", "3-bit", "4-bit"], fontsize=5)
     cbar.set_label("Bit Width", fontsize=6, labelpad=4)
     cbar.ax.tick_params(labelsize=5, length=2, pad=1)
+    # Remove colorbar frame
+    cbar.outline.set_visible(False)
+    # Remove colorbar frame
+    cbar.outline.set_visible(False)
 
     # Main title
     fig.suptitle(
@@ -273,9 +304,18 @@ def plot_allocation_comparison(
         ax.set_aspect(0.4)
 
     os.makedirs(out_dir, exist_ok=True)
-    ext = "pdf" if use_pdf else "png"
+    if use_svg:
+        ext = "svg"
+    elif use_pdf:
+        ext = "pdf"
+    else:
+        ext = "png"
     fp = os.path.join(out_dir, f"allocation_{data.case_name}.{ext}")
-    plt.savefig(fp)
+    if use_svg:
+        # Save SVG with text kept as text for better PPT compatibility
+        plt.savefig(fp, format='svg', bbox_inches='tight')
+    else:
+        plt.savefig(fp)
     plt.close(fig)
     print(f"[plot_allocation_comparison] saved {fp}")
     return fp
@@ -290,6 +330,8 @@ def main():
                         help="only process one model (dsv1, dsv2, qwen3, etc.)")
     parser.add_argument("--pdf", action="store_true",
                         help="save as PDF instead of PNG")
+    parser.add_argument("--svg", action="store_true",
+                        help="save as SVG instead of PNG")
     args = parser.parse_args()
 
     json_paths = discover_json_cases(args.data_dir)
@@ -323,7 +365,7 @@ def main():
     # Generate visualizations per case
     for data in all_data:
         print(f"\n=== Processing {data.model_label} ===")
-        plot_allocation_comparison(data, use_pdf=args.pdf)
+        plot_allocation_comparison(data, use_pdf=args.pdf, use_svg=args.svg)
 
 
 if __name__ == "__main__":
