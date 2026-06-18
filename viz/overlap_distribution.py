@@ -157,6 +157,7 @@ def overlap_quant_compare(
     quants: Sequence[Tuple[str, str, str]] = (
         ("GPTQ",       "gptq",       "gptq_quant_outlier"),
         ("TurboQuant", "turboquant", "turboquant_innerproduct"),
+        ("TurboQuant-MSE", "turboquant", "turboquant_mse"),
     ),
     num_blocks: int = DEFAULT_NUM_BLOCKS,
     bits: Tuple[int, ...] = (0, 1, 2, 3, 4),  # note: bit 0 is used for scatter,
@@ -238,13 +239,35 @@ def overlap_quant_compare(
             continue
         bits_sorted, bit_to_idx, all_block_losses = data
 
-        # Gini over bit>0 block losses
-        flat = np.concatenate([
-            all_block_losses[e][bit_to_idx[bit], :]
-            for e in range(len(all_block_losses))
-            for bit in bits_sorted if bit > 0
-        ])
-        g = _gini(flat)
+        # Gini per-bit (within the same bit, across blocks)
+        per_bit_gini = {}
+        all_losses = []
+        all_bits = []
+        for bit in bits_sorted:
+            if bit == 0:
+                continue
+            bit_losses = np.concatenate([
+                all_block_losses[e][bit_to_idx[bit], :]
+                for e in range(len(all_block_losses))
+            ])
+            per_bit_gini[bit] = _gini(bit_losses)
+            all_losses.extend(bit_losses)
+            all_bits.extend([bit] * len(bit_losses))
+        avg_per_bit_gini = np.mean(list(per_bit_gini.values()))
+
+        # Print debug info
+        print(f"\n--- {name} ---")
+        print(f"  Bit range: {bits_sorted}")
+        print(f"  Total blocks: {len(all_losses)}")
+        for bit in sorted(per_bit_gini.keys()):
+            bit_losses = [l for l, b in zip(all_losses, all_bits) if b == bit]
+            print(f"  {bit}-bit: {len(bit_losses)} blocks, "
+                  f"loss: min={np.min(bit_losses):.3e}, "
+                  f"median={np.median(bit_losses):.3e}, "
+                  f"max={np.max(bit_losses):.3e}, "
+                  f"Gini={per_bit_gini[bit]:.3f}")
+        print(f"  Avg per-bit Gini: {avg_per_bit_gini:.3f}")
+        print(f"  [Key] High = blocks are distinguishable (good for DP), Low = all blocks same (bad for DP)")
 
         # Only show legend on the last plot
         is_last = (ax == axes[-1])
@@ -256,7 +279,7 @@ def overlap_quant_compare(
         # Ensure all bits are visible and equally spaced
         ax.set_ylim(-0.5, max(bits_sorted) + 0.5)
         ax.set_xlabel("Block loss (log scale)")
-        ax.set_title(f"{name}  (Gini = {g:.2f})", fontsize=11)
+        ax.set_title(f"{name}\n(Per-bit Gini = {avg_per_bit_gini:.2f})", fontsize=11)
         ax.grid(True, alpha=0.3, axis="x")
         ax.legend(markerscale=1.5, fontsize=8, loc="upper right")
 

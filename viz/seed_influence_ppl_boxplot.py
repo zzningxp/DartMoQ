@@ -70,7 +70,7 @@ def plot_ppl_boxplots(
     }
 
     # Create figure with two subplots (wiki and c4)
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(8, 8))
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(8, 5))
 
     # Prepare data for boxplots
     wiki_data = []
