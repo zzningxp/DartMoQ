@@ -35,8 +35,9 @@ DartMoQP is a Mixture-of-Experts-native unified quantization and structured prun
 ### Framework Design
 
 DartMoQP adopts a quantization-method-agnostic global dynamic programming search pipeline that automatically matches the optimal sensitivity metric and bit allocation scheme for any quantization algorithm.
-<img src="figs/slice-moe-arch1.svg">
-<img src="figs/slice-moe-arch2.svg">
+<img src="figs/slice-moe-arch1.png">
+<img src="figs/slice-moe-arch2.png">
+<img src="figs/slice-moe-arch3.png">
 
 ## Neuron-Level Expert Reordering
 
@@ -198,6 +199,8 @@ We prioritize outputting acc_norm from LM-Evaluation-Harness. Tasks like ARC-Cha
 
 #### Random seed stability comparison (2.0 +0.25 bpw)
 
+<img src="figs/seed_quant_ppl_boxplot.png" width="500">
+
 | Seed | Fixed scheme<br>(2slice) | | Fixed scheme<br>（8slices） | | Global DP scheme<br>(global-bpw-a8s8m2) | |
 |------|-----------|----|----------|---------------|----|----|
 | | WikiText2 | C4 | WikiText2 | C4 | WikiText2 | C4 |
@@ -209,6 +212,11 @@ We prioritize outputting acc_norm from LM-Evaluation-Harness. Tasks like ARC-Cha
 | 210 | 11.719 | 18.977 | 11.612 | 18.716 | 7.316 | 11.481 |
 | 252 | 11.957 | 19.228 | 11.971 | 19.062 | 7.335 | 11.524 |
 | 294 | 11.169 | 17.529 | 11.121 | 17.327 | 7.303 | 11.438 |
+
+## Visualization and Analysis
+
+<img src="figs/multi_expert_sens_distribution_5models_b2.png">
+<img src="figs/quant_compare_deepseek-v1-moe-16b_L1.png">
 
 ## Installation
 
@@ -287,11 +295,13 @@ The rank mode determines how neurons are ordered within each expert for optimal 
 
 | Mode | Description | Best For |
 |------|-------------|----------|
-| `turboquant_innerproduct` | TurboQuant outlier analysis using inner product loss | **Recommended for TurboQuant** |
-| `turboquant_iipl` | TurboQuant with Input-Intermediate Product Loss | TurboQuant (alternative) |
+| `turboquant_innerproduct` | TurboQuant outlier analysis using inner product loss in activation space | **Recommended for TurboQuant** |
+| `turboquant_mse` | TurboQuant with pure weight-space MSE (no activation weighting) | Not recommended - only for ablation/comparison |
+| `turboquant_iipl` | TurboQuant with Input-Intermediate Product Loss (weight MSE weighted by intermediate activation second moment) | TurboQuant (alternative) |
 | `turboquant_diagonal` | TurboQuant with diagonal Hessian approximation | Computationally constrained |
 | `turboquant_hessian` | TurboQuant with full Hessian computation | Highest accuracy (slower) |
 | `turboquant_qjl_sensitivity` | TurboQuant with quantized Johnson-Lindenstrauss sensitivity | Theoretical exploration |
+| `turboquant_mse_fea` | TurboQuant pure MSE with full experts activation | Not recommended - only for ablation/comparison  |
 | `turboquant_iipl_fea` | TurboQuant IIPL with full experts activation | Not recommended |
 | `turboquant_innerproduct_fea` | TurboQuant inner product with full experts activation | Not recommended |
 

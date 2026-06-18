@@ -82,6 +82,8 @@ def reconstruct_moe_from_existing(model, layer, layer_idx, inps,
         "turboquant_diagonal": "diagonal",
         "turboquant_hessian": "hessian",
         "turboquant_qjl_sensitivity": "qjl_sensitivity",
+        "turboquant_mse": "mse",
+        "turboquant_mse_fea": "mse",
     }
     if args.rank_mode == "gptq_quant_outlier" or args.rank_mode in turboquant_outlier_modes:
         tick0 = time.time()

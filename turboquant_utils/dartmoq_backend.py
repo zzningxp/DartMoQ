@@ -251,7 +251,7 @@ def turboquant_outlier_activation_aware_rates(
 ) -> torch.Tensor:
     """Compute per-neuron TurboQuant outlier scores for one MoE expert."""
 
-    if mode not in ("iipl", "innerproduct", "diagonal", "hessian", "qjl_sensitivity"):
+    if mode not in ("iipl", "innerproduct", "diagonal", "hessian", "qjl_sensitivity", "mse"):
         raise ValueError(f"unknown TurboQuant outlier mode: {mode!r}")
     if sketch_dim <= 0:
         raise ValueError("sketch_dim must be > 0")
@@ -305,6 +305,10 @@ def turboquant_outlier_activation_aware_rates(
         if z_w.numel() == 0:
             return torch.zeros(up_w.shape[0], device=up_w.device, dtype=up_w.dtype)
         zw_norm2 = z_w.pow(2).mean(dim=0)
+
+        if mode == "mse":
+            weight_score = up_loss.sum(dim=1) + gate_loss.sum(dim=1) + down_loss.sum(dim=0)
+            return weight_score
 
         if mode == "iipl":
             weight_score = up_loss.sum(dim=1) + gate_loss.sum(dim=1) + down_loss.sum(dim=0)
@@ -386,6 +390,10 @@ def turboquant_outlier_activation_aware_rates(
         if z_count == 0:
             return torch.zeros(up_w.shape[0], device=up_w.device, dtype=up_w.dtype)
         zw_norm2 = z_sq / z_count
+
+        if mode == "mse":
+            weight_score = up_loss.sum(dim=1) + gate_loss.sum(dim=1) + down_loss.sum(dim=0)
+            return weight_score
 
         if mode == "iipl":
             weight_score = up_loss.sum(dim=1) + gate_loss.sum(dim=1) + down_loss.sum(dim=0)
