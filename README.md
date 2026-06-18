@@ -217,6 +217,8 @@ We prioritize outputting acc_norm from LM-Evaluation-Harness. Tasks like ARC-Cha
 
 <img src="figs/multi_expert_sens_distribution_5models_b2.png">
 <img src="figs/quant_compare_deepseek-v1-moe-16b_L1.png">
+<img src="figs/quant_compare_deepseek-v1-moe-16b_L2.png">
+<img src="figs/multi_expert_allocation_qwen3-30b-a3b_L1_3-2-1.png">
 
 ## Installation
 
