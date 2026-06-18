@@ -426,7 +426,7 @@ def analyze_turboquant_outlier_activation_aware(
     seed=42,
 ):
     print(f"analyze_turboquant_outlier_{mode} layer: {layer_idx} with {wbits} bits")
-    assert mode in ("innerproduct", "diagonal", "hessian", "qjl_sensitivity", "iipl"), f"Unknown TurboQuant outlier mode: {mode}"
+    assert mode in ("innerproduct", "diagonal", "hessian", "qjl_sensitivity", "iipl", "mse"), f"Unknown TurboQuant outlier mode: {mode}"
 
     groupsize = GROUPSIZE
     flat_states = hidden_states.reshape(-1, hidden_states.shape[-1]).float()
