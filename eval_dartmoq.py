@@ -94,7 +94,8 @@ def eval_zero_shot(model, task_list, eval_method="hf", tokenizer=None):
 
     tick0 = time.time()
     for task in task_list:
-        for eval_batch_size in [16, 8, 4, 2, 1]:
+        # for eval_batch_size in [16, 8, 4, 2, 1]:
+        for eval_batch_size in [8, 4, 2, 1]:
             try:
             # Only support hf method now
                 print(f"Evaluating {task} with batch size {eval_batch_size}")
