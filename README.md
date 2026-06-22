@@ -303,6 +303,7 @@ python run_dartmoq.py \
 | `--standby-layer-cpu` | Move layers to CPU during quantization | False |
 | `--no-use-hybrid-moe` | Disable hybrid MoE structure and use original experts | False (hybrid enabled by default) |
 | `--disable-0bit-compensation` | Disable 0bit compensation (0bit weights incur quantization overhead) | False (0bit compensation enabled by default) |
+| `--disable-0bit-prune` | Disable 0bit in DP search (only use 1-4 bits, no pruning) | False (0bit enabled by default) |
 
 ## Rank Modes (`--rank-mode`)
 
@@ -413,6 +414,38 @@ To disable 0bit compensation (treat 0bit the same as other bit widths), use:
 
 3. **Performance optimization**:
    - Uses discretization with `search_scale_factor=20` (0.05 bit precision) for a good balance of speed and accuracy
+
+## 0bit Pruning Control
+
+DartMoQP supports **0bit pruning** (enabled by default), which allows the DP search to use 0bit (complete pruning) as an option for neuron allocation:
+
+- **With 0bit enabled** (default): DP search uses bit set `{0, 1, 2, 3, 4}`
+- **Without 0bit**: DP search uses bit set `{1, 2, 3, 4}` (only quantization, no pruning)
+
+This is useful for ablation studies to understand the contribution of pruning vs. quantization in the unified framework.
+
+To disable 0bit pruning (only use 1-4 bits for quantization), use:
+```bash
+--disable-0bit-prune
+```
+
+### Key Differences Between 0bit-Related Flags
+
+| Flag | Bit Set Used | 0bit Overhead | Purpose |
+|------|-------------|---------------|---------|
+| Default | `{0, 1, 2, 3, 4}` | 0bit has no overhead | Full unified quantization + pruning (recommended) |
+| `--disable-0bit-compensation` | `{0, 1, 2, 3, 4}` | 0bit = `0.25` overhead | Ablation: 0bit without overhead advantage |
+| `--disable-0bit-prune` | `{1, 2, 3, 4}` | N/A (no 0bit) | Ablation: pure quantization without pruning |
+
+### Typical Usage for Ablation Studies
+
+```bash
+# Full unified framework (default)
+python run_dartmoq.py ...
+
+# Pure quantization without pruning (for comparison)
+python run_dartmoq.py ... --disable-0bit-prune
+```
 
 ## Quantization Modes (`--quantmode`)
 

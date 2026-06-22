@@ -76,6 +76,12 @@ if __name__ == '__main__':
         default=False,
         help='Disable 0bit compensation: 0bit weights incur quantization overhead'
     )
+    parser.add_argument(
+        '--disable-0bit-prune',
+        action='store_true',
+        default=False,
+        help='Disable 0bit in DP search: only use 1-4 bits for bit allocation'
+    )
     parser.add_argument(        '--standby-layer-cpu', action='store_true', default=False,
         help='Whether to move quant layers to CPU before and after quantization.' 
     )

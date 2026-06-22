@@ -96,9 +96,8 @@ class AblationVisualizer:
             save_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "plot", "ablation_bpw_slices")
         os.makedirs(save_dir, exist_ok=True)
 
-        fig, ax = plt.subplots(1, 1, figsize=(10, 3))
+        fig, ax = plt.subplots(1, 1, figsize=(14, 4.5))
 
-        # 计算横轴位置
         n_models = len(result.models)
         n_slices = len(result.num_slices_list)
         n_bpw = len(result.bpw_list)
@@ -124,12 +123,14 @@ class AblationVisualizer:
                     position_map[(model, num_slices, bpw)] = current_x
                     current_x += bar_width
                 current_x += slice_spacing
-            # 这个模型组结束的位置（减去最后一个slice_spacing）
             group_end = current_x - slice_spacing
             group_ends.append(group_end)
             model_center = (model_start + group_end) / 2
             x_tick_positions.append(model_center)
             current_x += model_spacing
+
+        # 设置y轴显示上限
+        display_limit = 160
 
         # 绘制 C4 PPL
         for model_idx, model in enumerate(result.models):
@@ -141,9 +142,17 @@ class AblationVisualizer:
                     if dp and dp.c4_ppl is not None:
                         pos = position_map.get((model, num_slices, bpw))
                         if pos is not None:
-                            ax.bar(pos, dp.c4_ppl, bar_width,
+                            # 超过显示上限的截断到上限
+                            display_val = min(dp.c4_ppl, display_limit * 0.98)
+                            ax.bar(pos, display_val, bar_width,
                                    color=bpw_colors[bpw_idx],
                                    edgecolor='white', linewidth=0.5)
+
+                            # 如果超过显示上限，在柱子顶部标注实际值
+                            if dp.c4_ppl > display_limit:
+                                ax.text(pos, display_limit * 0.8,
+                                       f"{dp.c4_ppl:.0f}", ha='center', va='top', fontsize=8,
+                                       bbox=dict(boxstyle='square,pad=0.1', facecolor='white', alpha=0.9, edgecolor=bpw_colors[bpw_idx], linewidth=0.5))
 
         # 设置横轴标签 - 只显示模型名
         ax.set_xticks(x_tick_positions)
@@ -160,7 +169,7 @@ class AblationVisualizer:
         for model in result.models:
             for num_slices in result.num_slices_list:
                 slice_center = current_x + (n_bpw * bar_width) / 2 - bar_width / 2
-                ax.text(slice_center, ax.get_ylim()[1] * 0.96,
+                ax.text(slice_center, display_limit * 0.96,
                         f"s{num_slices}", ha='center', va='top', fontsize=9,
                         bbox=dict(boxstyle='square,pad=0.1', facecolor='white', alpha=0.8, edgecolor='none'))
                 current_x += n_bpw * bar_width + slice_spacing
@@ -179,6 +188,9 @@ class AblationVisualizer:
                                          label=f'BPW={bpw}'))
 
         ax.legend(handles=legend_elements, loc='upper right', fontsize=10, bbox_to_anchor=(1, 0.85))
+
+        # 设置y轴上限
+        ax.set_ylim(0, display_limit)
 
         plt.tight_layout(rect=[0, 0.02, 1, 0.98])
 

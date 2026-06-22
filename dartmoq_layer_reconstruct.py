@@ -93,7 +93,10 @@ def reconstruct_moe_from_existing(model, layer, layer_idx, inps,
         if 'target_bpw' not in qscheme:
             outlier_bits = {probe_bit}
         else:
-            outlier_bits = {0, 1, 2, 3, 4}
+            if getattr(args, 'disable_0bit_prune', False):
+                outlier_bits = {1, 2, 3, 4}
+            else:
+                outlier_bits = {0, 1, 2, 3, 4}
         outlier_label = args.rank_mode if turboquant_outlier_mode else quantmode
         print(f"simulate {outlier_label} outlier_bits {outlier_bits}")
 
@@ -194,11 +197,16 @@ def reconstruct_moe_from_existing(model, layer, layer_idx, inps,
             expert_energy_list.append(energy.detach().cpu().float().numpy())
 
         # Use energy global DP to get optimal scheme
+        if getattr(args, 'disable_0bit_prune', False):
+            energy_bits = [1, 2, 3, 4]
+        else:
+            energy_bits = [0, 1, 2, 3, 4]
         dpscheme_list, all_rates_arr = enum_optimal_m_scheme_energy_global_fast(
                 expert_energy_list,
                 expert_activation_rates,
                 slice_expert_num,
                 target_bpw=qscheme['target_bpw'],
+                bits=energy_bits,
                 enable_0bit_compensation=not getattr(args, 'disable_0bit_compensation', False)
             )
 
