@@ -437,16 +437,6 @@ To disable 0bit pruning (only use 1-4 bits for quantization), use:
 | `--disable-0bit-compensation` | `{0, 1, 2, 3, 4}` | 0bit = `0.25` overhead | Ablation: 0bit without overhead advantage |
 | `--disable-0bit-prune` | `{1, 2, 3, 4}` | N/A (no 0bit) | Ablation: pure quantization without pruning |
 
-### Typical Usage for Ablation Studies
-
-```bash
-# Full unified framework (default)
-python run_dartmoq.py ...
-
-# Pure quantization without pruning (for comparison)
-python run_dartmoq.py ... --disable-0bit-prune
-```
-
 ## Quantization Modes (`--quantmode`)
 
 ### GPTQ (`gptq`)

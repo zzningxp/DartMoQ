@@ -43,16 +43,16 @@ TASK_FIELDS = [
 
 FIELDNAMES = [
     "model_name", "slices", "quant_scheme", "rank_mode",
-    "moe_struct", "quantmode", "bpw", "ppl_wikitext2", "ppl_c4",
+    "moe_struct", "quantmode", "disable_0bit_prune", "bpw", "ppl_wikitext2", "ppl_c4",
     *TASK_FIELDS,
     "status", "runtime_ppl",
 ]
 
 LOADING_RE = re.compile(r"Loading model:\s*\(ppl\)\s*(?P<path>\S+)")
 QUANTMODE_RE = re.compile(
-    r"slices/quant-scheme/rank-mode/moe-struct/quantmode:\s*\(ppl\)\s+"
+    r"slices/quant-scheme/rank-mode/moe-struct/quantmode(?:/disable-0bit-prune)?:\s*\(ppl\)\s+"
     r"(?P<slices>\S+)\s+(?P<quant_scheme>\S+)\s+(?P<rank_mode>\S+)\s+"
-    r"(?P<moe_struct>\S+)\s+(?P<quantmode>\S+)"
+    r"(?P<moe_struct>\S+)\s+(?P<quantmode>\S+)(?:\s+(?P<disable_0bit_prune>\S+))?"
 )
 BPW_RE = re.compile(r"\bwith bpw\s+(?P<bpw>[-+0-9.eE]+)")
 PPL_RE = re.compile(r"ppl on (?P<dataset>wikitext2|c4):\s*(?P<value>[-+0-9.eE]+)")
@@ -80,6 +80,7 @@ class RunRecord:
     rank_mode: str = ""
     moe_struct: str = ""
     quantmode: str = ""
+    disable_0bit_prune: str = ""
     bpw: str = ""
     ppl_wikitext2: str = ""
     ppl_c4: str = ""
@@ -275,6 +276,7 @@ PLAIN_HEADERS = {
     "rank_mode": "rank",
     "moe_struct": "moe",
     "quantmode": "qmode",
+    "disable_0bit_prune": "no0prune",
     "bpw": "bpw",
     "ppl_wikitext2": "wiki",
     "ppl_c4": "c4",
@@ -302,6 +304,7 @@ EXPORT_HEADERS = {
     "rank_mode": "rank_mode",
     "moe_struct": "moe_struct",
     "quantmode": "quantmode",
+    "disable_0bit_prune": "disable_0bit_prune",
     "bpw": "bpw",
     "ppl_wikitext2": "ppl_wikitext2",
     "ppl_c4": "ppl_c4",
