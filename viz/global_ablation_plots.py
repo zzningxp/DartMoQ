@@ -115,7 +115,7 @@ class GlobalAblationVisualizer:
 
                             # 如果超过显示上限，在柱子顶部标注实际值 - 往左偏移
                             if avg_non > display_limit:
-                                ax.text(current_x - bar_width/2 - 0.5, display_limit * 0.8,
+                                ax.text(current_x - bar_width/2 - 0.5, display_limit * 0.85,
                                        f"{avg_non:.2f}", ha='right', va='top', fontsize=8,
                                        bbox=dict(boxstyle='square,pad=0.1', facecolor='white', alpha=0.9, edgecolor=NO_GLOBAL_COLOR, linewidth=0.5))
                             if avg_global > display_limit:
