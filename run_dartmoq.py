@@ -104,8 +104,8 @@ if __name__ == '__main__':
     print("-" * 50)
     print(f"Current start time: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())}")
     print("Loading model: (ppl)", args.model)
-    print("slices/quant-scheme/rank-mode/moe-struct/quantmode: (ppl)", 
-          args.slices, args.quant_scheme, args.rank_mode, "use_hybrid_moe" if args.use_hybrid_moe else " use_origin_moe", args.quantmode)
+    print("slices/quant-scheme/rank-mode/moe-struct/quantmode/disable-0bit-prune: (ppl)",
+          args.slices, args.quant_scheme, args.rank_mode, "use_hybrid_moe" if args.use_hybrid_moe else " use_origin_moe", args.quantmode, args.disable_0bit_prune)
     model, tokenizer = load_model(args.model)
 
     dataloader, _ = get_loaders(
