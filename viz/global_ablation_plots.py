@@ -11,7 +11,6 @@ from matplotlib.colors import ListedColormap
 from typing import Optional, Dict, Tuple
 from dataclasses import dataclass
 
-# 配色
 GLOBAL_COLOR = "#e57373"  # 红色
 NO_GLOBAL_COLOR = "#64b5f6"  # 蓝色
 
@@ -49,7 +48,7 @@ class GlobalAblationVisualizer:
             "font.size": 11,
             "axes.titlesize": 13,
             "axes.labelsize": 12,
-            "legend.fontsize": 10,
+            "legend.fontsize": 9,
             "xtick.labelsize": 10,
             "ytick.labelsize": 10,
             "axes.grid": True,
@@ -67,7 +66,6 @@ class GlobalAblationVisualizer:
             save_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "plot", "global_ablation")
         os.makedirs(save_dir, exist_ok=True)
 
-        # 只关注dp+0cps配置
         df_dp0 = df_comparison[df_comparison['config_global'] == 'dp+0cps'].copy()
 
         models = sorted(list(set(df_dp0['model_short'])))
@@ -95,28 +93,35 @@ class GlobalAblationVisualizer:
                 for bpw in bpw_list:
                     bpw_data = model_data[model_data['bpw'] == bpw]
 
-                    if len(bpw_data) > 0:
-                        avg_non = bpw_data['ppl_c4_non_global'].mean()
-                        avg_global = bpw_data['ppl_c4_global'].mean()
+                    if len(bpw_data) >= 2:
+                        # 新格式：需要区分global和non-global行
+                        # global行的quant_scheme_global带'global-'前缀
+                        global_rows = bpw_data[bpw_data['quant_scheme_global'].str.startswith('global-', na=False)]
+                        # non-global行的quant_scheme_global不带'global-'前缀
+                        non_global_rows = bpw_data[~bpw_data['quant_scheme_global'].str.startswith('global-', na=False)]
 
-                        # 绘制柱子，超过显示上限的截断到上限
-                        display_non = min(avg_non, display_limit * 0.98)
-                        display_global = min(avg_global, display_limit * 0.98)
+                        if len(global_rows) > 0 and len(non_global_rows) > 0:
+                            avg_non = non_global_rows['ppl_c4'].mean()
+                            avg_global = global_rows['ppl_c4'].mean()
 
-                        ax.bar(current_x - bar_width/2, display_non, bar_width,
-                               color=NO_GLOBAL_COLOR, label='No Global' if current_x == 0 else "")
-                        ax.bar(current_x + bar_width/2, display_global, bar_width,
-                               color=GLOBAL_COLOR, label='Global' if current_x == 0 else "")
+                            # 绘制柱子，超过显示上限的截断到上限
+                            display_non = min(avg_non, display_limit * 0.98)
+                            display_global = min(avg_global, display_limit * 0.98)
 
-                        # 如果超过显示上限，在柱子顶部标注实际值 - 往左偏移
-                        if avg_non > display_limit:
-                            ax.text(current_x - bar_width/2 - 0.5, display_limit * 0.8,
-                                   f"{avg_non:.0f}", ha='right', va='top', fontsize=8,
-                                   bbox=dict(boxstyle='square,pad=0.1', facecolor='white', alpha=0.9, edgecolor=NO_GLOBAL_COLOR, linewidth=0.5))
-                        if avg_global > display_limit:
-                            ax.text(current_x + bar_width/2 + 0.5, display_limit * 0.8,
-                                   f"{avg_global:.0f}", ha='left', va='top', fontsize=8,
-                                   bbox=dict(boxstyle='square,pad=0.1', facecolor='white', alpha=0.9, edgecolor=GLOBAL_COLOR, linewidth=0.5))
+                            ax.bar(current_x - bar_width/2, display_non, bar_width,
+                                   color=NO_GLOBAL_COLOR, label='w/o Global' if current_x == 0 else "")
+                            ax.bar(current_x + bar_width/2, display_global, bar_width,
+                                   color=GLOBAL_COLOR, label='Global' if current_x == 0 else "")
+
+                            # 如果超过显示上限，在柱子顶部标注实际值 - 往左偏移
+                            if avg_non > display_limit:
+                                ax.text(current_x - bar_width/2 - 0.5, display_limit * 0.8,
+                                       f"{avg_non:.2f}", ha='right', va='top', fontsize=8,
+                                       bbox=dict(boxstyle='square,pad=0.1', facecolor='white', alpha=0.9, edgecolor=NO_GLOBAL_COLOR, linewidth=0.5))
+                            if avg_global > display_limit:
+                                ax.text(current_x + bar_width/2 + 0.5, display_limit * 0.8,
+                                       f"{avg_global:.2f}", ha='left', va='top', fontsize=8,
+                                       bbox=dict(boxstyle='square,pad=0.1', facecolor='white', alpha=0.9, edgecolor=GLOBAL_COLOR, linewidth=0.5))
 
                     current_x += 1
                 current_x += model_spacing
@@ -134,7 +139,6 @@ class GlobalAblationVisualizer:
             ax.set_xticks(xticks)
             ax.set_xticklabels(xticklabels, fontweight='bold')
 
-            # 添加bpw标记，预留足够空间
             current_x = 0
             for model in models:
                 for bpw in bpw_list:
@@ -144,7 +148,6 @@ class GlobalAblationVisualizer:
                     current_x += 1
                 current_x += model_spacing
 
-            # 画分隔线
             current_x = len(bpw_list) - 0.5
             for _ in range(len(models) - 1):
                 ax.axvline(x=current_x + model_spacing/2, color='gray', linestyle='--', alpha=0.5)
@@ -154,10 +157,8 @@ class GlobalAblationVisualizer:
             qm_title = "TurboQuant" if quantmode == "turboquant" else "GPTQ"
             ax.set_title(f'{qm_title} (Global + dp+0cps)', fontweight='bold')
 
-            # Legend 在右上，稍微往下挪一点
-            ax.legend(loc='upper right', bbox_to_anchor=(1, 0.82))
+            ax.legend(loc='upper right', bbox_to_anchor=(0.21, 0.60))
 
-            # 设置y轴，预留足够空间给BPW标记
             ax.set_ylim(0, display_limit)
 
         plt.tight_layout()

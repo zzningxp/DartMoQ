@@ -385,6 +385,12 @@ Examples:
 3. **Monotonic DP search**: Find optimal bit allocation with non-increasing bit constraint
 4. **Remap to per-expert schemes**: Map global allocation back to each expert
 
+### Global Ablation Experiments
+<img src="figs/global_vs_nonglobal_c4_turboquant_gptq.png">
+
+This figure compares **Left (TurboQuant)**: Blue = without Global, Red = Global configuration. The Global configuration significantly reduces PPL, especially at low bits (1.0bpw).
+**Right (GPTQ)**: Same comparison for GPTQ quantization. Global consistently lowers PPL, with the most pronounced benefits at low bits. Overall, the Global configuration improves low-bit quantization performance for both TurboQuant and GPTQ methods because the global ranking allows important neurons (particularly those in frequently activated experts) to preserve information using higher bit widths. 
+
 ## 0bit Compensation
 
 DartMoQP supports **0bit compensation** (enabled by default), which treats pruning (0bit) differently from quantization in the DP search:
