@@ -106,7 +106,7 @@ Notably:
 - **Extremely low bit regime (0.5-2 bpw)**: Order-of-magnitude performance improvement over baselines (though still not fully practical)
 - **2bit scheme (industry standard)**: DartMoQP-TurboQuant consistently outperforms existing methods in downstream tasks
 
-### ppl 
+### ppl (c4 only, wiki-text2 is not shown here)
 <img src="figs/result1-olmoe.png" width="500" alt="OLMoE-7B Results">
 <img src="figs/result1-dsv1.png" width="500" alt="DeepSeekMoE-v1 Results">
 <img src="figs/result1-dsv2.png" width="500" alt="DeepSeekMoE-v2 Results">

@@ -163,11 +163,11 @@ class GlobalAblationVisualizer:
 
         plt.tight_layout()
 
-        save_path_png = os.path.join(save_dir, 'global_vs_nonglobal_c4_turboquant_gptq.png')
+        save_path_png = os.path.join(save_dir, 'ablation_global_vs_nonglobal_c4_turboquant_gptq.png')
         plt.savefig(save_path_png)
         print(f"PNG已保存到: {save_path_png}")
 
-        save_path_pdf = os.path.join(save_dir, 'global_vs_nonglobal_c4_turboquant_gptq.pdf')
+        save_path_pdf = os.path.join(save_dir, 'ablation_global_vs_nonglobal_c4_turboquant_gptq.pdf')
         plt.savefig(save_path_pdf, dpi=300, bbox_inches='tight')
         print(f"PDF已保存到: {save_path_pdf}")
 
