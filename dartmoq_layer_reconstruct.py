@@ -1,3 +1,4 @@
+import time 
 import torch
 import torch.nn as nn
 import os
@@ -139,7 +140,9 @@ def reconstruct_moe_from_existing(model, layer, layer_idx, inps,
                         quantmode=quantmode, save_path=None, seed=args.seed)
             torch.save(q_rates[x], cache_path)
             print(f"Saved {outlier_label} outlier data to {cache_path}")
-
+            # print(f"sleep 20s")
+            # time.sleep(20)
+            
         if 'target_bpw' not in qscheme:
             all_rates = q_rates[probe_bit]
         else:
@@ -151,6 +154,7 @@ def reconstruct_moe_from_existing(model, layer, layer_idx, inps,
                         rates_x[x] = q_rates[x][expert_idx].detach().cpu().float().numpy()
                     expert_rates_list.append(rates_x)
 
+                dp_tick0 = time.time()
                 dpscheme_list, all_rates_arr = enum_optimal_m_scheme_global_fast(
                         expert_rates_list,
                         expert_activation_rates,
@@ -158,6 +162,8 @@ def reconstruct_moe_from_existing(model, layer, layer_idx, inps,
                         target_bpw=qscheme['target_bpw'],
                         enable_0bit_compensation=not getattr(args, 'disable_0bit_compensation', False)
                     )
+                dp_tick1 = time.time()
+                print(f"enum_optimal_m_scheme_global_fast time {dp_tick1 - dp_tick0}", flush=True)
 
                 # Convert to torch tensors
                 all_rates = []
