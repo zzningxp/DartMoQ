@@ -119,7 +119,7 @@ The figures above show perplexity vs. bits-per-weight (bpw) comparisons between 
 
 IPE-TQ means inner product encoding with TurboQuant quantization.
 
-#### 1.0 bpw (+0.25)
+#### 1.0 bpw (+0.25) (Origin scheme: a8s8m1, DP scheme: global-bpw-a8s8m1)
 
 | Model | Method | WikiText2 | C4 | Avg. | ARC-C(norm) | ARC-E(norm) | PIQA(norm) | BoolQ | Winogrande | MNLI | Hella(norm) | MMLU |
 |-------|--------|-----------|----|-------|----------|---------------|------|-------|------------|-----------|------|-------|
@@ -153,7 +153,7 @@ IPE-TQ means inner product encoding with TurboQuant quantization.
 | Qwen3 | TQ-Origin | 1514.075 | 1284.209 | 0.359 | 0.246 | 0.283 | 0.516 | 0.455 | 0.500 | 0.335 | 0.284 | 0.252 |
 | Qwen3 | IPE-TQ-DP | **28.18** | **48.203** | **0.539** | **0.385** | **0.659** | **0.637** | **0.712** | **0.568** | **0.496** | **0.422** | **0.432** |
 
-#### 1.5 bpw (+0.25)
+#### 1.5 bpw (+0.25) (DP scheme: global-bpw-a8s8m1.5)
 
 | Model | Method | WikiText2 | C4 | Avg. | ARC-C(norm) | ARC-E(norm) | PIQA(norm) | BoolQ | Winogrande | MNLI | Hella(norm) | MMLU |
 |-------|--------|-----------|----|-------|----------|---------------|------|-------|------------|-----------|------|-------|
@@ -177,7 +177,7 @@ IPE-TQ means inner product encoding with TurboQuant quantization.
 | Qwen3 | GPTQ-DP | 16.931 | 26.856 | 0.490 | 0.279 | 0.439 | 0.661 | 0.695 | 0.625 | 0.404 | 0.526 | 0.293 |
 | Qwen3 | IPE-TQ-DP | **13.787** | **20.877** | **0.705** | **0.577** | **0.817** | **0.752** | 0.847 | **0.698** | 0.697 | **0.602** | **0.649** |
 
-#### 2.0 bpw (+0.25)
+#### 2.0 bpw (+0.25) (Origin scheme: a8s8m2, Camera scheme: global-a8s8m32222221, DP scheme: global-bpw-a8s8m2)
 
 | Model | Method | WikiText2 | C4 | Avg. | ARC-C(norm) | ARC-E(norm) | PIQA(norm) | BoolQ | Winogrande | MNLI | Hella(norm) | MMLU |
 |-------|--------|-----------|----|-------|----------|---------------|------|-------|------------|-----------|------|-------|
@@ -220,6 +220,44 @@ IPE-TQ means inner product encoding with TurboQuant quantization.
 | Qwen3 | Energy-DP | **10.330** | **14.974** | 0.746 | **0.660** | **0.862** | **0.798** | **0.883** | 0.700 | **0.788** | 0.537 | 0.742 |
 | Qwen3 | GPTQ-DP | 11.644 | 18.151 | 0.635 | 0.471 | 0.729 | 0.737 | 0.820 | 0.680 | 0.578 | 0.677 | 0.387 |
 | Qwen3 | IPE-TQ-DP | 10.882 | 15.509 | **0.757** | 0.638 | 0.855 | 0.789 | 0.880 | **0.698** | 0.763 | **0.698** | **0.737** |
+
+#### 0.5 bpw (+0.25) Results (all scheme: global-bpw-a8s8m0.5)
+
+| Model | Method | WikiText2 | C4 | Avg. | ARC-C(norm) | ARC-E(norm) | PIQA(norm) | BoolQ | Winogrande | MNLI | Hella(norm) | MMLU |
+|-------|--------|-----------|----|-------|-------------|--------------|-------------|-------|------------|------|-------------|------|
+| DSMoEv1 | GPTQ-DP | 18.767 | 36.957 | **0.450** | 0.294 | 0.509 | 0.607 | 0.619 | 0.539 | 0.358 | 0.416 | 0.260 |
+| DSMoEv1 | IPE-TQ-DP | 15.688 | 40.035 | 0.437 | 0.287 | 0.492 | 0.585 | 0.624 | 0.530 | 0.368 | 0.368 | 0.240 |
+||
+| DSv2-Lite | GPTQ-DP | 104.268 | 165.860 | 0.344 | 0.259 | 0.265 | 0.511 | 0.378 | 0.496 | 0.315 | 0.263 | 0.261 |
+| DSv2-Lite | IPE-TQ-DP | 13.339 | 33.069 | **0.424** | 0.277 | 0.515 | 0.613 | 0.432 | 0.544 | 0.348 | 0.387 | 0.275 |
+||
+| Moonlight | GPTQ-DP | | | | | | | | | | |
+| Moonlight | IPE-TQ-DP | 31.205 | 95.292 | **0.404** | 0.236 | 0.359 | 0.560 | 0.620 | 0.501 | 0.364 | 0.323 | 0.268 |
+||
+| OLMoE | GPTQ-DP | 9343.267 | 10107.867 | 0.361 | 0.266 | 0.285 | 0.525 | 0.495 | 0.487 | 0.320 | 0.260 | 0.252 |
+| OLMoE | IPE-TQ-DP | 57.861 | 160.934 | **0.395** | 0.247 | 0.387 | 0.545 | 0.573 | 0.508 | 0.345 | 0.312 | 0.242 |
+||
+| Qwen3 | GPTQ-DP | | | | | | | | | | |
+| Qwen3 | IPE-TQ-DP | 15.528 | 33.148 | **0.468** | 0.293 | 0.509 | 0.591 | 0.662 | 0.591 | 0.393 | 0.421 | 0.286 |
+
+#### 0.75 bpw (+0.25) Results (all scheme: global-bpw-a8s8m0.75)
+
+| Model | Method | WikiText2 | C4 | Avg. | ARC-C(norm) | ARC-E(norm) | PIQA(norm) | BoolQ | Winogrande | MNLI | Hella(norm) | MMLU |
+|-------|--------|-----------|----|-------|-------------|--------------|-------------|-------|------------|------|-------------|------|
+| DSMoEv1 | GPTQ-DP | 13.533 | 24.554 | **0.488** | 0.335 | 0.588 | 0.656 | 0.632 | 0.592 | 0.358 | 0.477 | 0.264 |
+| DSMoEv1 | IPE-TQ-DP | 12.112 | 27.907 | 0.484 | 0.351 | 0.610 | 0.626 | 0.653 | 0.580 | 0.383 | 0.429 | 0.244 |
+||
+| DSv2-Lite | GPTQ-DP | 91.381 | 143.791 | 0.365 | 0.263 | 0.259 | 0.500 | 0.578 | 0.494 | 0.317 | 0.261 | 0.246 |
+| DSv2-Lite | IPE-TQ-DP | 10.502 | 24.226 | **0.458** | 0.317 | 0.600 | 0.629 | 0.456 | 0.564 | 0.364 | 0.434 | 0.298 |
+||
+| Moonlight | GPTQ-DP | | | | | | | | | | |
+| Moonlight | IPE-TQ-DP | 19.508 | 56.129 | **0.445** | 0.269 | 0.500 | 0.584 | 0.636 | 0.523 | 0.404 | 0.380 | 0.264 |
+||
+| OLMoE | GPTQ-DP | 1132.202 | 1780.555 | 0.358 | 0.239 | 0.289 | 0.525 | 0.471 | 0.503 | 0.324 | 0.265 | 0.251 |
+| OLMoE | IPE-TQ-DP | 31.879 | 71.652 | **0.436** | 0.294 | 0.495 | 0.570 | 0.608 | 0.547 | 0.371 | 0.357 | 0.246 |
+||
+| Qwen3 | GPTQ-DP | 22.098 | 42.975 | 0.449 | 0.277 | 0.446 | 0.595 | 0.584 | 0.594 | 0.377 | 0.441 | 0.275 |
+| Qwen3 | IPE-TQ-DP | 12.347 | 23.215 | **0.553** | 0.382 | 0.662 | 0.644 | 0.776 | 0.666 | 0.418 | 0.520 | 0.358 |
 
 We prioritize outputting acc_norm from LM-Evaluation-Harness. Tasks like ARC-Challenge, ARC-Easy, PIQA, and Hellaswag use acc_norm.
 
@@ -346,14 +384,15 @@ The quant scheme determines how bits are allocated to neurons/blocks.
 
 Format: `a{A}s{S}m{BIT_STRING}`
 
-- `A`: Number of experts (activation)
-- `S`: Number of slices/sub-experts per expert
-- `BIT_STRING`: Bit allocation for each slice (length must equal S)
+- `A`: attention weights quantization bits
+- `S`: shared expert quantization bits
+- `BIT_STRING`: routed expert bit string: allocation for each slice (length must equal --slices)
 
 Examples:
-- `a8s8m22222222`: 8 experts, 8 slices each, all slices get 2 bits (2.0 bpw)
-- `a8s8m44332211`: 8 experts, 8 slices each, bits decrease from 4 to 1 (2.5 bpw average)
-- `a8s4m3322`: 8 experts, 4 slices each (2.5 bpw average)
+- `a8s8m22222222`: attention 8 bit quant, shared expert 8 bit quant, routed expert with all slices 2 bits (2.0 bpw excluding overhead)
+- `a8s8m44332211`: attention 8 bit quant, shared expert 8 bit quant, routed expert with bits decrease from 4 to 1 (2.5 bpw average excluding overhead)
+- `a8s4m3322`: attention 8 bit quant, shared expert 4 bit quant, routed expert with bits decrease from 3 to 2 (2.5 bpw average excluding overhead)
+- `global-a8s4m3322`: attention 8 bit quant, shared expert 4 bit quant, routed expert with bits decrease from 3 to 2 (global 2.5 bpw average excluding overhead)
 
 ### Global Dynamic Programming Schemes
 
@@ -361,9 +400,9 @@ Format: `global-bpw-a{A}s{S}m{BPW}`
 
 Uses the global DP optimizer with monotonic non-increasing bit allocation constraint across all experts.
 
-- `A`: Number of experts
-- `S`: Number of slices per expert
-- `BPW`: Target average bits per weight (can be fractional)
+- `A`: attention weights quantization bits
+- `S`: shared expert quantization bits
+- `BPW`: routed expert bit string: target average bits per weight (can be fractional)
 
 **Important Note**: The bpw values in all schemes (both fixed and `global-bpw`) refer to the weight bit allocation only. They do **not** include the additional overhead of:
 - GPTQ: ~0.25 bpw for quantization parameters
@@ -372,11 +411,8 @@ Uses the global DP optimizer with monotonic non-increasing bit allocation constr
 All computations use a consistent groupsize of 128. The actual total bpw will be approximately `target_bpw + 0.25` (GPTQ) or `target_bpw + 0.252` (TurboQuant).
 
 Examples:
-- `global-bpw-a8s8m0.5`: 8 experts, 8 slices each, ~0.5 bpw target (excluding overhead)
-- `global-bpw-a8s8m1.0`: 8 experts, 8 slices each, ~1.0 bpw target (excluding overhead)
-- `global-bpw-a8s8m1.5`: 8 experts, 8 slices each, ~1.5 bpw target (excluding overhead)
-- `global-bpw-a8s8m2.0`: 8 experts, 8 slices each, ~2.0 bpw target (excluding overhead)
-- `global-bpw-a8s8m2.5`: 8 experts, 8 slices each, ~2.5 bpw target (excluding overhead)
+- `global-bpw-a8s8m0.5`: attention 8 bit quant, shared expert 8 bit quant, routed expert with all slices 2 bits, global ~0.5 bpw target (excluding overhead)
+- `bpw-a8s8m2.5`: attention 8 bit quant, shared expert 8 bit quant, routed expert with all slices 2 bits, ~2.5 bpw target inside one expert (excluding overhead)
 
 ### How Global DP Works
 

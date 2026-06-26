@@ -196,7 +196,7 @@ class GPTQ:
             self.quantizer.find_params(W, weight=True)
         # [K, K]
         H = self.H
-        # del self.H
+        del self.H
         dead = torch.diag(H) == 0
         H[dead, dead] = 1
         W[:, dead] = 0
