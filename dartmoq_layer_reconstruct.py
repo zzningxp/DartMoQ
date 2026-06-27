@@ -317,6 +317,10 @@ def reconstruct_moe_from_existing(model, layer, layer_idx, inps,
                 bit_to_slice_count[bit] += 1
             
             for bit in restructured_config:
+                # Skip bit == 0 - those neurons are pruned entirely
+                if bit == 0:
+                    continue
+
                 indices = bit_to_indices[bit]
                 n_neurons = len(indices)
 
@@ -327,19 +331,23 @@ def reconstruct_moe_from_existing(model, layer, layer_idx, inps,
                 new_config = model.config
                 new_config.intermediate_size = n_neurons
                 expert_mlp = expert.__class__(new_config).to(device)
-                
+
                 with torch.no_grad():
                     indices_tensor = torch.tensor(indices, dtype=torch.long, device=ori_gate_proj_weights.device)
                     expert_mlp.gate_proj.weight.data = ori_gate_proj_weights[indices_tensor, :].detach().clone()
                     expert_mlp.up_proj.weight.data = ori_up_proj_weights[indices_tensor, :].detach().clone()
                     expert_mlp.down_proj.weight.data = ori_down_proj_weights[:, indices_tensor].detach().clone()
-                
+
+                # Store bit config on the expert object for quantization phase
+                expert_mlp._quant_bit = bit
+
                 expert_sub_experts.append(expert_mlp)
                 expert_sub_sizes.append(n_neurons)
                 total_neurons_processed += n_neurons
-            
+
             all_new_experts.append(expert_sub_experts)
-            sub_expert_bit_configs.append(tuple(restructured_config))
+            # Only record non-zero bits in sub_expert_bit_configs
+            sub_expert_bit_configs.append(tuple([bit for bit in restructured_config if bit != 0]))
             expert_to_subexperts.append(list(range(len(expert_sub_experts))))
             
             # For hybrid MoE, router stays the same (one entry per original expert)

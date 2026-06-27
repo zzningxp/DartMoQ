@@ -14,13 +14,15 @@ class DartMoQHybridWrapper(nn.Module):
         self.sub_experts = sub_experts
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        assert len(self.sub_experts) > 0
-        
+        # If all sub-experts are pruned (0bit), return zero directly
+        if len(self.sub_experts) == 0:
+            return torch.zeros_like(hidden_states)
+
         total_output = torch.zeros_like(hidden_states)
         for sub_expert in self.sub_experts:
             sub_expert_output = sub_expert(hidden_states)
             total_output = total_output + sub_expert_output
-        
+
         return total_output
 
     def named_children(self):
@@ -47,11 +49,12 @@ def restructure_hybrid_qscheme(qscheme_expert, slice_expert_num):
         bit_counts = {}
         for bit in qscheme_expert[expert_idx]:
             bit_counts[bit] = bit_counts.get(bit, 0) + 1
-        
+
         # Create list of unique bits, sorted by bit value (descending), consistent with sub-expert creation order
+        # Keep bit == 0 in qscheme for quantization phase lookup, but we will skip creating them
         expert_bits = sorted(bit_counts.items(), reverse=True)
         restructured.append([bit for bit, count in expert_bits])
-        
+
         # print(f"Expert {expert_idx} original: {qscheme_expert[expert_idx]} -> restructured: {restructured[expert_idx]} {expert_bits}")
-    
+
     return restructured

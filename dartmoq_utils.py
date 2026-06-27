@@ -546,11 +546,25 @@ def quant_layer_mix_precision(layer, layer_idx, quant_attn, n_experts, slice_exp
                                 gptq[name].quantizer.configure(bit[0], perchannel=True, sym=sym, mse=False)
                                 print(f"normal expert: {name}, bit: {bit[0]}")
                         else:
+                            # Try to get bit from the expert object first (stored during reconstruction)
                             expert_id = int(hybrid_match.group(1))
                             sub_expert_id = int(hybrid_match.group(2))
-                            bit_config = qscheme['expert'][expert_id]
-                            # print(bit_config, expert_id, sub_expert_id, bit_config[sub_expert_id], name)
-                            bit = bit_config[sub_expert_id]
+
+                            # Get the parent expert module
+                            parent_expert = layer.mlp.experts[expert_id]
+                            if hasattr(parent_expert, 'sub_experts') and sub_expert_id < len(parent_expert.sub_experts):
+                                sub_expert = parent_expert.sub_experts[sub_expert_id]
+                                if hasattr(sub_expert, '_quant_bit'):
+                                    bit = sub_expert._quant_bit
+                                else:
+                                    # Fallback to qscheme lookup
+                                    bit_config = qscheme['expert'][expert_id]
+                                    bit = bit_config[sub_expert_id]
+                            else:
+                                # Fallback to qscheme lookup
+                                bit_config = qscheme['expert'][expert_id]
+                                bit = bit_config[sub_expert_id]
+
                             gptq[name].quantizer.configure(bit, perchannel=True, sym=sym, mse=False)
                             bit_set.append(bit)
                             # print(f"hybrid expert: {name}, bit: {bit}")

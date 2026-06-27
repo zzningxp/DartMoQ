@@ -45,7 +45,7 @@ FIELDNAMES = [
     "model_name", "slices", "quant_scheme", "rank_mode",
     "moe_struct", "quantmode", "disable_0bit_prune", "bpw", "ppl_wikitext2", "ppl_c4",
     *TASK_FIELDS,
-    "status", "runtime_ppl",
+    "status", "runtime_ppl", "runtime_quant", "runtime_ppl_eval", "runtime_zero_eval",
 ]
 
 LOADING_RE = re.compile(r"Loading model:\s*\(ppl\)\s*(?P<path>\S+)")
@@ -59,10 +59,18 @@ PPL_RE = re.compile(r"ppl on (?P<dataset>wikitext2|c4):\s*(?P<value>[-+0-9.eE]+)
 TASK_RE = re.compile(r"^(?P<task>[A-Za-z0-9_]+)\s+\{(?P<body>.*)\}\s+time:")
 METRIC_RE_TEMPLATE = r"['\"]{name}['\"]:\s*(?:np\.float64\()?([-+0-9.eE]+)"
 RUNTIME_RE = re.compile(r"Runtime of training-free construction \(ppl\):\s*(?P<value>[-+0-9.eE]+)")
+RUNTIME_QUANT_RE = re.compile(r"Runtime of quantization only:\s*(?P<value>[-+0-9.eE]+)")
+RUNTIME_PPL_EVAL_RE = re.compile(r"Runtime of wiki/c4 validation:\s*(?P<value>[-+0-9.eE]+)")
+RUNTIME_ZERO_EVAL_RE = re.compile(r"Runtime of zero-shot evaluation:\s*(?P<value>[-+0-9.eE]+)")
 START_TIME_RE = re.compile(r"Current start time:\s*(?P<value>.+)")
 FATAL_RE = re.compile(r"Segmentation fault|Traceback|RuntimeError|CUDA out of memory|Killed", re.IGNORECASE)
 MODEL_NAME_RE = re.compile(r"^model:\s+(?P<path>\S+)\s+(?P<name>\S+)")
 NUMERIC_RE = re.compile(r"^[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?$")
+
+# For backward compatibility with old logs
+LAYER_TIME_RE = re.compile(r"Layer (?P<layer>\d+) total reconstruct and quantization time:\s*(?P<value>[-+0-9.eE]+) s")
+PPL_INDIVIDUAL_TIME_RE = re.compile(r"ppl on (?P<dataset>wikitext2|c4):\s*[-+0-9.eE]+\s*time:\s*(?P<value>[-+0-9.eE]+)")
+ZERO_EVAL_OLD_RE = re.compile(r"Zero-shot evaluation time:\s*(?P<value>[-+0-9.eE]+)")
 
 
 @dataclass
@@ -97,11 +105,26 @@ class RunRecord:
     hella_acc_norm: str = ""
     mmlu_acc: str = ""
     runtime_ppl: str = ""
+    runtime_quant: str = ""
+    runtime_ppl_eval: str = ""
+    runtime_zero_eval: str = ""
     error: str = ""
     _fatal: bool = field(default=False, repr=False)
+    # Temporary fields for accumulating time from old logs
+    _layer_times: list[float] = field(default_factory=list, repr=False)
+    _ppl_eval_times: list[float] = field(default_factory=list, repr=False)
 
     def finalize(self, end_line: int) -> None:
         self.end_line = end_line
+        # Only calculate and show quant time if we actually have ppl results
+        # (meaning the quantization process completed successfully)
+        if not self.runtime_quant and self._layer_times and (self.ppl_wikitext2 or self.ppl_c4):
+            total = sum(self._layer_times)
+            self.runtime_quant = f"{total:.2f}"
+        # Calculate ppl eval time from individual ppl times if not already set
+        if not self.runtime_ppl_eval and self._ppl_eval_times:
+            total = sum(self._ppl_eval_times)
+            self.runtime_ppl_eval = f"{total:.2f}"
         if self._fatal:
             self.status = "failed"
         elif self.runtime_ppl or self.mmlu_acc or self.ppl_wikitext2 or self.ppl_c4:
@@ -194,6 +217,17 @@ def parse_log(path: str) -> list[RunRecord]:
                 current.model_name = model_name_match.group("name")
                 continue
 
+            # Backward compatibility: parse individual ppl eval times for old logs
+            # Need to check this before PPL_RE because PPL_RE matches a subset
+            ppl_ind_time_match = PPL_INDIVIDUAL_TIME_RE.search(line)
+            if ppl_ind_time_match:
+                try:
+                    t = float(ppl_ind_time_match.group("value"))
+                    current._ppl_eval_times.append(t)
+                except ValueError:
+                    pass
+                # Still need to extract the ppl value, so don't continue here
+
             ppl_match = PPL_RE.search(line)
             if ppl_match:
                 dataset = ppl_match.group("dataset")
@@ -217,6 +251,37 @@ def parse_log(path: str) -> list[RunRecord]:
             runtime_match = RUNTIME_RE.search(line)
             if runtime_match:
                 current.runtime_ppl = runtime_match.group("value")
+                continue
+
+            runtime_quant_match = RUNTIME_QUANT_RE.search(line)
+            if runtime_quant_match:
+                current.runtime_quant = runtime_quant_match.group("value")
+                continue
+
+            runtime_ppl_eval_match = RUNTIME_PPL_EVAL_RE.search(line)
+            if runtime_ppl_eval_match:
+                current.runtime_ppl_eval = runtime_ppl_eval_match.group("value")
+                continue
+
+            runtime_zero_eval_match = RUNTIME_ZERO_EVAL_RE.search(line)
+            if runtime_zero_eval_match:
+                current.runtime_zero_eval = runtime_zero_eval_match.group("value")
+                continue
+
+            # Backward compatibility: parse layer times for old logs
+            layer_time_match = LAYER_TIME_RE.search(line)
+            if layer_time_match:
+                try:
+                    t = float(layer_time_match.group("value"))
+                    current._layer_times.append(t)
+                except ValueError:
+                    pass
+                continue
+
+            # Backward compatibility: parse old zero-eval time format
+            zero_eval_old_match = ZERO_EVAL_OLD_RE.search(line)
+            if zero_eval_old_match and not current.runtime_zero_eval:
+                current.runtime_zero_eval = zero_eval_old_match.group("value")
                 continue
 
             if FATAL_RE.search(line):
@@ -266,7 +331,8 @@ DISPLAY_FIELDS = [
     "ppl_wikitext2", "ppl_c4",
     "arc_c_acc", "arc_c_acc_norm", "arc_e_acc", "arc_e_acc_norm",
     "piqa_acc", "piqa_acc_norm", "boolq_acc", "wino_acc", "mnli_acc",
-    "hella_acc", "hella_acc_norm", "mmlu_acc", "status", "runtime_ppl", "error",
+    "hella_acc", "hella_acc_norm", "mmlu_acc", "status",
+    "runtime_ppl", "runtime_quant", "runtime_ppl_eval", "runtime_zero_eval", "error",
 ]
 
 PLAIN_HEADERS = {
@@ -294,6 +360,9 @@ PLAIN_HEADERS = {
     "mmlu_acc": "mmlu",
     "status": "status",
     "runtime_ppl": "time",
+    "runtime_quant": "t_quant",
+    "runtime_ppl_eval": "t_ppl",
+    "runtime_zero_eval": "t_zero",
     "error": "err",
 }
 
@@ -322,6 +391,9 @@ EXPORT_HEADERS = {
     "mmlu_acc": "mmlu_acc",
     "status": "status",
     "runtime_ppl": "total_time",
+    "runtime_quant": "quant_time",
+    "runtime_ppl_eval": "ppl_eval_time",
+    "runtime_zero_eval": "zero_eval_time",
 }
 
 
@@ -408,8 +480,10 @@ def main(argv: list[str] | None = None) -> int:
 
     for log_path in args.logs:
         records = parse_log(log_path)
+        total_records = len(records)
         if args.complete_only:
             records = [record for record in records if record.status == "ok"]
+        filtered_records = len(records)
 
         output_path = f"{log_path}.{args.format}"
         with open(output_path, "w", newline="", encoding="utf-8") as out:
@@ -420,6 +494,20 @@ def main(argv: list[str] | None = None) -> int:
                 write_markdown(records, out)
             else:
                 write_csv(records, out)
+
+        # Print output log
+        print(f"[LOG] Parsed: {log_path}")
+        print(f"[LOG] Output: {output_path}")
+        print(f"[LOG] Total runs: {total_records}")
+        if args.complete_only:
+            print(f"[LOG] Filtered to {filtered_records} complete runs (status='ok')")
+        else:
+            status_counts = {}
+            for r in records:
+                status_counts[r.status] = status_counts.get(r.status, 0) + 1
+            status_str = ", ".join([f"{k}: {v}" for k, v in sorted(status_counts.items())])
+            print(f"[LOG] Status breakdown: {status_str}")
+        print()
 
     return 0
 

@@ -124,17 +124,22 @@ if __name__ == '__main__':
 
     with torch.no_grad():
         dartmoq_model = dartmoq_sequential(model, tokenizer, dataloader, args) #, test_ppl=False)
-    
+
     if args.save_model:
         save_dir = f"models/dartmoq_{model.config.model_type}_{args.rank_mode}_{args.quant_scheme}"
         print("###: Save dartmoq model to: ", save_dir)
         save_dartmoq_model(dartmoq_model, tokenizer, save_dir, args)
 
+    time_zero_eval = 0.0
     if args.eval_zero:
+        tick_zero_start = time.time()
         task_list = ["arc_challenge", "arc_easy", "piqa", "boolq", "winogrande", "mnli", "hellaswag", "mmlu"]
         # task_list = ["mnli", "hellaswag", "mmlu", "sciq"]
         # task_list = ["gsm8k", "triviaqa"]
         eval_zero_shot(dartmoq_model, task_list, eval_method=args.eval_method, tokenizer=tokenizer)
+        tick_zero_done = time.time()
+        time_zero_eval = tick_zero_done - tick_zero_start
+        print(f"Runtime of zero-shot evaluation: {time_zero_eval:.2f}")
 
     # print(model)
 

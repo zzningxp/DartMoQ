@@ -118,6 +118,7 @@ def construct_moe(model, moe_model_flag, layer, layer_idx, inp,
 @torch.no_grad()
 def dartmoq_sequential(model, tokenizer, dataloader, args, test_ppl=True):
     print('Starting ...')
+    tick_quant_start = time.time()
 
     use_cache = model.config.use_cache
     model.config.use_cache = False
@@ -300,6 +301,9 @@ def dartmoq_sequential(model, tokenizer, dataloader, args, test_ppl=True):
         print(f"Layer {layer_idx} total reconstruct and quantization time: {tick1 - tick0:.2f} s", flush=True)
     
     print("MoE reconstruction and quantization done. Moving layers to GPU for evaluation...")
+    tick_quant_end = time.time()
+    time_quant = tick_quant_end - tick_quant_start
+    print(f"Runtime of quantization only: {time_quant:.2f}")
 
     if args.standby_layer_cpu:
         for i in range(torch.cuda.device_count()):
@@ -310,12 +314,13 @@ def dartmoq_sequential(model, tokenizer, dataloader, args, test_ppl=True):
             for i in range(torch.cuda.device_count()):
                 print(f"layer {layer_idx} CUDA {i} Allocated: {torch.cuda.memory_allocated(device=i) / 1024**3:.2f} GB")
                 print(f"layer {layer_idx} CUDA {i} Reserved: {torch.cuda.memory_reserved(device=i) / 1024**3:.2f} GB")
-        
+
         # for name, param in model.named_parameters():
         #     print(f"{name:<40} → {param.device}")
 
     # print('Training_free_ppl:')
     if test_ppl:
+        tick_ppl_start = time.time()
         pre_ppl = []
         datasets = ['wikitext2', 'c4']
         for dataset in datasets:
@@ -326,5 +331,8 @@ def dartmoq_sequential(model, tokenizer, dataloader, args, test_ppl=True):
             eval_set = dataset
             ppl_i = cmoe_ppl_eval(model, testloader, eval_set, args)
             pre_ppl.append(f"{dataset}: {ppl_i}")
+        tick_ppl_end = time.time()
+        time_ppl = tick_ppl_end - tick_ppl_start
+        print(f"Runtime of wiki/c4 validation: {time_ppl:.2f}")
 
     return model
