@@ -18,10 +18,14 @@ class DartMoQHybridWrapper(nn.Module):
         if len(self.sub_experts) == 0:
             return torch.zeros_like(hidden_states)
 
-        total_output = torch.zeros_like(hidden_states)
-        for sub_expert in self.sub_experts:
-            sub_expert_output = sub_expert(hidden_states)
-            total_output = total_output + sub_expert_output
+        # Fast path for single sub-expert (common case from logs)
+        if len(self.sub_experts) == 1:
+            return self.sub_experts[0](hidden_states)
+
+        # For multiple sub-experts, accumulate outputs
+        total_output = self.sub_experts[0](hidden_states)
+        for sub_expert in self.sub_experts[1:]:
+            total_output = total_output + sub_expert(hidden_states)
 
         return total_output
 
