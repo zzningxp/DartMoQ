@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Diagnose: why is AM/GM bound much higher than DP curve on L1?"""
+"""Diagnose: why is LDI bound much higher than DP curve on L1?"""
 from __future__ import annotations
 
 import os
@@ -21,8 +21,8 @@ def _loss_from_neuron_bits(rates, neuron_bits):
     return total
 
 
-def _amgm_ratio(layer, bit):
-    """Copy of _amgm_ratio from headroom.py."""
+def _ldi_ratio(layer, bit):
+    """Copy of _ldi_ratio from headroom.py."""
     from viz._cache_io import neuron_loss_matrix
     neurons = neuron_loss_matrix(layer, bit).flatten()
     neurons = neurons[neurons > 0]
@@ -80,8 +80,8 @@ def diagnose_model(model_id: str, quantmode: str, rank_mode: str, bpw: int = 2,
         print(f"L{L.layer_idx}")
         print(f"{'='*60}")
 
-        amgm, c = _amgm_ratio(L, bpw)
-        print(f"AM/GM bound   = {amgm:.4f}x")
+        ldi_val, c = _ldi_ratio(L, bpw)
+        print(f"LDI bound   = {ldi_val:.4f}x")
         print(f"  c.shape     = {c.shape}")
         print(f"  c.min/max   = {c.min():.3e} / {c.max():.3e}")
         print(f"  AM(c)       = {c.mean():.3e}")
