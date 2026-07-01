@@ -83,7 +83,10 @@ if __name__ == '__main__':
         help='Disable 0bit in DP search: only use 1-4 bits for bit allocation'
     )
     parser.add_argument(        '--standby-layer-cpu', action='store_true', default=False,
-        help='Whether to move quant layers to CPU before and after quantization.' 
+        help='Whether to move quant layers to CPU before and after quantization.'
+    )
+    parser.add_argument(        '--sequential-eval', action='store_true', default=False,
+        help='Use sequential PPL evaluation (keeps layers on CPU, moves one by one).'
     )
     parser.add_argument(        '--no-use-hybrid-moe', dest='use_hybrid_moe', action='store_false', default=True,
         help='Disable hybrid MoE structure and use original experts instead.'
@@ -103,10 +106,16 @@ if __name__ == '__main__':
     
     print("-" * 50)
     print(f"Current start time: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())}")
+    # Auto-enable sequential_eval if standby_layer_cpu is enabled
+    if args.standby_layer_cpu:
+        if not args.sequential_eval:
+            args.sequential_eval = True
+            print("Auto-enabling --sequential-eval because --standby-layer-cpu is set")
+
     print("Loading model: (ppl)", args.model)
-    print("slices/quant-scheme/rank-mode/moe-struct/quantmode/disable-0bit-prune: (ppl)",
-          args.slices, args.quant_scheme, args.rank_mode, "use_hybrid_moe" if args.use_hybrid_moe else " use_origin_moe", args.quantmode, args.disable_0bit_prune)
-    model, tokenizer = load_model(args.model)
+    print("slices/quant-scheme/rank-mode/moe-struct/quantmode/disable-0bit-prune/standby-layer-cpu: (ppl)",
+          args.slices, args.quant_scheme, args.rank_mode, "use_hybrid_moe" if args.use_hybrid_moe else " use_origin_moe", args.quantmode, args.disable_0bit_prune, args.standby_layer_cpu)
+    model, tokenizer = load_model(args.model, standby_cpu=args.standby_layer_cpu)
 
     dataloader, _ = get_loaders(
         args.dataset, 

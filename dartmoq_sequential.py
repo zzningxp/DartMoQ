@@ -126,15 +126,19 @@ def dartmoq_sequential(model, tokenizer, dataloader, args, test_ppl=True):
 
     dtype = next(iter(model.parameters())).dtype
     bsz = 1
-    
+
     inps = torch.zeros(
         (args.nsamples//bsz, bsz, model.seqlen, model.config.hidden_size), dtype=dtype, device='cpu'
     )
     print(inps.shape)
     cache = {'i': 0, 'attention_mask': None, 'position_ids': None, 'position_embeddings': None}
 
+    # For CPU standby mode, we need to temporarily put embed_tokens and first layer on GPU
+    # to collect the initial inputs
     if args.standby_layer_cpu:
         model.model.embed_tokens = model.model.embed_tokens.to(DEV)
+        # Need at least layer 0 on DEV to collect inputs
+        layers[0] = layers[0].to(DEV)
 
     class Catcher(nn.Module):
         def __init__(self, module):
@@ -142,7 +146,7 @@ def dartmoq_sequential(model, tokenizer, dataloader, args, test_ppl=True):
             self.module = module
         def forward(self, inp, **kwargs):
 
-            inps[cache['i']] = inp
+            inps[cache['i']] = inp.cpu()  # Save to CPU
             cache['i'] += 1
             cache['attention_mask'] = kwargs['attention_mask']
             cache['position_ids'] = kwargs['position_ids']
@@ -155,7 +159,7 @@ def dartmoq_sequential(model, tokenizer, dataloader, args, test_ppl=True):
                 return getattr(self.module, name)
 
     layers[0] = Catcher(layers[0])
-    
+
     with torch.no_grad():
         for batch in dataloader:
             try:
@@ -165,11 +169,30 @@ def dartmoq_sequential(model, tokenizer, dataloader, args, test_ppl=True):
 
     layers[0] = layers[0].module
 
+    # Move layer 0 back to CPU if needed
+    if args.standby_layer_cpu:
+        layers[0] = layers[0].to('cpu')
+
     torch.cuda.empty_cache()
 
     attention_mask = cache['attention_mask']
     position_ids = cache['position_ids']
-    position_embeddings = cache['position_embeddings']
+
+    # Generate position_embeddings properly - it's not passed as kwargs to layers
+    # but created by model.model.rotary_emb(hidden_states, position_ids)
+    position_embeddings = cache.get('position_embeddings')
+    if position_embeddings is None and hasattr(model.model, 'rotary_emb'):
+        # For models like Qwen3 that use rotary_emb
+        # Create a dummy hidden_states to generate position_embeddings
+        with torch.no_grad():
+            # Get the first batch to generate position_embeddings
+            for batch in dataloader:
+                dummy_input = batch[0].to(DEV)
+                dummy_hidden = model.model.embed_tokens(dummy_input)
+                if position_ids is None:
+                    position_ids = torch.arange(0, dummy_input.shape[1], device=DEV).unsqueeze(0)
+                position_embeddings = model.model.rotary_emb(dummy_hidden, position_ids)
+                break
     # print("position_embeddings:", position_embeddings)
     # print(cache)
 
@@ -180,9 +203,9 @@ def dartmoq_sequential(model, tokenizer, dataloader, args, test_ppl=True):
     moe_model_flag = False
     for layer in layers:
         moe_model_flag = moe_model_flag or hasattr(layer.mlp, 'gate') or hasattr(layer.mlp, 'experts')
-    
+
     use_hybrid_moe = getattr(args, 'use_hybrid_moe', False)
-    
+
     if moe_model_flag:
         slice_expert_num = args.slices
 
@@ -201,7 +224,7 @@ def dartmoq_sequential(model, tokenizer, dataloader, args, test_ppl=True):
             else:
                 new_num_expert = slice_expert_num * model.config.n_routed_experts
                 model.config.n_routed_experts = new_num_expert
-        
+
         ori_num_experts_per_tok = model.config.num_experts_per_tok
         if use_hybrid_moe:
             # Hybrid MoE keeps original activation count
@@ -209,14 +232,14 @@ def dartmoq_sequential(model, tokenizer, dataloader, args, test_ppl=True):
         else:
             new_num_experts_per_tok = slice_expert_num * model.config.num_experts_per_tok
             model.config.num_experts_per_tok = new_num_experts_per_tok
-        
+
         # For hybrid MoE, we don't change intermediate_size since sub-experts have different sizes
         if not use_hybrid_moe:
             if hasattr(model.config, 'moe_intermediate_size'):
                 model.config.moe_intermediate_size = model.config.moe_intermediate_size // slice_expert_num
             elif hasattr(model.config, 'intermediate_size'):
                 model.config.intermediate_size = model.config.intermediate_size // slice_expert_num
-        
+
         if use_hybrid_moe:
             print("The model is already a MoE model. Proceeding to create hybrid MoE structure.")
             print(f"Hybrid MoE: {ori_num_experts} experts with sub-experts sliced by {slice_expert_num}")
@@ -225,13 +248,19 @@ def dartmoq_sequential(model, tokenizer, dataloader, args, test_ppl=True):
             print(f"Slice expert by {slice_expert_num}: to {new_num_expert}, with {new_num_experts_per_tok} activated experts.")
     else:
         assert False, "Dense model is not supported."
-    
+
     inps = inps.squeeze(1)
 
+    # For CPU standby mode, we want all layers on CPU initially
     if args.standby_layer_cpu:
         layers_device = []
         for layer_idx, layer in enumerate(model.model.layers):
-            dev = next(layer.parameters()).device
+            # Check if layer has parameters
+            params = list(layer.parameters())
+            if params:
+                dev = params[0].device
+            else:
+                dev = torch.device('cpu')
             layers_device.append(dev)
             # print(layer_idx, dev)
             if dev.type == 'cuda':
@@ -239,7 +268,7 @@ def dartmoq_sequential(model, tokenizer, dataloader, args, test_ppl=True):
         for i in range(torch.cuda.device_count()):
             force_release_inactive_splits(device=i)
             print(f"CUDA {i} Allocated: {torch.cuda.memory_allocated(device=i) / 1024**3:.2f} GB")
-            print(f"CUDA {i} Reserved: {torch.cuda.memory_reserved(device=i) / 1024**3:.2f} GB")       
+            print(f"CUDA {i} Reserved: {torch.cuda.memory_reserved(device=i) / 1024**3:.2f} GB")
         # print(layers_device)
     
     qscheme_str = args.quant_scheme
@@ -269,14 +298,16 @@ def dartmoq_sequential(model, tokenizer, dataloader, args, test_ppl=True):
     for layer_idx, layer in enumerate(layers):
         tick0 = time.time()
         if args.standby_layer_cpu:
-            layer = layer.to(layers_device[layer_idx])
+            # Use the saved original device or default to DEV
+            target_dev = layers_device[layer_idx] if layer_idx < len(layers_device) and layers_device[layer_idx].type == 'cuda' else DEV
+            layer = layer.to(target_dev)
 
         moe_out = construct_moe(model,
             moe_model_flag,
-            layer, 
+            layer,
             layer_idx,
-            inps, 
-            attention_mask, 
+            inps,
+            attention_mask,
             position_ids,
             position_embeddings,
             n_experts = new_num_expert,
@@ -299,21 +330,28 @@ def dartmoq_sequential(model, tokenizer, dataloader, args, test_ppl=True):
 
         tick1 = time.time()
         print(f"Layer {layer_idx} total reconstruct and quantization time: {tick1 - tick0:.2f} s", flush=True)
-    
-    print("MoE reconstruction and quantization done. Moving layers to GPU for evaluation...")
+
+    print("MoE reconstruction and quantization done.")
     tick_quant_end = time.time()
     time_quant = tick_quant_end - tick_quant_start
     print(f"Runtime of quantization only: {time_quant:.2f}")
 
-    if args.standby_layer_cpu:
+    # Check if we should use sequential eval for PPL
+    use_sequential_eval = getattr(args, 'sequential_eval', False) or args.standby_layer_cpu
+    args.sequential_eval = use_sequential_eval
+
+    if not use_sequential_eval and args.standby_layer_cpu:
+        print("Moving layers to GPU for evaluation...")
         for i in range(torch.cuda.device_count()):
             force_release_inactive_splits(device=i)
         for layer_idx, layer in enumerate(model.model.layers):
-            if layers_device[layer_idx].type == 'cuda':
+            if layer_idx < len(layers_device) and layers_device[layer_idx].type == 'cuda':
                 layer = layer.to(layers_device[layer_idx])
             for i in range(torch.cuda.device_count()):
                 print(f"layer {layer_idx} CUDA {i} Allocated: {torch.cuda.memory_allocated(device=i) / 1024**3:.2f} GB")
                 print(f"layer {layer_idx} CUDA {i} Reserved: {torch.cuda.memory_reserved(device=i) / 1024**3:.2f} GB")
+    elif use_sequential_eval:
+        print("Will use sequential PPL evaluation (layers stay on CPU)")
 
         # for name, param in model.named_parameters():
         #     print(f"{name:<40} → {param.device}")

@@ -9,7 +9,150 @@ from dartmoq_utils import *
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 @torch.no_grad()
+def cmoe_ppl_eval_sequential(model, testloader, eval_set, args):
+    """
+    Sequential PPL evaluation: keeps layers on CPU and moves them to GPU one by one.
+    Used for models too large to fit entirely in GPU memory.
+    """
+    tick0 = time.time()
+    use_cache = model.config.use_cache
+    model.config.use_cache = False
+
+    testenc = testloader.input_ids
+    nsamples = testenc.shape[1] // model.seqlen
+    print('ppl evaluation samples (sequential mode):', nsamples)
+
+    # Save original device for each layer
+    layers = model.model.layers
+    original_devices = []
+    for layer in layers:
+        if hasattr(layer, 'parameters') and len(list(layer.parameters())) > 0:
+            original_devices.append(next(layer.parameters()).device)
+        else:
+            original_devices.append(torch.device('cpu'))
+
+    # Move all layers to CPU first
+    print("Moving all layers to CPU for sequential evaluation...")
+    for layer in layers:
+        layer.to('cpu')
+
+    # Force cleanup
+    import gc
+    gc.collect()
+    for i in range(torch.cuda.device_count()):
+        torch.cuda.empty_cache()
+        print(f"CUDA {i} (after moving layers to CPU): {torch.cuda.memory_allocated(i) / 1024**3:.2f} GB")
+
+    nlls = []
+
+    # Process each sample sequentially
+    for sample_idx in range(nsamples):
+        print(f"Processing sample {sample_idx + 1}/{nsamples}")
+
+        batch = testenc[:, (sample_idx * model.seqlen):((sample_idx + 1) * model.seqlen)].to(DEV)
+        target_ids = batch.clone()
+
+        # Sequential forward pass through layers
+        with torch.no_grad():
+            # Embedding
+            model.model.embed_tokens = model.model.embed_tokens.to(DEV)
+            hidden_states = model.model.embed_tokens(batch)
+
+            # Get position embeddings and attention mask
+            attention_mask = None
+            position_ids = None
+            position_embeddings = None
+
+            # Create position_ids
+            position_ids = torch.arange(0, batch.shape[1], device=DEV).unsqueeze(0)
+
+            # Generate position_embeddings properly - it's created by rotary_emb
+            if hasattr(model.model, 'rotary_emb'):
+                # Qwen3 style: position_embeddings comes from rotary_emb(hidden_states, position_ids)
+                position_embeddings = model.model.rotary_emb(hidden_states, position_ids)
+                # Create a simple attention mask
+                attention_mask = torch.ones((1, batch.shape[1]), device=DEV, dtype=torch.bfloat16)
+            else:
+                # Fallback for other model types
+                attention_mask = torch.ones((1, batch.shape[1]), device=DEV, dtype=torch.bfloat16)
+
+            # Now process each layer sequentially
+            current_hidden = hidden_states
+
+            for layer_idx, layer in enumerate(layers):
+                # Move layer to GPU
+                layer = layer.to(DEV)
+
+                # Forward pass
+                layer_outputs = layer(
+                    current_hidden,
+                    attention_mask=attention_mask,
+                    position_ids=position_ids,
+                    position_embeddings=position_embeddings
+                )
+
+                # Save the output (it's a tuple: (hidden_states, ...))
+                if isinstance(layer_outputs, tuple):
+                    current_hidden = layer_outputs[0]
+                else:
+                    current_hidden = layer_outputs
+
+                # Move layer back to CPU
+                layer = layer.to('cpu')
+
+                # Cleanup
+                gc.collect()
+                torch.cuda.empty_cache()
+
+                if layer_idx % 5 == 0:
+                    for i in range(torch.cuda.device_count()):
+                        print(f"  Layer {layer_idx}, CUDA {i}: {torch.cuda.memory_allocated(i) / 1024**3:.2f} GB")
+
+            # Final norm and lm_head
+            model.model.norm = model.model.norm.to(DEV)
+            model.lm_head = model.lm_head.to(DEV)
+
+            current_hidden = model.model.norm(current_hidden)
+            logits = model.lm_head(current_hidden)
+
+            # Move norm and head back
+            model.model.norm = model.model.norm.to('cpu')
+            model.lm_head = model.lm_head.to('cpu')
+
+            # Calculate loss
+            shift_logits = logits[:, :-1, :].contiguous()
+            shift_labels = target_ids[:, 1:].contiguous()
+            loss_fct = nn.CrossEntropyLoss()
+            loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
+            neg_log_likelihood = loss.float() * model.seqlen
+            nlls.append(neg_log_likelihood)
+
+            del current_hidden, hidden_states, logits
+            gc.collect()
+            torch.cuda.empty_cache()
+
+    # Restore original devices
+    print("Restoring layers to original devices...")
+    for layer_idx, layer in enumerate(layers):
+        layer.to(original_devices[layer_idx])
+
+    # Calculate final ppl
+    ppl = torch.exp(torch.stack(nlls).sum() / (nsamples * model.seqlen))
+    tick1 = time.time()
+    print(f'ppl on {eval_set} (sequential mode): {ppl.item():.4f} time: {tick1 - tick0:.2f}')
+    model.config.use_cache = use_cache
+
+    return ppl.item()
+
+
+@torch.no_grad()
 def cmoe_ppl_eval(model, testloader, eval_set, args):
+    # Check if we should use sequential mode
+    use_sequential = getattr(args, 'sequential_eval', False)
+
+    if use_sequential:
+        return cmoe_ppl_eval_sequential(model, testloader, eval_set, args)
+
     tick0 = time.time()
     use_cache = model.config.use_cache
     model.config.use_cache = False
@@ -130,7 +273,7 @@ def eval_zero_shot(model, task_list, eval_method="hf", tokenizer=None):
     # Restore original use_cache setting
     model.config.use_cache = use_cache_original
 
-def get_llama(model):
+def get_llama(model, device_map="auto"):
     def skip(*args, **kwargs):
         pass
     # torch.nn.init.kaiming_uniform_ = skip
@@ -138,16 +281,16 @@ def get_llama(model):
     # torch.nn.init.normal_ = skip
     from transformers import LlamaForCausalLM
     model = LlamaForCausalLM.from_pretrained(
-        model, 
-        torch_dtype=torch.bfloat16, 
-        low_cpu_mem_usage=True, 
-        device_map = "auto"
+        model,
+        torch_dtype=torch.bfloat16,
+        low_cpu_mem_usage=True,
+        device_map=device_map
     )
     model.seqlen = 2048
     # model.seqlen = 4096
     return model
 
-def get_llava(model):
+def get_llava(model, device_map="auto"):
     def skip(*args, **kwargs):
         pass
     # torch.nn.init.kaiming_uniform_ = skip
@@ -157,39 +300,37 @@ def get_llava(model):
     from llava.model import LlavaLlamaForCausalLM
 
     model = LlavaLlamaForCausalLM.from_pretrained(
-        model, 
-        torch_dtype=torch.bfloat16, 
-        low_cpu_mem_usage=True, 
-        device_map = "auto"
+        model,
+        torch_dtype=torch.bfloat16,
+        low_cpu_mem_usage=True,
+        device_map=device_map
     )
     model.seqlen = 2048
     # model.seqlen = 4096
 
     return model
 
-def get_olmoe(model_path):
+def get_olmoe(model_path, device_map="auto"):
     from transformers import OlmoeForCausalLM
 
     # model = OlmoeForCausalLM.from_pretrained(model, torch_dtype=torch.bfloat16, low_cpu_mem_usage=True, device_map = 'auto')
     # print(model_path)
-    device_map = "auto"
     model = AutoModelForCausalLM.from_pretrained(
-        model_path, 
-        torch_dtype=torch.bfloat16, 
-        low_cpu_mem_usage=True, 
-        device_map = device_map
+        model_path,
+        torch_dtype=torch.bfloat16,
+        low_cpu_mem_usage=True,
+        device_map=device_map
     )
 
     model.seqlen = 2048
     # model.seqlen = 4096
     return model
 
-def get_deepseek_moe_16b(model_path):
+def get_deepseek_moe_16b(model_path, device_map="auto"):
     # from transformers import DeepseekForCausalLM
     tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
     tokenizer.pad_token = tokenizer.eos_token
 
-    device_map = "auto"
     model = AutoModelForCausalLM.from_pretrained(
         model_path,
         torch_dtype=torch.bfloat16,
@@ -203,12 +344,11 @@ def get_deepseek_moe_16b(model_path):
 
     return model, tokenizer
 
-def get_deepseek_v2_lite(model_path):
+def get_deepseek_v2_lite(model_path, device_map="auto"):
 
     tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
     tokenizer.pad_token = tokenizer.eos_token
 
-    device_map = "auto"
     model = AutoModelForCausalLM.from_pretrained(
         model_path,
         torch_dtype=torch.bfloat16,
@@ -221,15 +361,14 @@ def get_deepseek_v2_lite(model_path):
     # model.seqlen = 4096
 
     return model, tokenizer
-def get_qwen3_moe(model_path):
+def get_qwen3_moe(model_path, device_map="auto"):
     from transformers import Qwen3MoeForCausalLM
 
-    device_map = "auto"
     model = Qwen3MoeForCausalLM.from_pretrained(
         model_path,
         torch_dtype=torch.bfloat16,
         low_cpu_mem_usage=True,
-        device_map = device_map,
+        device_map=device_map,
         trust_remote_code=True
     )
 
@@ -238,30 +377,13 @@ def get_qwen3_moe(model_path):
 
     return model
 
-def get_qwen3_30b_a3b(model_path):
+def get_qwen3_30b_a3b(model_path, device_map="auto"):
     from transformers import Qwen3MoeForCausalLM
-    # device_map = {
-    #             "model.embed_tokens": "cuda:0",
-    #             "model.rotary_emb": "cuda:0",
-    #             **{
-    #                 f"model.layers.{k}": "cuda:0" for k in range(0, 16)
-    #             },
-    #             **{
-    #                 f"model.layers.{k}": "cuda:1" for k in range(16, 32)
-    #             },
-    #             **{
-    #                 f"model.layers.{k}": "cpu" for k in range(32, 48)
-    #             },
-    #             "model.norm": "cpu",
-    #             "lm_head": "cpu",
-    #         }
-    # print(device_map)
-    device_map = 'auto'
     model = Qwen3MoeForCausalLM.from_pretrained(
         model_path,
         torch_dtype=torch.bfloat16,
         low_cpu_mem_usage=True,
-        device_map = device_map,
+        device_map=device_map,
         trust_remote_code=True
     )
 
@@ -270,10 +392,9 @@ def get_qwen3_30b_a3b(model_path):
 
     return model
 
-def get_qwen3(model_path):
+def get_qwen3(model_path, device_map="auto"):
     from transformers import Qwen3ForCausalLM
 
-    device_map = "auto"
     model = Qwen3ForCausalLM.from_pretrained(
         model_path,
         torch_dtype=torch.bfloat16,
@@ -287,10 +408,9 @@ def get_qwen3(model_path):
 
     return model
 
-def get_moonlight(model_path):
+def get_moonlight(model_path, device_map="auto"):
     from transformers import DeepseekV3ForCausalLM
 
-    device_map = "auto"
     model = DeepseekV3ForCausalLM.from_pretrained(
         model_path,
         torch_dtype=torch.bfloat16,
@@ -304,14 +424,13 @@ def get_moonlight(model_path):
 
     return model
 
-def get_auto(model_path):
+def get_auto(model_path, device_map="auto"):
 
     tokenizer = AutoTokenizer.from_pretrained(
         model_path,
         trust_remote_code=True
     )
 
-    device_map = "auto"
     model = AutoModelForCausalLM.from_pretrained(
         model_path,
         torch_dtype=torch.bfloat16,
@@ -326,63 +445,101 @@ def get_auto(model_path):
 
     return model, tokenizer
 
-def load_model(model_path):
+
+def load_model(model_path, standby_cpu=False):
+    """
+    Load model with optional CPU standby mode for very large models.
+
+    Args:
+        model_path: Path to model
+        standby_cpu: If True, loads model to CPU first for memory efficiency
+    """
     print(model_path.lower())
+
+    # For CPU standby mode, first check if model is on meta device and needs reload
+    # If standby_cpu is True, we'll load to CPU directly
+    device_map = "cpu" if standby_cpu else "auto"
+
+    # Set model_id
+    model_id = str(model_path).split('/')[-1].split('\\')[-1]
+
+    # Try to infer model_id from path
+    path_lower = model_path.lower()
+    if 'llava' in path_lower:
+        model_id = 'llava'
+    elif 'olmoe' in path_lower:
+        model_id = 'olmoe-7b-1b'
+    elif "deepseek-moe-16b" in path_lower:
+        model_id = 'deepseek-v1-moe-16b'
+    elif 'deepseek-v2-lite' in path_lower:
+        model_id = 'deepseek-v2-lite'
+    elif 'llama-2-7b' in path_lower:
+        model_id = 'llama2-7b'
+    elif 'llama-2-13b' in path_lower:
+        model_id = 'llama2-13b'
+    elif 'llama-3-8b' in path_lower:
+        model_id = 'llama3-8b'
+    elif 'llama-3___1-8b' in path_lower:
+        model_id = 'llama31-8b'
+    elif 'qwen3-30b-a3b' in path_lower:
+        model_id = 'qwen3-30b-a3b'
+    elif 'qwen3_moe' in path_lower:
+        model_id = 'qwen3-moe'
+    elif 'qwen3' in path_lower:
+        if 'qwen3-4b' in path_lower:
+            model_id = 'qwen3-4b'
+        elif 'qwen3-8b' in path_lower:
+            model_id = 'qwen3-8b'
+        else:
+            model_id = 'qwen3'
+    elif 'qwen2.5' in path_lower or 'qwen2___5' in path_lower:
+        model_id = 'qwen2.5'
+    elif 'moonlight' in path_lower:
+        model_id = 'moonlight'
+
+    # Original loading path for non-lazy mode
     if 'llava' in model_path.lower():
-        model = get_llava(model_path)
+        model = get_llava(model_path, device_map=device_map)
         tokenizer = AutoTokenizer.from_pretrained(model_path)
-        model.model_id = 'llava'
     elif 'olmoe' in model_path.lower():
-        model = get_olmoe(model_path)
+        model = get_olmoe(model_path, device_map=device_map)
         tokenizer = AutoTokenizer.from_pretrained(model_path)
-        model.model_id = 'olmoe-7b-1b'
     elif "deepseek-moe-16b" in model_path.lower():
-        model, tokenizer = get_deepseek_moe_16b(model_path)
-        model.model_id = 'deepseek-v1-moe-16b'
+        model, tokenizer = get_deepseek_moe_16b(model_path, device_map=device_map)
     elif 'deepseek-v2-lite' in model_path.lower():
-        model, tokenizer = get_deepseek_v2_lite(model_path)
-        model.model_id = 'deepseek-v2-lite'
+        model, tokenizer = get_deepseek_v2_lite(model_path, device_map=device_map)
     elif 'llama' in model_path.lower():
-        model = get_llama(model_path)
+        model = get_llama(model_path, device_map=device_map)
         tokenizer = AutoTokenizer.from_pretrained(model_path)
-        if 'llama-2-7b' in model_path.lower():
-            model.model_id = 'llama2-7b'
-        if 'llama-2-13b' in model_path.lower():
-            model.model_id = 'llama2-13b'
-        if 'llama-3-8b' in model_path.lower():
-            model.model_id = 'llama3-8b'
-        if 'llama-3___1-8b' in model_path.lower():
-            model.model_id = 'llama31-8b'
     elif 'qwen3-30b-a3b' in model_path.lower():
-        model = get_qwen3_30b_a3b(model_path)
+        model = get_qwen3_30b_a3b(model_path, device_map=device_map)
         tokenizer = AutoTokenizer.from_pretrained(model_path)
-        model.model_id = 'qwen3-30b-a3b'
     elif 'qwen3_moe' in model_path.lower():
-        model = get_qwen3_moe(model_path)
+        model = get_qwen3_moe(model_path, device_map=device_map)
         tokenizer = AutoTokenizer.from_pretrained(model_path)
-        model.model_id = 'qwen3-moe'
     elif 'qwen3' in model_path.lower():
-        model = get_qwen3(model_path)
+        model = get_qwen3(model_path, device_map=device_map)
         tokenizer = AutoTokenizer.from_pretrained(model_path)
-        if 'qwen3-4b' in model_path.lower():
-            model.model_id = 'qwen3-4b'
-        elif 'qwen3-8b' in model_path.lower():
-            model.model_id = 'qwen3-8b'
     elif 'qwen2.5' in model_path.lower() or 'qwen2___5' in model_path.lower():
-        model, tokenizer = get_auto(model_path)
-        model.model_id = 'qwen2.5'
-        print(model_path.lower(), model.model_id)
+        model, tokenizer = get_auto(model_path, device_map=device_map)
+        print(model_path.lower(), model_id)
     elif 'moonlight' in model_path.lower():
-        model = get_moonlight(model_path)
+        model = get_moonlight(model_path, device_map=device_map)
         tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
-        model.model_id = 'moonlight'
-        print(model_path.lower(), model.model_id)
+        print(model_path.lower(), model_id)
     else:
-        model, tokenizer = get_auto(model_path)
+        model, tokenizer = get_auto(model_path, device_map=device_map)
+
     model.eval()
+    model.model_id = model_id
     if not model.model_id:
         model.model_id = getattr(model.config, '_name_or_path', None) or getattr(model.config, 'name_or_path', None) or model_path
         model.model_id = str(model.model_id).split('/')[-1].split('\\')[-1]
+
+    # Mark if we're in CPU standby mode
+    model._standby_cpu = standby_cpu
+    model._model_path = model_path
+
     return model, tokenizer
 
 if __name__ == '__main__':
@@ -407,6 +564,12 @@ if __name__ == '__main__':
         type=str, default='hf', choices=['hf', 'sglang', 'vllm'],
         help='Evaluation method: hf (HuggingFace), sglang (custom in-memory wrapper), or vllm.'
     )
+    parser.add_argument(        '--sequential-eval', action='store_true', default=False,
+        help='Use sequential PPL evaluation (keeps layers on CPU, moves one by one).'
+    )
+    parser.add_argument(        '--standby-cpu', action='store_true', default=False,
+        help='Use CPU standby mode (load model to CPU first for large models).'
+    )
 
 
     args = parser.parse_args()
@@ -415,7 +578,13 @@ if __name__ == '__main__':
 
     if not args.eval_zero:
         print("Loading model: ", args.model.lower())
-        model, tokenizer = load_model(args.model)
+        model, tokenizer = load_model(args.model, standby_cpu=args.standby_cpu)
+
+        # If in CPU standby mode, make sure everything is on CPU
+        if args.standby_cpu:
+            import gc
+            gc.collect()
+            torch.cuda.empty_cache()
 
         # for name, param in model.named_parameters():
         #     print(f"{name:<40} → {param.device}")
@@ -437,7 +606,7 @@ if __name__ == '__main__':
 
     if args.eval_zero:
         print("Loading model: ", args.model.lower())
-        model, tokenizer = load_model(args.model)
+        model, tokenizer = load_model(args.model, standby_cpu=args.standby_cpu)
 
         task_list = ["arc_challenge", "arc_easy", "piqa", "boolq", "winogrande", "sciq", "mnli", "hellaswag", "gsm8k", "mmlu", "triviaqa"]
         # task_list = ["arc_challenge", "arc_easy", "boolq", "winogrande", "piqa", "sciq", "hellaswag", "mmlu", "gsm8k", "triviaqa"]
