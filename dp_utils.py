@@ -1202,7 +1202,7 @@ def test_read_rates_from_file():
             except Exception as e:
                 print(f"Failed to load cached data: {e}")
 
-    rates[0] = extrapolate_0bit_loss(rates, quant_type=quant_type, save_plots=True)
+    rates[0] = extrapolate_0bit_loss_fix(rates, quant_type=quant_type, save_plots=True)
     for i in range(p):
         print(i, end=', ')
         print(f"{rates[4][expert_idx][i].item():.4f}", end=', ')

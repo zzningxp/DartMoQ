@@ -378,7 +378,8 @@ def get_model_layer_stats(
     model_id: str,
     expert_idx: int = 0,
     outlier_bits: Set[int] = None,
-) -> Dict[str, Dict[int, float]]:
+    debug_layers: List[int] = None,
+) -> Dict[str, Dict[int, Dict[str, float]]]:
     """Get R² mean stats per layer for a single model (both quant types)."""
     if outlier_bits is None:
         outlier_bits = {1, 2, 3, 4}
@@ -466,9 +467,56 @@ def get_model_layer_stats(
                         pass
 
             if r2_values:
-                result[quant_type][lidx] = np.mean(r2_values)
-                perf_fit_str = f" (!!! Outlier !!!: {n_all_zero} all-zero + {n_constant} constant)" if n_all_zero + n_constant > 0 else ""
-                print(f"  {quant_type} layer {lidx}: mean R² = {result[quant_type][lidx]:.4f}{perf_fit_str}")
+                r2_arr = np.array(r2_values)
+                result[quant_type][lidx] = {
+                    'mean': np.mean(r2_arr),
+                    'median': np.median(r2_arr)
+                }
+                perf_fit_str = f" (perfect: {n_all_zero} all-zero + {n_constant} constant)" if n_all_zero + n_constant > 0 else ""
+                print(f"  {quant_type} layer {lidx}: mean R² = {result[quant_type][lidx]['mean']:.4f}, median = {result[quant_type][lidx]['median']:.4f}{perf_fit_str}")
+
+                # Debug mode: print detailed info for specific layers
+                if debug_layers and lidx in debug_layers:
+                    print(f"\n  === DEBUG {quant_type} layer {lidx} ===")
+                    # Collect R² distribution
+                    r2_arr = np.array(r2_values)
+                    print(f"  R² stats: min={r2_arr.min():.4f}, max={r2_arr.max():.4f}, median={np.median(r2_arr):.4f}, std={r2_arr.std():.4f}")
+                    print(f"  R² < 0.9: {np.sum(r2_arr < 0.9)}, R² < 0.95: {np.sum(r2_arr < 0.95)}")
+
+                    # Re-calculate to find all neurons' R²
+                    neuron_r2 = []
+                    for i in range(n_neurons):
+                        loss_array = np.array([rates[b][i] for b in bits_sorted])
+                        positive_mask = loss_array > 0
+                        if positive_mask.sum() == 0:
+                            neuron_r2.append((i, 1.0, loss_array))
+                        elif positive_mask.sum() >= 2 and (loss_array[positive_mask] == loss_array[positive_mask][0]).all():
+                            neuron_r2.append((i, 1.0, loss_array))
+                        elif positive_mask.sum() >= 3:
+                            try:
+                                fit_bits = b_array[positive_mask]
+                                fit_loss = loss_array[positive_mask]
+                                log_loss = np.log(fit_loss)
+                                p, q, r = np.polyfit(fit_bits, log_loss, deg=2)
+                                r2_val = compute_r_squared(fit_bits, log_loss, p, q, r)
+                                if not np.isnan(r2_val):
+                                    neuron_r2.append((i, r2_val, loss_array))
+                            except Exception:
+                                pass
+
+                    # Sort and print lowest 5
+                    neuron_r2.sort(key=lambda x: x[1])
+                    print(f"\n  Lowest 5 R² neurons:")
+                    for i, (neuron_idx, r2_val, loss_arr) in enumerate(neuron_r2[:5]):
+                        loss_str = '  '.join([f"{b}:{v:.6g}" for b, v in zip(bits_sorted, loss_arr)])
+                        print(f"    neuron {neuron_idx:4d}: R²={r2_val:.4f} | {loss_str}")
+
+                    # Print highest 5
+                    print(f"\n  Highest 5 R² neurons:")
+                    for i, (neuron_idx, r2_val, loss_arr) in enumerate(neuron_r2[-5:]):
+                        loss_str = '  '.join([f"{b}:{v:.6g}" for b, v in zip(bits_sorted, loss_arr)])
+                        print(f"    neuron {neuron_idx:4d}: R²={r2_val:.4f} | {loss_str}")
+                    print()
     return result
 
 
@@ -478,6 +526,7 @@ def analyze_multi_model_r2(
     outlier_bits: Set[int] = None,
     save_dir: str = None,
     use_pdf: bool = False,
+    debug_layers: List[int] = None,
 ):
     """Analyze R² for multiple models in a single row plot.
 
@@ -493,7 +542,8 @@ def analyze_multi_model_r2(
     from viz._cache_io import KNOWN_MODELS
 
     # Use all known models if not provided
-    if model_ids is None or not model_ids:
+    use_all_models = model_ids is None or not model_ids
+    if use_all_models:
         model_ids = sorted(KNOWN_MODELS.keys())
         print(f"Using all known models: {model_ids}")
 
@@ -504,7 +554,7 @@ def analyze_multi_model_r2(
     # Get stats for all models
     all_model_stats = []
     for model_id in model_ids:
-        stats = get_model_layer_stats(model_id, expert_idx, outlier_bits)
+        stats = get_model_layer_stats(model_id, expert_idx, outlier_bits, debug_layers)
         all_model_stats.append((model_id, stats))
 
     # Create figure: 1 row, N columns
@@ -533,42 +583,70 @@ def analyze_multi_model_r2(
         x = np.arange(len(layer_indices))
         width = 0.35
 
-        # Plot bars for each quant type
+        # Plot bars (median) and mean markers for each quant type
         for qt_idx, quant_type in enumerate(['turboquant', 'gptq']):
             means = []
+            medians = []
             for lidx in layer_indices:
-                means.append(stats[quant_type].get(lidx, np.nan))
+                layer_stat = stats[quant_type].get(lidx)
+                if layer_stat is not None:
+                    means.append(layer_stat['mean'])
+                    medians.append(layer_stat['median'])
+                else:
+                    means.append(np.nan)
+                    medians.append(np.nan)
 
             offset = -width/2 if qt_idx == 0 else width/2
-            ax.bar(x + offset, means, width, label=labels[quant_type],
+
+            # Plot median as bars
+            label = f'{labels[quant_type]} (median)' if ax_idx == 0 else ""
+            ax.bar(x + offset, medians, width, label=label,
                    color=colors[quant_type], alpha=0.8)
 
+            # Plot mean as horizontal lines on the bars
+            for xi, (mean_val, median_val) in enumerate(zip(means, medians)):
+                if not np.isnan(mean_val) and not np.isnan(median_val):
+                    line_x = xi + offset
+                    # Draw a horizontal line for mean
+                    ax.plot([line_x - width/3, line_x + width/3],
+                            [mean_val, mean_val],
+                            color='white', linewidth=2.5, solid_capstyle='butt')
+                    ax.plot([line_x - width/3, line_x + width/3],
+                            [mean_val, mean_val],
+                            color='black', linewidth=1.5, solid_capstyle='butt')
+
         # Add reference lines
-        ax.axhline(0.95, color='#27ae60', linestyle='--', alpha=0.7, linewidth=1.5, label='R²=0.95')
-        ax.axhline(0.99, color='#c0392b', linestyle=':', alpha=0.7, linewidth=1.5, label='R²=0.99')
+        ax.axhline(0.95, color='#27ae60', linestyle='--', alpha=0.7, linewidth=1.5, label='R²=0.95' if ax_idx == 0 else "")
+        ax.axhline(0.99, color='#c0392b', linestyle=':', alpha=0.7, linewidth=1.5, label='R²=0.99' if ax_idx == 0 else "")
+
+        # Add dummy lines for legend to explain mean marker
+        if ax_idx == 0:
+            ax.plot([], [], color='black', linewidth=1.5, label='mean')
 
         # Collect all R² values to determine y-axis range
         all_r2 = []
         for quant_type in ['turboquant', 'gptq']:
             for lidx in layer_indices:
                 val = stats[quant_type].get(lidx)
-                if val is not None and not np.isnan(val):
-                    all_r2.append(val)
+                if val is not None:
+                    all_r2.append(val['mean'])
+                    all_r2.append(val['median'])
 
         # Dynamic y-axis limits
         if all_r2:
-            min_r2 = min(all_r2)
-            y_min = 0.85
+            y_min = 0.8
         else:
-            y_min = 0.85
+            y_min = 0.8
 
         # Formatting
         ax.set_xlabel('Layer Index', fontsize=10)
-        ax.set_ylabel('Mean R²', fontsize=10)
+        ax.set_ylabel('R²', fontsize=10)
         ax.set_title(model_id, fontsize=11, fontweight='bold')
         ax.set_xticks(x)
         ax.set_xticklabels([str(l) for l in layer_indices], rotation=90, fontsize=8)
         ax.set_ylim(y_min, 1.005)
+        # Set y-axis ticks to be sparser
+        ax.set_yticks(np.arange(0.85, 1.01, 0.05))
         ax.grid(True, alpha=0.3, axis='y')
 
         # Only show legend on first plot
@@ -582,8 +660,11 @@ def analyze_multi_model_r2(
         save_dir = 'plot/neuron_rates_fit'
     os.makedirs(save_dir, exist_ok=True)
     ext = 'pdf' if use_pdf else 'png'
-    model_str = '_'.join([m.replace('-', '_') for m in model_ids])
-    save_path = os.path.join(save_dir, f'multi_model_r2_comparison_{model_str}.{ext}')
+    if use_all_models:
+        model_str = 'all_models'
+    else:
+        model_str = '_'.join([m.replace('-', '_') for m in model_ids])
+    save_path = os.path.join(save_dir, f'r2_comparison_{model_str}.{ext}')
     if use_pdf:
         plt.savefig(save_path, bbox_inches='tight')
     else:
@@ -601,7 +682,7 @@ def main():
     )
     parser.add_argument("--models", nargs="+",
                       help="Model identifiers (up to 5, for R² analysis, default: auto-discover all)")
-    parser.add_argument("--model", default="deepseek-v1-moe-16b",
+    parser.add_argument("--model",
                       help="Single model identifier (for neuron rate plotting)")
     parser.add_argument("--layer", type=int, default=1,
                       help="Layer index (for neuron rate plotting)")
@@ -621,21 +702,29 @@ def main():
                       help="Save as PDF instead of PNG")
     parser.add_argument("--analyze-r2", action="store_true",
                       help="Analyze multi-model R² comparison instead of plotting neuron rates")
+    parser.add_argument("--debug-layers", nargs="+", type=int,
+                      help="Layers to print detailed debug info for")
 
     args = parser.parse_args()
 
     if args.analyze_r2:
+        # 优先用 --models，如果没指定但 --model 指定了，用 --model
+        target_model_ids = args.models
+        if not target_model_ids and args.model:
+            target_model_ids = [args.model]
         analyze_multi_model_r2(
-            model_ids=args.models,  # None = auto-discover
+            model_ids=target_model_ids,  # None = auto-discover
             expert_idx=args.expert,
             outlier_bits=set(args.bits),
             save_dir=args.save_dir,
             use_pdf=args.pdf,
+            debug_layers=args.debug_layers,
         )
     else:
         # Default to the new fit comparison plot
+        model_to_plot = args.model or "deepseek-v1-moe-16b"
         plot_neuron_rates_with_fit(
-            model_id=args.model,
+            model_id=model_to_plot,
             layer_idx=args.layer,
             expert_idx=args.expert,
             p=args.p,

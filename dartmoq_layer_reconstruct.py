@@ -14,7 +14,7 @@ from camera_utils import analyze_expert_energy
 from dp_utils import enum_optimal_m_scheme_separate_fast
 from dp_utils import enum_optimal_m_scheme_global_fast
 from dp_utils import enum_optimal_m_scheme_energy_global_fast
-from dp_utils import extrapolate_0bit_loss
+from dp_utils import extrapolate_0bit_loss_fix
 from collections import Counter
 from dartmoq_hybridmoe import DartMoQHybridWrapper
 from dartmoq_hybridmoe import restructure_hybrid_qscheme
@@ -118,7 +118,7 @@ def reconstruct_moe_from_existing(model, layer, layer_idx, inps,
                     print(f"Failed to load cached data {e}")
             if x == 0:
                 print(f"Computing extrapolate 0 bit loss for layer {layer_idx}")
-                q_rates[0] = extrapolate_0bit_loss(q_rates, quant_type=outlier_label)
+                q_rates[0] = extrapolate_0bit_loss_fix(q_rates, quant_type=outlier_label)
                 q_rates[0] = [torch.from_numpy(q_rates[0][i]).to(device) for i in range(len(q_rates[0]))]
             else:
                 print(f"Computing {outlier_label} outlier for layer {layer_idx}, wbits={x}, with inps shape {inps.shape}")
