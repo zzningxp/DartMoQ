@@ -18,6 +18,136 @@ from dp_utils import extrapolate_0bit_loss_fix, extrapolate_0bit_loss
 INTERMEDIATE_RESULT_DIR = "intermediate_result"
 
 
+def plot_lowest_r2_neurons(
+    model_id: str,
+    layer_idx: int,
+    expert_idx: int,
+    quant_type: str,
+    neuron_r2: List[Tuple[int, float, np.ndarray]],
+    outlier_bits: Set[int] = None,
+    save_dir: str = None,
+    use_pdf: bool = False,
+):
+    """Plot the lowest R² neurons with their fit curves.
+    Args:
+        model_id: Model identifier
+        layer_idx: Layer index
+        expert_idx: Expert index
+        quant_type: Quantization type
+        neuron_r2: List of (neuron_idx, r2_val, loss_array)
+        outlier_bits: Set of bit widths
+        save_dir: Directory to save plot
+        use_pdf: Save as PDF instead of PNG
+    """
+    if outlier_bits is None:
+        outlier_bits = {1, 2, 3, 4}
+    bits_sorted = sorted(outlier_bits)
+    b_array = np.array(bits_sorted, dtype=float)
+
+    # Load full data to get all bits for these neurons
+    rank_mode = 'turboquant_innerproduct' if quant_type == 'turboquant' else 'gptq_quant_outlier'
+    cache_dir = os.path.join(INTERMEDIATE_RESULT_DIR, f"quant_outlier_{quant_type}", rank_mode, model_id)
+
+    # Load all bit data for these neurons
+    full_rates = {}
+    for x in bits_sorted:
+        cache_path = os.path.join(cache_dir, f"{model_id}_L{layer_idx}_b{x}.pt")
+        if os.path.exists(cache_path):
+            try:
+                import torch
+                cached_data = torch.load(cache_path, map_location='cpu')
+                full_rates[x] = cached_data[expert_idx].detach().cpu().float().numpy()
+            except Exception as e:
+                print(f"Failed to load {cache_path}: {e}")
+
+    # Create figure
+    fig, axes = plt.subplots(1, len(neuron_r2), figsize=(5 * len(neuron_r2), 4))
+    if len(neuron_r2) == 1:
+        axes = [axes]
+
+    colors = ['#e74c3c', '#3498db', '#2ecc71', '#9b59b6', '#f39c12']  # red, blue, green, purple, orange
+
+    for ax_idx, (neuron_idx, r2_val, loss_array) in enumerate(neuron_r2):
+        ax = axes[ax_idx]
+        color = colors[ax_idx % len(colors)]
+
+        # Plot actual data points
+        actual_bits = []
+        actual_losses = []
+        for b in bits_sorted:
+            if b in full_rates and neuron_idx < len(full_rates[b]):
+                val = full_rates[b][neuron_idx]
+                actual_bits.append(b)
+                actual_losses.append(val)
+
+        if actual_bits:
+            ax.scatter(actual_bits, actual_losses, color=color, s=100, alpha=0.9, zorder=5, label='Data')
+
+            # Try to compute and plot fit curve
+            loss_arr = np.array(actual_losses)
+            positive_mask = loss_arr > 0
+            if positive_mask.sum() >= 3:
+                try:
+                    fit_bits = b_array[positive_mask]
+                    fit_loss = loss_arr[positive_mask]
+                    log_loss = np.log(fit_loss)
+                    p, q, r = np.polyfit(fit_bits, log_loss, deg=2)
+
+                    # Plot smooth fit curve
+                    x_smooth = np.linspace(min(fit_bits) - 0.2, max(fit_bits) + 0.2, 100)
+                    y_smooth_log = p * x_smooth**2 + q * x_smooth + r
+                    y_smooth = np.exp(y_smooth_log)
+                    ax.plot(x_smooth, y_smooth, color=color, linewidth=2, alpha=0.8, zorder=3, label='Fit')
+
+                    # Also plot interpolated points
+                    y_pred_log = p * fit_bits**2 + q * fit_bits + r
+                    y_pred = np.exp(y_pred_log)
+                    ax.scatter(fit_bits, y_pred, color=color, marker='x', s=80, alpha=0.7, zorder=4, label='Predicted')
+                except Exception as e:
+                    print(f"Failed to fit neuron {neuron_idx}: {e}")
+
+            # Also try to extrapolate 0bit
+            if len(actual_bits) >= 2:
+                try:
+                    # Create a temporary rates dict for extrapolation
+                    temp_rates = {}
+                    for b, val in zip(actual_bits, actual_losses):
+                        temp_rates[b] = [np.array([val])]
+
+                    rates_0_list = extrapolate_0bit_loss(temp_rates, quant_type=quant_type, save_plots=False)
+                    l0 = rates_0_list[0][0]
+                    ax.scatter([0], [l0], color=color, marker='*', s=150, alpha=0.9, zorder=6, label='0-bit')
+                except Exception as e:
+                    pass
+
+        ax.set_xlabel('Bit Width', fontsize=10)
+        ax.set_ylabel('Loss (log scale)', fontsize=10)
+        ax.set_title(f'Neuron {neuron_idx}\nR²={r2_val:.4f}', fontsize=11, fontweight='bold')
+        ax.set_yscale('log')
+        ax.grid(True, alpha=0.3, zorder=1)
+        all_bits_with_0 = [0] + bits_sorted if len(actual_bits) >= 2 else bits_sorted
+        ax.set_xlim(-0.2, max(all_bits_with_0) + 0.2)
+        ax.set_xticks(all_bits_with_0)
+        ax.legend(fontsize=8, loc='upper right')
+
+    plt.suptitle(f'{model_id} Layer {layer_idx} Expert {expert_idx} ({quant_type}) - Lowest 5 R² Neurons',
+                 fontsize=12, fontweight='bold')
+    plt.tight_layout()
+
+    # Save plot
+    if save_dir is None:
+        save_dir = 'plot/neuron_rates_fit'
+    os.makedirs(save_dir, exist_ok=True)
+    ext = 'pdf' if use_pdf else 'png'
+    save_path = os.path.join(save_dir, f'{model_id}_L{layer_idx}_exp{expert_idx}_{quant_type}_lowest_r2.{ext}')
+    if use_pdf:
+        plt.savefig(save_path, bbox_inches='tight')
+    else:
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+    print(f"Debug plot saved to {save_path}")
+    plt.close()
+
+
 def compute_r_squared(x: np.ndarray, y: np.ndarray, p: float, q: float, r: float) -> float:
     """Compute coefficient of determination (R²) for log-quadratic fit.
 
@@ -386,13 +516,17 @@ def get_model_layer_stats(
 
     # Discover all available layers
     all_layers = set()
+    # prefix = '_nopr8fix'
+    prefix = ''
     quants_for_discovery = [
-        ('turboquant', 'turboquant_innerproduct'),
-        ('gptq', 'gptq_quant_outlier'),
+        ('turboquant', f'turboquant_innerproduct{prefix}'),
+        ('gptq', f'gptq_quant_outlier{prefix}'),
     ]
+    found_any_cache = False
     for quant_type, rank_mode in quants_for_discovery:
         cache_dir = os.path.join(INTERMEDIATE_RESULT_DIR, f"quant_outlier_{quant_type}", rank_mode, model_id)
         if os.path.exists(cache_dir):
+            found_any_cache = True
             for filename in os.listdir(cache_dir):
                 if filename.endswith('_b1.pt') and model_id in filename:
                     parts = filename.split('_L')
@@ -402,10 +536,15 @@ def get_model_layer_stats(
                             all_layers.add(int(layer_part))
                         except ValueError:
                             pass
+        else:
+            print(f"[WARNING] Cache directory not found for {quant_type}: {cache_dir}")
 
     layer_indices = sorted(all_layers)
     if not layer_indices:
-        print(f"No layers found for model {model_id}")
+        if not found_any_cache:
+            print(f"[ERROR] No cache directories found for model {model_id} at all!")
+        else:
+            print(f"[ERROR] No layers found for model {model_id} in cache directories!")
         return {'turboquant': {}, 'gptq': {}}
 
     print(f"Processing model {model_id}, layers: {layer_indices}")
@@ -414,9 +553,13 @@ def get_model_layer_stats(
 
     for quant_type, rank_mode in quants_for_discovery:
         cache_dir = os.path.join(INTERMEDIATE_RESULT_DIR, f"quant_outlier_{quant_type}", rank_mode, model_id)
+        if not os.path.exists(cache_dir):
+            print(f"[WARNING] {quant_type} cache directory not found: {cache_dir}")
+            continue
 
         for lidx in layer_indices:
             rates = {}
+            missing_bits = []
             for x in outlier_bits:
                 cache_path = os.path.join(cache_dir, f"{model_id}_L{lidx}_b{x}.pt")
                 if os.path.exists(cache_path):
@@ -425,10 +568,14 @@ def get_model_layer_stats(
                         cached_data = torch.load(cache_path, map_location='cpu')
                         expert_data = cached_data[expert_idx].detach().cpu().float().numpy()
                         rates[x] = expert_data
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        print(f"[WARNING] Failed to load {cache_path}: {e}")
+                        missing_bits.append(x)
+                else:
+                    missing_bits.append(x)
 
             if not rates or len(rates) < 2:
+                print(f"[WARNING] {quant_type} layer {lidx}: not enough data (only bits {sorted(rates.keys())} available, missing bits {missing_bits})")
                 continue
 
             bits_sorted = sorted(rates.keys())
@@ -517,6 +664,19 @@ def get_model_layer_stats(
                         loss_str = '  '.join([f"{b}:{v:.6g}" for b, v in zip(bits_sorted, loss_arr)])
                         print(f"    neuron {neuron_idx:4d}: R²={r2_val:.4f} | {loss_str}")
                     print()
+
+                    # Plot this layer for visualization - special debug plot for lowest 5 R² neurons
+                    print(f"  Plotting debug fit comparison for layer {lidx} (lowest 5 R² neurons)...")
+                    plot_lowest_r2_neurons(
+                        model_id=model_id,
+                        layer_idx=lidx,
+                        expert_idx=expert_idx,
+                        quant_type=quant_type,
+                        neuron_r2=neuron_r2[:5],  # lowest 5
+                        outlier_bits=outlier_bits,
+                        save_dir=None,
+                        use_pdf=False,
+                    )
     return result
 
 
