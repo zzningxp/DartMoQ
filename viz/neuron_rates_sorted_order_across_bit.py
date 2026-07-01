@@ -34,7 +34,6 @@ DEFAULT_QUANTMODE = "turboquant"
 DEFAULT_RANK_MODE = "turboquant_innerproduct"
 DEFAULT_BITS = (1, 2, 3, 4)
 
-# Fixed color scheme for 0-4 bits (from viz.precision_recycling)
 BIT_COLORS = [
     (0.65, 0.65, 0.65),  # 0-bit
     (0.84, 0.96, 0.69),  # 1-bit

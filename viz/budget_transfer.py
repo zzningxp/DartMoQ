@@ -1,5 +1,5 @@
 
-"""Precision Recycling Visualization.
+"""预算转移可视化.
 
 This module visualizes how DartMoQ can prune low-sensitivity neurons to int0
 and reallocate those bits to high-sensitivity neurons (int4) for better
@@ -8,9 +8,9 @@ accuracy under the same bit budget.
 Core idea: Same BPW, Better Loss.
 
 Usage:
-    python -m viz.precision_recycling                    # All models
-    python -m viz.precision_recycling --model dsv1      # Specific model
-    python -m viz.precision_recycling --bit 2           # Base bit width
+    python -m viz.budget_transfer                    # All models
+    python -m viz.budget_transfer --model dsv1      # Specific model
+    python -m viz.budget_transfer --bit 2           # Base bit width
 """
 
 from __future__ import annotations
@@ -41,7 +41,7 @@ from viz._cache_io import (
     resolve_model_id,
 )
 
-OUT_ROOT = "plot/precision_recycling"
+OUT_ROOT = "plot/budget_transfer"
 DEFAULT_QUANTMODE = "turboquant"
 DEFAULT_RANK_MODE = "turboquant_innerproduct"
 DEFAULT_BIT = 2
@@ -71,8 +71,8 @@ def collect_sensitivity_data(layer, bits=(0, 1, 2, 3, 4), expert_idx=0):
 
 def extrapolate_0bit_for_visualization(rates):
     """Extrapolate int0 loss using log-quadratic fit."""
-    bits_with_data = sorted([b for b in rates.keys() if b > 0])
-    if len(bits_with_data) < 2:
+    bits_with_data = sorted([b for b in rates.keys() if b &gt; 0])
+    if len(bits_with_data) &lt; 2:
         return rates[bits_with_data[0]] * 2.0
 
     n_neurons = len(rates[bits_with_data[0]])
@@ -87,7 +87,7 @@ def extrapolate_0bit_for_visualization(rates):
             p, q, r = np.polyfit(b_array, log_loss, deg=2)
             l0_i = np.exp(r)
             l1 = losses[0]
-            if l0_i < l1:
+            if l0_i &lt; l1:
                 l0_i = l1 * 2.0
             l0[i] = l0_i
         except Exception:
@@ -106,8 +106,8 @@ def compute_uniform_loss(rates, target_bpw, bits=(0, 1, 2, 3, 4)):
     return total_loss, allocation
 
 
-def precision_recycling_allocation(rates, target_bpw, low_bit=0, high_bit=4):
-    """Allocate bits by recycling from low-sensitivity to high-sensitivity."""
+def budget_transfer_allocation(rates, target_bpw, low_bit=0, high_bit=4):
+    """Allocate bits by transferring from low-sensitivity to high-sensitivity."""
     n_neurons = len(rates[1])
     sens = rates[2] if 2 in rates else rates[1]
     sorted_idx = np.argsort(-sens)
@@ -116,7 +116,7 @@ def precision_recycling_allocation(rates, target_bpw, low_bit=0, high_bit=4):
     total_bits = 2 * n_neurons
 
     # 应用对称的比特重新分配
-    if abs(target_bpw - 2.0) < 0.01:
+    if abs(target_bpw - 2.0) &lt; 0.01:
         n_low = int(0.125 * n_neurons)
         n_high = n_low
         allocation[sorted_idx[-n_low:]] = low_bit
@@ -128,11 +128,11 @@ def precision_recycling_allocation(rates, target_bpw, low_bit=0, high_bit=4):
         max_low = 0
         for i in range(n_neurons, -1, -1):
             test_bits = 2 * (n_neurons - i)
-            if test_bits <= target_bits:
+            if test_bits &lt;= target_bits:
                 max_low = i
                 break
 
-        if max_low > 0:
+        if max_low &gt; 0:
             allocation[sorted_idx[-max_low:]] = low_bit
             total_bits = 2 * (n_neurons - max_low)
 
@@ -140,7 +140,7 @@ def precision_recycling_allocation(rates, target_bpw, low_bit=0, high_bit=4):
         n_upgrade = int(extra_bits / (high_bit - 2))
         n_upgrade = min(n_upgrade, n_neurons - max_low)
 
-        if n_upgrade > 0:
+        if n_upgrade &gt; 0:
             allocation[sorted_idx[:n_upgrade]] = high_bit
             total_bits += (high_bit - 2) * n_upgrade
 
@@ -177,21 +177,21 @@ def plot_multi_expert_allocation(model_id, layer, expert_indices=None, target_bp
         axes = [axes]
     elif n_plots == 2:
         fig, axes = plt.subplots(1, 2, figsize=(16, 7))
-    elif n_plots <= 4:
+    elif n_plots &lt;= 4:
         fig, axes = plt.subplots(1, 4, figsize=(22, 5))
         axes = axes.flatten()
     else:
         fig, axes = plt.subplots(2, 3, figsize=(20, 12))
         axes = axes.flatten()[:n_plots]
 
-    fig.suptitle("%s | Layer %d | Precision Recycling (%d/2/%d, %.1f BPW)" %
+    fig.suptitle("%s | Layer %d | 预算转移 (%d/2/%d, %.1f BPW)" %
                  (model_label(model_id), layer.layer_idx, high_bit, low_bit, target_bpw),
                  fontsize=16, fontweight='bold', y=0.99)
 
     for ax, expert_idx in zip(axes, expert_indices):
         rates = collect_sensitivity_data(layer, bits=[0, 1, 2, 3, 4], expert_idx=expert_idx)
         uniform_loss, uniform_alloc = compute_uniform_loss(rates, target_bpw)
-        recycl_alloc, recycl_loss, recycl_stats = precision_recycling_allocation(
+        recycl_alloc, recycl_loss, recycl_stats = budget_transfer_allocation(
             rates, target_bpw, low_bit=low_bit, high_bit=high_bit
         )
 
@@ -201,7 +201,7 @@ def plot_multi_expert_allocation(model_id, layer, expert_indices=None, target_bp
                           recycl_stats, uniform_loss, recycl_loss)
 
     # 只在最后一个图显示colorbar
-    if len(axes) > 0:
+    if len(axes) &gt; 0:
         cbar_ax = fig.add_axes([0.93, 0.12, 0.02, 0.76])
         import matplotlib as mpl
         norm = mpl.colors.Normalize(vmin=0, vmax=4)
@@ -294,7 +294,7 @@ def plot_single_expert(ax, allocation, rates, sens, title, stats, uniform_loss, 
     ax.grid(True, alpha=0.3, axis='y')
     ax.legend(loc='best', fontsize=9)
 
-    improvement = (1 - recycl_loss / uniform_loss) * 100 if uniform_loss > 0 else 0
+    improvement = (1 - recycl_loss / uniform_loss) * 100 if uniform_loss &gt; 0 else 0
     stats_text = f'Int{low_bit}: {stats["low_fraction"]*100:.1f}%\nInt{high_bit}: {stats["high_fraction"]*100:.1f}%\nLoss Reduction: {improvement:.1f}%'
 
     ax.text(0.98, 0.98, stats_text, ha='right', va='top', fontsize=10,
@@ -310,7 +310,7 @@ def run_all_visualizations(model_id, layers, target_bit=DEFAULT_BIT, target_bpw=
         return
 
     print("\n" + "="*70)
-    print("Visualizing Precision Recycling: %s" % model_label(model_id))
+    print("Visualizing 预算转移: %s" % model_label(model_id))
     print("="*70)
 
     for layer in layers:
@@ -331,7 +331,7 @@ def run_all_visualizations(model_id, layers, target_bit=DEFAULT_BIT, target_bpw=
 def main():
     apply_paper_style()
 
-    parser = argparse.ArgumentParser(description="Precision Recycling Visualization")
+    parser = argparse.ArgumentParser(description="预算转移可视化")
     parser.add_argument("--model", default=None, help="Model ID or path")
     parser.add_argument("--bit", type=int, default=DEFAULT_BIT, help="Base bit width")
     parser.add_argument("--bpw", type=float, default=None, help="Target bits per weight")
@@ -374,3 +374,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
