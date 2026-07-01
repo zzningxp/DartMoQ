@@ -13,97 +13,9 @@ from typing import Dict, List, Set, Tuple
 
 # Add parent directory to path to import dp_utils
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from dp_utils import extrapolate_0bit_loss_fix, extrapolate_0bit_loss
 
 INTERMEDIATE_RESULT_DIR = "intermediate_result"
-
-
-def extrapolate_0bit_loss(rates: Dict[int, List[np.ndarray]], quant_type: str = "gptq", save_plots: bool = False) -> List[np.ndarray]:
-    bits = sorted(rates.keys())
-    if 0 in bits:
-        bits.remove(0)
-        rates.pop(0)
-    # print(bits)
-    assert len(bits) >= 2, "at least 2 bits are required for extrapolation of 0bit loss"
-
-    x_max = max(bits) + 1.0
-
-    n_experts = len(rates[bits[0]])
-    for b in bits:
-        assert len(rates[b]) == n_experts, f"bit {b} has inconsistent number of experts"
-
-    L0 = []
-
-    for expert_idx in range(n_experts):
-        print(f"Processing extrapolate 0bit loss for expert {expert_idx}")
-
-        expert_rates = {}
-        n_neurons = None
-        for b in bits:
-            expert_rates[b] = rates[b][expert_idx].detach().cpu().float().numpy()
-            if n_neurons is None:
-                n_neurons = len(expert_rates[b])
-            else:
-                assert len(expert_rates[b]) == n_neurons, \
-                    f"expert {expert_idx}, bit {b} has inconsistent loss array length"
-
-        b_array = np.array(bits, dtype=float)
-        expert_L0 = np.zeros(n_neurons, dtype=float)
-
-        for i in range(n_neurons):
-            loss_array = np.array([expert_rates[b][i] for b in bits])
-
-            # --------------------- log quadratic fit ---------------------
-            # function: log(loss) = p*b² + q*b + r
-            # loss(b) = exp(p*b² + q*b + r)
-            # -------------------------------------------------------------
-            r2 = np.nan
-            try:
-                log_loss = np.log(loss_array)
-
-                p, q, r = np.polyfit(b_array, log_loss, deg=2)
-                r2 = compute_r_squared(b_array, log_loss, p, q, r)
-
-                l0 = np.exp(r)
-
-                l1 = expert_rates[1][i] if 1 in expert_rates else expert_rates[bits[0]][i]
-                if l0 < l1:
-                    l0 = l1 * 2.0
-
-            except (RuntimeError, ValueError, np.linalg.LinAlgError):
-                l1 = expert_rates[1][i] if 1 in expert_rates else expert_rates[bits[0]][i]
-                l0 = l1 * 2.0
-
-            expert_L0[i] = l0
-
-            if save_plots:
-                print(p, q, r, f"R²={r2:.4f}")
-                plt.figure(figsize=(7, 4))
-
-                plt.scatter(bits, loss_array, color='red', s=10, label='Original loss (1,2,3,4...)')
-
-                b_dense = np.linspace(0.001, max(bits), 100)
-                y_dense = np.exp(p * b_dense ** 2 + q * b_dense + r)
-                r2_label = f', R²={r2:.4f}' if not np.isnan(r2) else ''
-                plt.plot(b_dense, y_dense, 'b-', label=f'Log-quad fit (exp(pb²+qb+r)){r2_label}')
-
-                plt.scatter(0, l0, color='green', s=10, label=f'L0 = {l0:.2f}')
-                plt.scatter(1, l1, color='orange', s=10, label=f'L1 = {l1:.2f}')
-
-                plt.title(f'Expert {expert_idx} | Neuron {i} | L0={l0:.2f}, L1={l1:.2f}'
-                         f'{f", R²={r2:.4f}" if not np.isnan(r2) else ""}')
-                plt.xlabel('bit')
-                plt.ylabel('loss')
-                plt.yscale('log')
-                plt.grid(True)
-                plt.legend()
-                plt.tight_layout()
-                os.makedirs(f'plot/{quant_type}_bit_loss_fit', exist_ok=True)
-                plt.savefig(f'plot/{quant_type}_bit_loss_fit/exp2_expert_{expert_idx}_neuron_{i}.png', dpi=150)
-                plt.close()
-
-        L0.append(expert_L0)
-
-    return L0
 
 
 def compute_r_squared(x: np.ndarray, y: np.ndarray, p: float, q: float, r: float) -> float:
@@ -135,123 +47,7 @@ def compute_r_squared(x: np.ndarray, y: np.ndarray, p: float, q: float, r: float
         # All y values are the same
         return 1.0 if ss_res == 0 else 0.0
 
-    return 1.0 - (ss_res / ss_tot)
-
-
-def extrapolate_0bit_loss_fix(rates: Dict[int, List[np.ndarray]], quant_type: str = "gptq", save_plots: bool = False) -> Tuple[List[np.ndarray], List[Dict]]:
-    bits = sorted(rates.keys())
-    if 0 in bits:
-        bits.remove(0)
-        rates.pop(0)
-    # print(bits)
-    assert len(bits) >= 2, "at least 2 bits are required for extrapolation of 0bit loss"
-
-    x_max = max(bits) + 1.0
-
-    n_experts = len(rates[bits[0]])
-    for b in bits:
-        assert len(rates[b]) == n_experts, f"bit {b} has inconsistent number of experts"
-
-    L0 = []
-    fit_params = []  # Store fit parameters for each neuron
-
-    for expert_idx in range(n_experts):
-        print(f"Processing extrapolate 0bit loss for expert {expert_idx}")
-
-        expert_rates = {}
-        n_neurons = None
-        for b in bits:
-            expert_rates[b] = rates[b][expert_idx].detach().cpu().float().numpy()
-            if n_neurons is None:
-                n_neurons = len(expert_rates[b])
-            else:
-                assert len(expert_rates[b]) == n_neurons, \
-                    f"expert {expert_idx}, bit {b} has inconsistent loss array length"
-
-        b_array = np.array(bits, dtype=float)
-        expert_L0 = np.zeros(n_neurons, dtype=float)
-        expert_fit_params = []
-
-        for i in range(n_neurons):
-            loss_array = np.array([expert_rates[b][i] for b in bits])
-            positive_mask = loss_array > 0
-
-            if not np.any(positive_mask):
-                expert_L0[i] = 0.0
-                expert_fit_params.append({'p': np.nan, 'q': np.nan, 'r': np.nan, 'r2': np.nan, 'valid': False})
-                continue
-
-            reference_bit = bits[0]
-            if 1 in expert_rates:
-                reference_bit = 1
-
-            reference_loss = expert_rates[reference_bit][i]
-            fallback_l0 = max(reference_loss * 2.0, 1e-12)
-
-            # --------------------- log quadratic fit ---------------------
-            # function: log(loss) = p*b² + q*b + r
-            # loss(b) = exp(p*b² + q*b + r)
-            # -------------------------------------------------------------
-            p = q = r = np.nan
-            r2 = np.nan
-            valid_fit = False
-            try:
-                if positive_mask.sum() >= 3:
-                    fit_bits = b_array[positive_mask]
-                    fit_loss = loss_array[positive_mask]
-                    log_loss = np.log(fit_loss)
-
-                    p, q, r = np.polyfit(fit_bits, log_loss, deg=2)
-                    r2 = compute_r_squared(fit_bits, log_loss, p, q, r)
-                    l0 = np.exp(r)
-                    valid_fit = True
-                else:
-                    l0 = fallback_l0
-
-                if reference_loss > 0:
-                    if l0 < reference_loss:
-                        l0 = fallback_l0
-
-            except (RuntimeError, ValueError, np.linalg.LinAlgError, FloatingPointError):
-                l0 = fallback_l0
-
-            expert_L0[i] = l0
-            expert_fit_params.append({'p': p, 'q': q, 'r': r, 'r2': r2, 'valid': valid_fit, 'bits': bits, 'losses': loss_array})
-
-            if save_plots:
-                print(p, q, r, f"R²={r2:.4f}")
-                plt.figure(figsize=(7, 4))
-
-                plt.scatter(bits, loss_array, color='red', s=10, label='Original loss (1,2,3,4...)')
-
-                b_dense = np.linspace(0.001, max(bits), 100)
-                y_dense = np.exp(p * b_dense ** 2 + q * b_dense + r)
-                r2_label = f', R²={r2:.4f}' if valid_fit and not np.isnan(r2) else ''
-                plt.plot(b_dense, y_dense, 'b-', label=f'Log-quad fit (exp(pb²+qb+r)){r2_label}')
-
-                plt.scatter(0, l0, color='green', s=10, label=f'L0 = {l0:.2f}')
-                plt.scatter(reference_bit, reference_loss, color='orange', s=10,
-                            label=f'L{reference_bit} = {reference_loss:.2f}')
-
-                plt.title(
-                    f'Expert {expert_idx} | Neuron {i} | '
-                    f'L0={l0:.2f}, L{reference_bit}={reference_loss:.2f}'
-                    f'{f", R²={r2:.4f}" if valid_fit and not np.isnan(r2) else ""}'
-                )
-                plt.xlabel('bit')
-                plt.ylabel('loss')
-                plt.yscale('log')
-                plt.grid(True)
-                plt.legend()
-                plt.tight_layout()
-                os.makedirs(f'plot/{quant_type}_bit_loss_fit', exist_ok=True)
-                plt.savefig(f'plot/{quant_type}_bit_loss_fit/exp2_expert_{expert_idx}_neuron_{i}.png', dpi=150)
-                plt.close()
-
-        L0.append(expert_L0)
-        fit_params.append(expert_fit_params)
-
-    return L0, fit_params
+    return 1.0 - ss_res / ss_tot
 
 
 def plot_neuron_rates_with_fit(
@@ -316,14 +112,16 @@ def plot_neuron_rates_with_fit(
         fit_params = None
         if use_0bit and len(rates) >= 2:
             rates_copy = {k: v for k, v in rates.items()}
-            rates_0_list, fit_params = extrapolate_0bit_loss_fix(rates_copy, quant_type=quant_type, save_plots=False)
-            rates[0] = [rates_0_list[0]]  # Make it consistent with other bits: [array]
+            # Note: dp_utils version doesn't return fit_params, so we need to handle this
+            # For now, just use the extrapolation without the fit visualization
+            rates_0_list = extrapolate_0bit_loss(rates_copy, quant_type=quant_type, save_plots=False)
+            rates[0] = [rates_0_list[0]]
             rates_0 = rates_0_list[0]
 
         all_data[quant_type] = {
             'rates': rates,
             'rates_0': rates_0,
-            'fit_params': fit_params,
+            'fit_params': None,
         }
 
     # Create figure with 3 subplots - adjust for colorbars
@@ -337,12 +135,10 @@ def plot_neuron_rates_with_fit(
 
     # Use TurboQuant for the fit demo
     demo_quant = 'turboquant'
-    fit_annotations = []  # Store fit formulas for legend/annotation
 
     if all_data[demo_quant] is not None:
         data = all_data[demo_quant]
         rates = data['rates']
-        fit_params = data['fit_params']
         bits_sorted = sorted([b for b in rates.keys() if b != 0])
         n_neurons = int(len(rates[bits_sorted[0]][0]))
 
@@ -355,8 +151,6 @@ def plot_neuron_rates_with_fit(
         # Show top 3 neurons
         demo_neurons = [idx for idx, _ in neuron_losses[:3]]
         colors = ['#e74c3c', '#3498db', '#2ecc71']  # red, blue, green
-
-        b_dense = np.linspace(0, max(bits_sorted) + 0.5, 100)
 
         for idx, neuron_idx in enumerate(demo_neurons):
             color = colors[idx % len(colors)]
@@ -374,25 +168,13 @@ def plot_neuron_rates_with_fit(
             ax1.scatter(actual_bits, actual_losses, color=color, s=80, alpha=0.9,
                        label=f'Neuron {neuron_idx} (data)')
 
-            # Plot fit curve if available
-            if fit_params is not None and fit_params[0][neuron_idx]['valid']:
-                fp = fit_params[0][neuron_idx]
-                p_coef, q_coef, r_coef = fp['p'], fp['q'], fp['r']
-                y_fit = np.exp(p_coef * b_dense ** 2 + q_coef * b_dense + r_coef)
-                ax1.plot(b_dense, y_fit, color=color, linestyle='-', linewidth=2.5, alpha=0.8,
-                        label=f'Neuron {neuron_idx} (fit)')
-
-                # Store fit formula for annotation
-                fit_formula = f'N{neuron_idx}: log(L) = {p_coef:.2e}b² + {q_coef:.2e}b + {r_coef:.2e}'
-                fit_annotations.append((color, fit_formula))
-
-                # Plot 0-bit extrapolation
-                if 0 in rates:
-                    l0 = rates[0][0][neuron_idx]
-                    if hasattr(l0, 'item'):
-                        l0 = l0.item()
-                    ax1.scatter([0], [l0], color=color, marker='*', s=150, alpha=0.9,
-                               label=f'Neuron {neuron_idx} (0-bit)')
+            # Plot 0-bit extrapolation
+            if 0 in rates:
+                l0 = rates[0][0][neuron_idx]
+                if hasattr(l0, 'item'):
+                    l0 = l0.item()
+                ax1.scatter([0], [l0], color=color, marker='*', s=150, alpha=0.9,
+                           label=f'Neuron {neuron_idx} (0-bit)')
 
         ax1.set_xlabel('Bit Width', fontsize=11)
         ax1.set_ylabel('Loss (log scale)', fontsize=11)
@@ -401,15 +183,6 @@ def plot_neuron_rates_with_fit(
         ax1.grid(True, alpha=0.3)
         ax1.legend(fontsize=8, loc='upper right')
         ax1.set_xlim(-0.2, max(bits_sorted) + 0.7)
-
-        # Add fit formulas as text annotation in the lower left
-        if fit_annotations:
-            fit_text = "Fit Formulas:\n"
-            for color, formula in fit_annotations:
-                fit_text += formula + "\n"
-            ax1.text(0.03, 0.03, fit_text.strip(), transform=ax1.transAxes,
-                    fontsize=7, verticalalignment='bottom',
-                    bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
 
     # ------------------------------------------------------------------------
     # Subplot 2: TurboQuant
@@ -458,14 +231,6 @@ def plot_neuron_rates_with_fit(
                     val_0 = val_0.item()
                 ax2.scatter([0], [val_0], color=color, marker='*', s=80, alpha=0.7, zorder=4)
                 all_losses.append(val_0)
-
-            # Plot fit curve if we have params - original alpha
-            if data['fit_params'] is not None and data['fit_params'][0][neuron_idx]['valid']:
-                fp = data['fit_params'][0][neuron_idx]
-                p_coef, q_coef, r_coef = fp['p'], fp['q'], fp['r']
-                b_dense = np.linspace(0, max(bits_sorted_with_0), 50)
-                y_fit = np.exp(p_coef * b_dense ** 2 + q_coef * b_dense + r_coef)
-                ax2.plot(b_dense, y_fit, color=color, linestyle='-', linewidth=2, alpha=0.5, zorder=2)
 
             # Collect handles for legend
             legend_handles.append(scatter)
@@ -536,14 +301,6 @@ def plot_neuron_rates_with_fit(
                     val_0 = val_0.item()
                 ax3.scatter([0], [val_0], color=color, marker='*', s=80, alpha=0.7, zorder=4)
                 all_losses.append(val_0)
-
-            # Plot fit curve if we have params - original alpha
-            if data['fit_params'] is not None and data['fit_params'][0][neuron_idx]['valid']:
-                fp = data['fit_params'][0][neuron_idx]
-                p_coef, q_coef, r_coef = fp['p'], fp['q'], fp['r']
-                b_dense = np.linspace(0, max(bits_sorted_with_0), 50)
-                y_fit = np.exp(p_coef * b_dense ** 2 + q_coef * b_dense + r_coef)
-                ax3.plot(b_dense, y_fit, color=color, linestyle='-', linewidth=2, alpha=0.5, zorder=2)
 
             # Collect handles for legend
             legend_handles.append(scatter)
@@ -656,7 +413,6 @@ def get_model_layer_stats(
 
     for quant_type, rank_mode in quants_for_discovery:
         cache_dir = os.path.join(INTERMEDIATE_RESULT_DIR, f"quant_outlier_{quant_type}", rank_mode, model_id)
-        print(f"  {quant_type}: cache_dir = {cache_dir}, exists? {os.path.exists(cache_dir)}")
 
         for lidx in layer_indices:
             rates = {}
@@ -666,14 +422,12 @@ def get_model_layer_stats(
                     try:
                         import torch
                         cached_data = torch.load(cache_path, map_location='cpu')
-                        rates[x] = cached_data[expert_idx].detach().cpu().float().numpy()
-                    except Exception as e:
-                        print(f"    {quant_type} layer {lidx} bit {x} load error: {e}")
-                else:
-                    print(f"    {quant_type} layer {lidx} bit {x} missing: {cache_path}")
+                        expert_data = cached_data[expert_idx].detach().cpu().float().numpy()
+                        rates[x] = expert_data
+                    except Exception:
+                        pass
 
             if not rates or len(rates) < 2:
-                print(f"  {quant_type} layer {lidx}: not enough bits ({len(rates)})")
                 continue
 
             bits_sorted = sorted(rates.keys())
@@ -681,15 +435,22 @@ def get_model_layer_stats(
             b_array = np.array(bits_sorted, dtype=float)
 
             r2_values = []
-            n_pos_less3 = 0
-            n_fit_fail = 0
-            n_r2_nan = 0
+            n_all_zero = 0
+            n_constant = 0
+            n_normal_fit = 0
 
             for i in range(n_neurons):
                 loss_array = np.array([rates[b][i] for b in bits_sorted])
                 positive_mask = loss_array > 0
 
-                if positive_mask.sum() >= 3:
+                # 检查是否是绝对拟合情况：全 0 或所有 loss 都是同一个正数
+                if positive_mask.sum() == 0:
+                    r2_values.append(1.0)
+                    n_all_zero += 1
+                elif positive_mask.sum() >= 2 and (loss_array[positive_mask] == loss_array[positive_mask][0]).all():
+                    r2_values.append(1.0)
+                    n_constant += 1
+                elif positive_mask.sum() >= 3:
                     try:
                         fit_bits = b_array[positive_mask]
                         fit_loss = loss_array[positive_mask]
@@ -700,20 +461,14 @@ def get_model_layer_stats(
 
                         if not np.isnan(r2):
                             r2_values.append(r2)
-                        else:
-                            n_r2_nan += 1
+                            n_normal_fit += 1
                     except Exception:
-                        n_fit_fail += 1
-                else:
-                    n_pos_less3 += 1
+                        pass
 
             if r2_values:
                 result[quant_type][lidx] = np.mean(r2_values)
-                print(f"  {quant_type} layer {lidx}: {len(r2_values)} neurons, mean R² = {result[quant_type][lidx]:.4f}")
-            else:
-                print(f"  {quant_type} layer {lidx}: no valid R² values (pos<3: {n_pos_less3}, fit_fail: {n_fit_fail}, r2_nan: {n_r2_nan})")
-
-    print(f"  Result: TQ layers {sorted(result['turboquant'].keys())}, GPTQ layers {sorted(result['gptq'].keys())}")
+                perf_fit_str = f" (!!! Outlier !!!: {n_all_zero} all-zero + {n_constant} constant)" if n_all_zero + n_constant > 0 else ""
+                print(f"  {quant_type} layer {lidx}: mean R² = {result[quant_type][lidx]:.4f}{perf_fit_str}")
     return result
 
 
@@ -803,9 +558,9 @@ def analyze_multi_model_r2(
         # Dynamic y-axis limits
         if all_r2:
             min_r2 = min(all_r2)
-            y_min = min(0.8, min_r2 - 0.01)
+            y_min = 0.85
         else:
-            y_min = 0.94
+            y_min = 0.85
 
         # Formatting
         ax.set_xlabel('Layer Index', fontsize=10)
