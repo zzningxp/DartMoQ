@@ -43,19 +43,19 @@ TASK_FIELDS = [
 
 FIELDNAMES = [
     "model_name", "slices", "quant_scheme", "rank_mode",
-    "moe_struct", "quantmode", "disable_0bit_prune", "bpw", "ppl_wikitext2", "ppl_c4",
+    "moe_struct", "quantmode", "disable_0bit_prune", "standby_layer_cpu", "bpw", "ppl_wikitext2", "ppl_c4",
     *TASK_FIELDS,
     "status", "runtime_ppl", "runtime_quant", "runtime_ppl_eval", "runtime_zero_eval",
 ]
 
 LOADING_RE = re.compile(r"Loading model:\s*\(ppl\)\s*(?P<path>\S+)")
 QUANTMODE_RE = re.compile(
-    r"slices/quant-scheme/rank-mode/moe-struct/quantmode(?:/disable-0bit-prune)?:\s*\(ppl\)\s+"
+    r"slices/quant-scheme/rank-mode/moe-struct/quantmode(?:/disable-0bit-prune)?(?:/standby-layer-cpu)?:\s*\(ppl\)\s+"
     r"(?P<slices>\S+)\s+(?P<quant_scheme>\S+)\s+(?P<rank_mode>\S+)\s+"
-    r"(?P<moe_struct>\S+)\s+(?P<quantmode>\S+)(?:\s+(?P<disable_0bit_prune>\S+))?"
+    r"(?P<moe_struct>\S+)\s+(?P<quantmode>\S+)(?:\s+(?P<disable_0bit_prune>\S+))?(?:\s+(?P<standby_layer_cpu>\S+))?"
 )
 BPW_RE = re.compile(r"\bwith bpw\s+(?P<bpw>[-+0-9.eE]+)")
-PPL_RE = re.compile(r"ppl on (?P<dataset>wikitext2|c4):\s*(?P<value>[-+0-9.eE]+)")
+PPL_RE = re.compile(r"ppl on (?P<dataset>wikitext2|c4)(?:\s+\([^)]+\))?:\s*(?P<value>[-+0-9.eE]+)")
 TASK_RE = re.compile(r"^(?P<task>[A-Za-z0-9_]+)\s+\{(?P<body>.*)\}\s+time:")
 METRIC_RE_TEMPLATE = r"['\"]{name}['\"]:\s*(?:np\.float64\()?([-+0-9.eE]+)"
 RUNTIME_RE = re.compile(r"Runtime of training-free construction \(ppl\):\s*(?P<value>[-+0-9.eE]+)")
@@ -69,7 +69,7 @@ NUMERIC_RE = re.compile(r"^[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?$")
 
 # For backward compatibility with old logs
 LAYER_TIME_RE = re.compile(r"Layer (?P<layer>\d+) total reconstruct and quantization time:\s*(?P<value>[-+0-9.eE]+) s")
-PPL_INDIVIDUAL_TIME_RE = re.compile(r"ppl on (?P<dataset>wikitext2|c4):\s*[-+0-9.eE]+\s*time:\s*(?P<value>[-+0-9.eE]+)")
+PPL_INDIVIDUAL_TIME_RE = re.compile(r"ppl on (?P<dataset>wikitext2|c4)(?:\s+\([^)]+\))?:\s*[-+0-9.eE]+\s*time:\s*(?P<value>[-+0-9.eE]+)")
 ZERO_EVAL_OLD_RE = re.compile(r"Zero-shot evaluation time:\s*(?P<value>[-+0-9.eE]+)")
 
 
@@ -89,6 +89,7 @@ class RunRecord:
     moe_struct: str = ""
     quantmode: str = ""
     disable_0bit_prune: str = ""
+    standby_layer_cpu: str = ""
     bpw: str = ""
     ppl_wikitext2: str = ""
     ppl_c4: str = ""
@@ -127,13 +128,22 @@ class RunRecord:
             self.runtime_ppl_eval = f"{total:.2f}"
         if self._fatal:
             self.status = "failed"
-        elif self.runtime_ppl or self.mmlu_acc or self.ppl_wikitext2 or self.ppl_c4:
+        elif self.ppl_wikitext2 and self.ppl_c4:
+            # Have both ppl results
             missing = [name for name in TASK_FIELDS if not getattr(self, name)]
-            if not self.ppl_wikitext2 or not self.ppl_c4 or missing:
+            if missing:
+                self.status = "partial"
+            else:
+                self.status = "ok"
+        elif self.runtime_ppl or self.mmlu_acc:
+            # Have other results but not both ppl
+            missing = [name for name in TASK_FIELDS if not getattr(self, name)]
+            if missing:
                 self.status = "partial"
             else:
                 self.status = "ok"
         else:
+            # Have only one ppl or nothing at all
             self.status = "incomplete"
 
     def public_dict(self) -> dict[str, str | int]:
@@ -343,6 +353,7 @@ PLAIN_HEADERS = {
     "moe_struct": "moe",
     "quantmode": "qmode",
     "disable_0bit_prune": "no0prune",
+    "standby_layer_cpu": "stdbycpu",
     "bpw": "bpw",
     "ppl_wikitext2": "wiki",
     "ppl_c4": "c4",
@@ -374,6 +385,7 @@ EXPORT_HEADERS = {
     "moe_struct": "moe_struct",
     "quantmode": "quantmode",
     "disable_0bit_prune": "disable_0bit_prune",
+    "standby_layer_cpu": "standby_layer_cpu",
     "bpw": "bpw",
     "ppl_wikitext2": "ppl_wikitext2",
     "ppl_c4": "ppl_c4",

@@ -719,7 +719,7 @@ def analyze_multi_model_r2(
 
     # Create figure: 1 row, N columns
     n_models = len(all_model_stats)
-    fig, axes = plt.subplots(1, n_models, figsize=(5 * n_models, 5))
+    fig, axes = plt.subplots(1, n_models, figsize=(5 * n_models, 3))
     if n_models == 1:
         axes = [axes]
 
@@ -803,7 +803,13 @@ def analyze_multi_model_r2(
         ax.set_ylabel('R²', fontsize=10)
         ax.set_title(model_id, fontsize=11, fontweight='bold')
         ax.set_xticks(x)
-        ax.set_xticklabels([str(l) for l in layer_indices], rotation=90, fontsize=8)
+        if len(layer_indices) > 20:
+            # Sparser labels when many layers
+            step = max(2, len(layer_indices) // 15)  # aim for ~15 labels
+            labels = [str(l) if i % step == 0 else "" for i, l in enumerate(layer_indices)]
+            ax.set_xticklabels(labels, rotation=45, ha='right', fontsize=8)
+        else:
+            ax.set_xticklabels([str(l) for l in layer_indices], rotation=45, ha='right', fontsize=8)
         ax.set_ylim(y_min, 1.005)
         # Set y-axis ticks to be sparser
         ax.set_yticks(np.arange(0.85, 1.01, 0.05))
