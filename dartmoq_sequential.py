@@ -330,31 +330,21 @@ def dartmoq_sequential(model, tokenizer, dataloader, args, test_ppl=True):
 
         tick1 = time.time()
         print(f"Layer {layer_idx} total reconstruct and quantization time: {tick1 - tick0:.2f} s", flush=True)
+        print("." * 100, flush=True)
 
     print("MoE reconstruction and quantization done.")
     tick_quant_end = time.time()
     time_quant = tick_quant_end - tick_quant_start
     print(f"Runtime of quantization only: {time_quant:.2f}")
 
-    # Check if we should use sequential eval for PPL
-    use_sequential_eval = getattr(args, 'sequential_eval', False) or args.standby_layer_cpu
-    args.sequential_eval = use_sequential_eval
-
-    if not use_sequential_eval and args.standby_layer_cpu:
-        print("Moving layers to GPU for evaluation...")
-        for i in range(torch.cuda.device_count()):
-            force_release_inactive_splits(device=i)
-        for layer_idx, layer in enumerate(model.model.layers):
-            if layer_idx < len(layers_device) and layers_device[layer_idx].type == 'cuda':
-                layer = layer.to(layers_device[layer_idx])
-            for i in range(torch.cuda.device_count()):
-                print(f"layer {layer_idx} CUDA {i} Allocated: {torch.cuda.memory_allocated(device=i) / 1024**3:.2f} GB")
-                print(f"layer {layer_idx} CUDA {i} Reserved: {torch.cuda.memory_reserved(device=i) / 1024**3:.2f} GB")
-    elif use_sequential_eval:
+    # args.sequential_eval defaults to False, not bound to args.standby_layer_cpu
+    if getattr(args, 'sequential_eval', False):
         print("Will use sequential PPL evaluation (layers stay on CPU)")
+    else:
+        print("Will use normal PPL evaluation")
 
-        # for name, param in model.named_parameters():
-        #     print(f"{name:<40} → {param.device}")
+    # for name, param in model.named_parameters():
+    #     print(f"{name:<40} → {param.device}")
 
     # print('Training_free_ppl:')
     if test_ppl:

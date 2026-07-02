@@ -106,11 +106,6 @@ if __name__ == '__main__':
     
     print("-" * 50)
     print(f"Current start time: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())}")
-    # Auto-enable sequential_eval if standby_layer_cpu is enabled
-    if args.standby_layer_cpu:
-        if not args.sequential_eval:
-            args.sequential_eval = True
-            print("Auto-enabling --sequential-eval because --standby-layer-cpu is set")
 
     print("Loading model: (ppl)", args.model)
     print("slices/quant-scheme/rank-mode/moe-struct/quantmode/disable-0bit-prune/standby-layer-cpu: (ppl)",
