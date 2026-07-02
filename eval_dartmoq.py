@@ -43,11 +43,51 @@ def cmoe_ppl_eval_sequential(model, testloader, eval_set, args):
         torch.cuda.empty_cache()
         print(f"CUDA {i} (after moving layers to CPU): {torch.cuda.memory_allocated(i) / 1024**3:.2f} GB")
 
+    # First, capture correct attention_mask, position_ids, position_embeddings using Catcher
+    # Temporarily move layer 0 and embed_tokens to DEV for capturing
+    model.model.embed_tokens = model.model.embed_tokens.to(DEV)
+    layers[0] = layers[0].to(DEV)
+
+    class Catcher(nn.Module):
+        def __init__(self, module):
+            super().__init__()
+            self.module = module
+        def forward(self, inp, **kwargs):
+            self.captured_kwargs = kwargs
+            raise ValueError
+        def __getattr__(self, name):
+            try:
+                return super().__getattr__(name)
+            except AttributeError:
+                return getattr(self.module, name)
+
+    layers[0] = Catcher(layers[0])
+
+    # Get first batch to capture the kwargs
+    first_batch = testenc[:, :model.seqlen].to(DEV)
+    try:
+        model(first_batch)
+    except ValueError:
+        pass
+
+    # Get the captured kwargs
+    captured_kwargs = layers[0].captured_kwargs
+    attention_mask = captured_kwargs.get('attention_mask')
+    position_ids = captured_kwargs.get('position_ids')
+    position_embeddings = captured_kwargs.get('position_embeddings')
+
+    # Restore layer 0
+    layers[0] = layers[0].module
+    layers[0] = layers[0].to('cpu')
+    model.model.embed_tokens = model.model.embed_tokens.to('cpu')
+
+    torch.cuda.empty_cache()
+
     nlls = []
 
     # Process each sample sequentially
     for sample_idx in range(nsamples):
-        print(f"Processing sample {sample_idx + 1}/{nsamples}")
+        print(f"Processing sample {sample_idx + 1}/{nsamples}", flush=True)
 
         batch = testenc[:, (sample_idx * model.seqlen):((sample_idx + 1) * model.seqlen)].to(DEV)
         target_ids = batch.clone()
@@ -58,24 +98,6 @@ def cmoe_ppl_eval_sequential(model, testloader, eval_set, args):
             model.model.embed_tokens = model.model.embed_tokens.to(DEV)
             hidden_states = model.model.embed_tokens(batch)
 
-            # Get position embeddings and attention mask
-            attention_mask = None
-            position_ids = None
-            position_embeddings = None
-
-            # Create position_ids
-            position_ids = torch.arange(0, batch.shape[1], device=DEV).unsqueeze(0)
-
-            # Generate position_embeddings properly - it's created by rotary_emb
-            if hasattr(model.model, 'rotary_emb'):
-                # Qwen3 style: position_embeddings comes from rotary_emb(hidden_states, position_ids)
-                position_embeddings = model.model.rotary_emb(hidden_states, position_ids)
-                # Create a simple attention mask
-                attention_mask = torch.ones((1, batch.shape[1]), device=DEV, dtype=torch.bfloat16)
-            else:
-                # Fallback for other model types
-                attention_mask = torch.ones((1, batch.shape[1]), device=DEV, dtype=torch.bfloat16)
-
             # Now process each layer sequentially
             current_hidden = hidden_states
 
@@ -83,7 +105,7 @@ def cmoe_ppl_eval_sequential(model, testloader, eval_set, args):
                 # Move layer to GPU
                 layer = layer.to(DEV)
 
-                # Forward pass
+                # Forward pass with captured kwargs
                 layer_outputs = layer(
                     current_hidden,
                     attention_mask=attention_mask,
