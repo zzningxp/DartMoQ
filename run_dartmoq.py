@@ -131,7 +131,7 @@ if __name__ == '__main__':
         save_dartmoq_model(dartmoq_model, tokenizer, save_dir, args)
 
     time_zero_eval = 0.0
-    if args.eval_zero:
+    if args.eval_zero and not args.standby_layer_cpu:
         tick_zero_start = time.time()
         task_list = ["arc_challenge", "arc_easy", "piqa", "boolq", "winogrande", "mnli", "hellaswag", "mmlu"]
         # task_list = ["mnli", "hellaswag", "mmlu", "sciq"]
@@ -140,6 +140,8 @@ if __name__ == '__main__':
         tick_zero_done = time.time()
         time_zero_eval = tick_zero_done - tick_zero_start
         print(f"Runtime of zero-shot evaluation: {time_zero_eval:.2f}")
+    elif args.eval_zero and args.standby_layer_cpu:
+        print("Skipping zero-shot evaluation because standby_layer_cpu is enabled (standby mode takes precedence)")
 
     # print(model)
 

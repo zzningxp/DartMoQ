@@ -346,114 +346,7 @@ def cmoe_ppl_eval(model, testloader, eval_set, args):
 
     return ppl.item()
 
-
-def distribute_model_to_gpus(model):
-    """
-    按照分配策略把模型层分配到多个 GPU：
-    - 前 1/N 层 → cuda:0
-    - 后 1/N 层 → cuda:n-1
-    - 中间层 → 中间的 GPU
-    - embed_tokens → cuda:0
-    - norm 和 lm_head → 最后一个 GPU
-    """
-    num_gpus = torch.cuda.device_count()
-    if num_gpus == 0:
-        print("No CUDA devices found!")
-        return model
-
-    print(f"Distributing model across {num_gpus} GPUs...")
-
-    if not hasattr(model.model, 'layers'):
-        print("No model.model.layers found, moving whole model to cuda:0")
-        return model.cuda()
-
-    layers = model.model.layers
-    num_layers = len(layers)
-    print(f"Total layers: {num_layers}")
-
-    layers_per_gpu = num_layers // num_gpus
-    remainder = num_layers % num_gpus
-
-    device_map = {}
-    current_layer = 0
-
-    for gpu_idx in range(num_gpus):
-        num_layers_this_gpu = layers_per_gpu + (1 if gpu_idx < remainder else 0)
-        for i in range(num_layers_this_gpu):
-            device_map[current_layer] = f'cuda:{gpu_idx}'
-            current_layer += 1
-
-    if hasattr(model.model, 'embed_tokens'):
-        model.model.embed_tokens = model.model.embed_tokens.to('cuda:0')
-        print(f"embed_tokens → cuda:0")
-
-    for layer_idx in range(num_layers):
-        target_device = device_map[layer_idx]
-        layers[layer_idx] = _move_to_device(layers[layer_idx], target_device)
-        if layer_idx % max(1, num_layers // 10) == 0:  # 打印大约 10 条日志
-            print(f"  layer {layer_idx}/{num_layers} → {target_device}")
-
-    # 3. 分配 norm 和 lm_head 到最后一个 GPU
-    last_device = f'cuda:{num_gpus - 1}'
-    if hasattr(model.model, 'norm'):
-        model.model.norm = _move_to_device(model.model.norm, last_device)
-        print(f"norm → {last_device}")
-    if hasattr(model, 'lm_head'):
-        model.lm_head = _move_to_device(model.lm_head, last_device)
-        print(f"lm_head → {last_device}")
-
-    # 打印最终的 device map 摘要
-    print("\n=== Final Device Map ===")
-    from collections import defaultdict
-    layer_count_by_gpu = defaultdict(int)
-    for layer_idx, device in device_map.items():
-        layer_count_by_gpu[device] += 1
-
-    for gpu_idx in range(num_gpus):
-        device = f'cuda:{gpu_idx}'
-        count = layer_count_by_gpu.get(device, 0)
-        if count > 0:
-            print(f"{device}: {count} layers")
-
-    # 强制同步和清理
-    import gc
-    gc.collect()
-    for gpu_idx in range(num_gpus):
-        torch.cuda.empty_cache()
-        print(f"CUDA {gpu_idx}: {torch.cuda.memory_allocated(gpu_idx) / 1024**3:.2f} GB allocated")
-
-    return model
-
-
-def _move_to_device(module, target_device):
-    """
-    递归地将模块及其所有子模块移动到目标设备，并确保所有参数和缓冲区都被移动。
-    同时验证移动是否成功。
-    """
-    module = module.to(target_device)
-
-    for param in module.parameters(recurse=True):
-        if param.device != torch.device(target_device):
-            param.data = param.data.to(target_device)
-
-    for buf in module.buffers(recurse=True):
-        if buf is not None and buf.device != torch.device(target_device):
-            buf.data = buf.data.to(target_device)
-
-    for sub_module in module.modules():
-        if sub_module is module:
-            continue 
-        has_params = any(True for _ in sub_module.parameters())
-        if has_params:
-            sub_module.to(target_device)
-            for p in sub_module.parameters():
-                if p.device != torch.device(target_device):
-                    p.data = p.data.to(target_device)
-
-    return module
-
-
-def eval_zero_shot(model, task_list, tokenizer=None):
+def eval_zero_shot(model, task_list, eval_method="hf", tokenizer=None):
     tick0 = time.time()
     from lm_eval import tasks, evaluator, utils
     import tqdm
@@ -466,26 +359,6 @@ def eval_zero_shot(model, task_list, tokenizer=None):
     use_cache_original = model.config.use_cache
     model.config.use_cache = False
 
-    has_cpu_params = False
-    try:
-        for _, param in model.named_parameters():
-            if param.device.type == 'cpu':
-                has_cpu_params = True
-                break
-    except:
-        pass
-
-    if has_cpu_params:
-        print("Model is on CPU, distributing to GPUs for zero-shot evaluation...")
-        model = distribute_model_to_gpus(model)
-        print("Model distributed successfully.\n")
-    else:
-        devices = set()
-        for _, param in model.named_parameters():
-            devices.add(str(param.device))
-        if len(devices) > 1:
-            print(f"Model already distributed across devices: {sorted(devices)}")
-
     tick0 = time.time()
     for task in task_list:
         # for eval_batch_size in [16, 8, 4, 2, 1]:
@@ -495,21 +368,14 @@ def eval_zero_shot(model, task_list, tokenizer=None):
             # Only support hf method now
                 print(f"Evaluating {task} with batch size {eval_batch_size}")
                 from lm_eval.models.huggingface import HFLM
-
                 eval_model = HFLM(
                     pretrained=model,
+                    tokenizer=tokenizer,
                     trust_remote_code=True,
-                    # 不要指定 device="cuda"，这会强制将所有内容移动到 cuda:0
+                    device="cuda",
                     batch_size=eval_batch_size,
                 )
                 eval_model.model.config.use_cache = False
-
-                # 验证 eval_model 没有破坏设备分配
-                eval_devices = set()
-                for _, param in eval_model.model.named_parameters():
-                    eval_devices.add(str(param.device))
-                if len(eval_devices) > 1:
-                    print(f"  Model remains distributed across: {sorted(eval_devices)}")
 
                 tick_task = time.time()
                 results = evaluator.simple_evaluate(
@@ -517,19 +383,15 @@ def eval_zero_shot(model, task_list, tokenizer=None):
                     tasks=[task],
                     num_fewshot=5,
                     batch_size="auto",
-                    # 不要指定 device，让 evaluator 使用模型已有的设备
+                    device="cuda"
                 )
                 tick1 = time.time()
 
                 print(task, results["results"][task], f"time: {tick1 - tick_task}s")
                 break
-            except Exception as e:
-                if eval_batch_size > 1:
-                    print(f"Error evaluating {task} with batch size {eval_batch_size}: {e}")
-                    pass
-                elif eval_batch_size == 1:
-                    assert False, f"Error evaluating {task} with batch size {eval_batch_size}, {e}"
-
+            except:
+                print(f"Error evaluating {task} with batch size {eval_batch_size}")
+                pass
     tick1 = time.time()
     print(f"Zero-shot evaluation time: {tick1 - tick0}")
 
@@ -822,6 +684,10 @@ if __name__ == '__main__':
     parser.add_argument(        '--val-samples',
         type=int, default=256, help='Evaluate performance on x samples.'
     )
+    parser.add_argument(        '--eval-method',
+        type=str, default='hf', choices=['hf', 'sglang', 'vllm'],
+        help='Evaluation method: hf (HuggingFace), sglang (custom in-memory wrapper), or vllm.'
+    )
     parser.add_argument(        '--sequential-eval', action='store_true', default=False,
         help='Use sequential PPL evaluation (keeps layers on CPU, moves one by one).'
     )
@@ -869,4 +735,4 @@ if __name__ == '__main__':
         task_list = ["arc_challenge", "arc_easy", "piqa", "boolq", "winogrande", "sciq", "mnli", "hellaswag", "gsm8k", "mmlu", "triviaqa"]
         # task_list = ["arc_challenge", "arc_easy", "boolq", "winogrande", "piqa", "sciq", "hellaswag", "mmlu", "gsm8k", "triviaqa"]
         # task_list = ["mnli"]
-        eval_zero_shot(model, task_list, tokenizer=tokenizer)
+        eval_zero_shot(model, task_list, eval_method=args.eval_method, tokenizer=tokenizer)
