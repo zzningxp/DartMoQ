@@ -94,10 +94,6 @@ if __name__ == '__main__':
     parser.add_argument(        '--quantmode', type=str, default='turboquant', choices=['gptq', 'turboquant'],
         help='Quantization mode: gptq (default) or turboquant.'
     )
-    parser.add_argument(        '--eval-method',
-        type=str, default='hf', choices=['hf', 'custom'],
-        help='Evaluation method: hf (HuggingFace), custom (custom in-memory wrapper),.'
-    )
     parser.add_argument(        '--save-model', action='store_true', default=False,
         help='Whether to save the model to disk.'
     )
@@ -140,7 +136,7 @@ if __name__ == '__main__':
         task_list = ["arc_challenge", "arc_easy", "piqa", "boolq", "winogrande", "mnli", "hellaswag", "mmlu"]
         # task_list = ["mnli", "hellaswag", "mmlu", "sciq"]
         # task_list = ["gsm8k", "triviaqa"]
-        eval_zero_shot(dartmoq_model, task_list, eval_method=args.eval_method, tokenizer=tokenizer)
+        eval_zero_shot(dartmoq_model, task_list, tokenizer=tokenizer)
         tick_zero_done = time.time()
         time_zero_eval = tick_zero_done - tick_zero_start
         print(f"Runtime of zero-shot evaluation: {time_zero_eval:.2f}")
