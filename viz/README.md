@@ -8,6 +8,8 @@ viz/
 ├── metric_geometry.py         # G.1 – G.4 — Challenge 1 (sensitivity geometry)
 ├── seed_stability.py          # S.1 – S.5 — TurboQuant seed variance diagnosis
 ├── dump_activation_rates.py   # one-off dumper: per-layer expert activation rates → intermediate_result/
+├── micro_expert_rank_boxplot.py # shared implementation for DP score diagnostics
+├── dp_score_tests/            # Exp.4/5 DP assigned-loss diagnostic entrypoints
 └── legacy.py                  # re-exports of the old per-layer plotting functions
 ```
 
@@ -33,6 +35,7 @@ rates materialised under `intermediate_result/expert_activate/{model_id}/` by
 | `headroom`        | `amgm`, `top10ratio`, `act_vs_sens`, `layer_expert_neuron_compare` | **Motivation** (§1 intro / §3.1 preliminary) |
 | `metric_geometry` | G.1 – G.4 | **Challenge 1** (§4.1: finding the right sensitivity metric)       |
 | `seed_stability`  | S.1 – S.5 | **Analysis**: why DartMoQ slicing reduces TurboQuant QR seed variance |
+| `dp_score_tests`  | Exp.4 – Exp.5 | **Diagnostics**: inspect final DP assigned loss by expert and by global DP order |
 | `dp_utils` internal | —      | **Challenge 2** (§4.2: quadratic log-fit & 0-bit extrapolation)    |
 | `legacy`          | —         | Appendix (supplementary per-layer debugging figures)               |
 
@@ -131,6 +134,39 @@ python -m viz.seed_stability --model deepseek-v1-moe-16b \
   --layers 17 --experts 2 --seeds 0 1 --bit 2 --wbits 2 \
   --slice-expert-num 8 --skip aggregate
 ```
+
+### Exp.4-5 — DP assigned-loss diagnostics (`viz/dp_score_tests/`)
+
+These scripts are PR-facing diagnostics for the bit-allocation pipeline. They
+focus on the final DP assigned loss: Exp.4 groups the assigned losses by expert,
+and Exp.5 plots the same assigned losses along the global DP ordering.
+
+| Exp. | Entrypoint | Y-axis / formula | X-axis | Purpose |
+|---|---|---|---|---|
+| 4 | `python -m viz.dp_score_tests.exp_4.plot_exp4_assigned_loss_vs_uniform` | `sum(q_rates[assigned_bit]) * activation` | expert | Plot final assigned loss by expert; with `--include-uniform-baseline`, also outputs the no-sort, no-DP, fixed-bit boxplot at the same integer bpw. |
+| 5 | `python -m viz.dp_score_tests.exp_5.plot_exp5_assigned_loss_by_order` | `sum(q_rates[assigned_bit]) * activation` | DP sorted sub-expert index | Check whether final assigned losses look reasonable along the DP sorted queue. |
+
+Typical Qwen3 TurboQuant command for Exp.4:
+
+```bash
+python -m viz.dp_score_tests.exp_4.plot_exp4_assigned_loss_vs_uniform \
+  --model qwen3-30b-a3b \
+  --quantmode turboquant \
+  --rank-mode turboquant_innerproduct \
+  --layers 7 \
+  --include-random-layer \
+  --random-seed 123 \
+  --bits 0 1 2 3 4 \
+  --slices-per-expert 8 \
+  --target-bpw 2.0 \
+  --disable-0bit-compensation \
+  --include-uniform-baseline \
+  --comparison-out-dir figs/assigned_loss_bpw2_boxplot_compare
+```
+
+At `--target-bpw 2.0`, the baseline in Exp.4 uses fixed `b2` for every unsorted
+slice: `sum(q_rates[b2][unsorted_slice]) * activation`. Non-integer target bpw
+does not define a single fixed-bit no-mixed-precision baseline.
 
 ---
 
