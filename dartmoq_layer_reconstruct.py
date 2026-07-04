@@ -15,6 +15,7 @@ from dp_utils import enum_optimal_m_scheme_separate_fast
 from dp_utils import enum_optimal_m_scheme_global_fast
 from dp_utils import enum_optimal_m_scheme_energy_global_fast
 from dp_utils import extrapolate_0bit_loss_fix
+from dp_utils import compute_layer_mean_r2
 from collections import Counter
 from dartmoq_hybridmoe import DartMoQHybridWrapper
 from dartmoq_hybridmoe import restructure_hybrid_qscheme
@@ -106,7 +107,9 @@ def reconstruct_moe_from_existing(model, layer, layer_idx, inps,
         # print(f"cache_dir: {cache_dir}")
         os.makedirs(cache_dir, exist_ok=True)
 
-        for x in sorted(outlier_bits, reverse=True):  ## 0 bit should be extrapolated from other bit data, so we compute it at last
+        # First load non-zero bits (1, 2, 3, 4)
+        non_zero_bits = [x for x in sorted(outlier_bits, reverse=True) if x != 0]
+        for x in non_zero_bits:
             cache_path = os.path.join(cache_dir, f"{model.model_id}_L{layer_idx}_b{x}.pt")
             if os.path.exists(cache_path):
                 try:
@@ -116,41 +119,74 @@ def reconstruct_moe_from_existing(model, layer, layer_idx, inps,
                     continue
                 except Exception as e:
                     print(f"Failed to load cached data {e}")
-            if x == 0:
+            print(f"Computing {outlier_label} outlier for layer {layer_idx}, wbits={x}, with inps shape {inps.shape}")
+            if turboquant_outlier_mode:
+                q_rates[x] = analyze_turboquant_outlier_activation_aware(
+                    layer,
+                    layer_idx,
+                    inps,
+                    ori_expert_num,
+                    wbits=x,
+                    mode=turboquant_outlier_mode,
+                    save_path=None,
+                    use_activation_hooks=not args.rank_mode.endswith("_fea"),
+                    seed=args.seed,
+                )
+            else:
+                q_rates[x] = analyze_gptq_quant_outlier(
+                    layer, layer_idx, inps, ori_expert_num, wbits=x,
+                    quantmode=quantmode, save_path=None, seed=args.seed)
+            torch.save(q_rates[x], cache_path)
+            print(f"Saved {outlier_label} outlier data to {cache_path}")
+
+        # Compute layer mean R² to decide if 0-bit should be used
+        # R²_THRESHOLD = 0.99: Statistically, most models (DeepSeek v1/v2, OLMoE, Moonlight)
+        # have mean R² > 0.99, while Qwen3 has a few layers below 0.99.
+        # We always compute 0-bit (option 2), but decide whether to use it in DP based on R².
+        layer_mean_r2 = compute_layer_mean_r2(q_rates)
+        use_0bit_in_dp = not getattr(args, 'disable_0bit_prune', False)
+        if not np.isnan(layer_mean_r2):
+            # R²_THRESHOLD = 0.99: Use 0-bit only if mean R² >= 0.99
+            # This ensures we only use 0-bit when the log-quadratic extrapolation is reliable
+            use_0bit_in_dp = use_0bit_in_dp and (layer_mean_r2 >= 0.99)
+            print(f"Layer {layer_idx}: mean R² = {layer_mean_r2:.4f}, {'enable' if use_0bit_in_dp else 'disable'} 0-bit in DP")
+        else:
+            print(f"Layer {layer_idx}: could not compute R², {'enable' if use_0bit_in_dp else 'disable'} 0-bit in DP by default")
+
+        # Always compute 0-bit (option 2), but filter it later in DP if needed
+        if 0 in outlier_bits:
+            x = 0
+            cache_path = os.path.join(cache_dir, f"{model.model_id}_L{layer_idx}_b{x}.pt")
+            if os.path.exists(cache_path):
+                try:
+                    cached_data = torch.load(cache_path, map_location=device)
+                    print(f"Loading cached {outlier_label} outlier data for layer {layer_idx}, wbits={x}", flush=True)
+                    q_rates[x] = cached_data
+                except Exception as e:
+                    print(f"Failed to load cached data {e}")
+                    print(f"Computing extrapolate 0 bit loss for layer {layer_idx}")
+                    q_rates[0] = extrapolate_0bit_loss_fix(q_rates, quant_type=outlier_label)
+                    q_rates[0] = [torch.from_numpy(q_rates[0][i]).to(device) for i in range(len(q_rates[0]))]
+                    torch.save(q_rates[x], cache_path)
+                    print(f"Saved {outlier_label} outlier data to {cache_path}")
+            else:
                 print(f"Computing extrapolate 0 bit loss for layer {layer_idx}")
                 q_rates[0] = extrapolate_0bit_loss_fix(q_rates, quant_type=outlier_label)
                 q_rates[0] = [torch.from_numpy(q_rates[0][i]).to(device) for i in range(len(q_rates[0]))]
-            else:
-                print(f"Computing {outlier_label} outlier for layer {layer_idx}, wbits={x}, with inps shape {inps.shape}")
-                if turboquant_outlier_mode:
-                    q_rates[x] = analyze_turboquant_outlier_activation_aware(
-                        layer,
-                        layer_idx,
-                        inps,
-                        ori_expert_num,
-                        wbits=x,
-                        mode=turboquant_outlier_mode,
-                        save_path=None,
-                        use_activation_hooks=not args.rank_mode.endswith("_fea"),
-                        seed=args.seed,
-                    )
-                else:
-                    q_rates[x] = analyze_gptq_quant_outlier(
-                        layer, layer_idx, inps, ori_expert_num, wbits=x, 
-                        quantmode=quantmode, save_path=None, seed=args.seed)
-            torch.save(q_rates[x], cache_path)
-            print(f"Saved {outlier_label} outlier data to {cache_path}")
-            # print(f"sleep 20s")
-            # time.sleep(20)
+                torch.save(q_rates[x], cache_path)
+                print(f"Saved {outlier_label} outlier data to {cache_path}")
             
         if 'target_bpw' not in qscheme:
             all_rates = q_rates[probe_bit]
         else:
+            # Filter bits based on use_0bit_in_dp decision
+            active_bits = [x for x in outlier_bits if use_0bit_in_dp or x != 0]
+
             if global_mode:
                 expert_rates_list = []
                 for expert_idx in range(ori_expert_num):
                     rates_x = {}
-                    for x in outlier_bits:
+                    for x in active_bits:
                         rates_x[x] = q_rates[x][expert_idx].detach().cpu().float().numpy()
                     expert_rates_list.append(rates_x)
 
@@ -160,7 +196,7 @@ def reconstruct_moe_from_existing(model, layer, layer_idx, inps,
                         expert_activation_rates,
                         slice_expert_num,
                         target_bpw=qscheme['target_bpw'],
-                        enable_0bit_compensation=not getattr(args, 'disable_0bit_compensation', False)
+                        enable_0bit_compensation=use_0bit_in_dp and not getattr(args, 'disable_0bit_compensation', False)
                     )
                 dp_tick1 = time.time()
                 print(f"enum_optimal_m_scheme_global_fast time {dp_tick1 - dp_tick0}", flush=True)
@@ -178,7 +214,7 @@ def reconstruct_moe_from_existing(model, layer, layer_idx, inps,
                 dpscheme_list = []
                 for expert_idx in range(ori_expert_num):
                     rates_x = {}
-                    for x in outlier_bits:
+                    for x in active_bits:
                         rates_x[x] = q_rates[x][expert_idx].detach().cpu().float().numpy()
                     # print(f"expert_idx {expert_idx} scheme search:")
                     dpscheme, rates = enum_optimal_m_scheme_separate_fast(rates_x, slice_expert_num, target_bpw=qscheme['target_bpw'])
@@ -203,17 +239,21 @@ def reconstruct_moe_from_existing(model, layer, layer_idx, inps,
             expert_energy_list.append(energy.detach().cpu().float().numpy())
 
         # Use energy global DP to get optimal scheme
+        # Note: For energy mode, we don't have R² values, so use default behavior
         if getattr(args, 'disable_0bit_prune', False):
             energy_bits = [1, 2, 3, 4]
+            enable_0bit_comp = False
         else:
             energy_bits = [0, 1, 2, 3, 4]
+            enable_0bit_comp = not getattr(args, 'disable_0bit_compensation', False)
+
         dpscheme_list, all_rates_arr = enum_optimal_m_scheme_energy_global_fast(
                 expert_energy_list,
                 expert_activation_rates,
                 slice_expert_num,
                 target_bpw=qscheme['target_bpw'],
                 bits=energy_bits,
-                enable_0bit_compensation=not getattr(args, 'disable_0bit_compensation', False)
+                enable_0bit_compensation=enable_0bit_comp
             )
 
         print(f"built dpscheme_list for energy mode target_bpw {qscheme['target_bpw']} for {ori_expert_num} experts")

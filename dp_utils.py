@@ -12,6 +12,86 @@ from typing import Dict
 
 INTERMEDIATE_RESULT_DIR = "intermediate_result"
 
+
+def compute_layer_mean_r2(rates: Dict[int, List[np.ndarray]]) -> float:
+    """
+    Compute mean R² (coefficient of determination) for log-quadratic fit across all neurons in a layer.
+
+    R² measures how well the log-quadratic model fits the loss vs bit-width data.
+    High R² (close to 1.0) indicates reliable 0-bit extrapolation.
+
+    Statistically, most models (DeepSeek v1/v2, OLMoE, Moonlight) have mean R² > 0.99,
+    while Qwen3 has a few layers below 0.99. We use 0.99 as the threshold.
+
+    Args:
+        rates: Dictionary mapping bit width to list of expert loss arrays
+
+    Returns:
+        Mean R² value across all neurons in the layer
+    """
+    bits = sorted(rates.keys())
+    if 0 in bits:
+        bits.remove(0)
+
+    if len(bits) < 3:
+        return float('nan')
+
+    all_r2_values = []
+    b_array = np.array(bits, dtype=float)
+    n_experts = len(rates[bits[0]])
+
+    for expert_idx in range(n_experts):
+        expert_rates = {}
+        n_neurons = None
+        for b in bits:
+            val = rates[b][expert_idx]
+            if hasattr(val, 'detach'):
+                expert_rates[b] = val.detach().cpu().float().numpy()
+            else:
+                expert_rates[b] = np.asarray(val, dtype=float)
+            if n_neurons is None:
+                n_neurons = len(expert_rates[b])
+
+        for i in range(n_neurons):
+            loss_array = np.array([expert_rates[b][i] for b in bits])
+            positive_mask = loss_array > 0
+
+            # Perfect fit cases
+            if positive_mask.sum() == 0:
+                all_r2_values.append(1.0)
+                continue
+            if positive_mask.sum() >= 2 and (loss_array[positive_mask] == loss_array[positive_mask][0]).all():
+                all_r2_values.append(1.0)
+                continue
+
+            # Normal R² calculation
+            if positive_mask.sum() >= 3:
+                try:
+                    fit_bits = b_array[positive_mask]
+                    fit_loss = loss_array[positive_mask]
+                    log_loss = np.log(fit_loss)
+
+                    p, q, r_coeff = np.polyfit(fit_bits, log_loss, deg=2)
+                    y_pred = p * fit_bits**2 + q * fit_bits + r_coeff
+                    y_mean = np.mean(log_loss)
+
+                    ss_res = np.sum((log_loss - y_pred) ** 2)
+                    ss_tot = np.sum((log_loss - y_mean) ** 2)
+
+                    if ss_tot == 0:
+                        r2 = 1.0 if ss_res == 0 else 0.0
+                    else:
+                        r2 = 1.0 - ss_res / ss_tot
+
+                    if not np.isnan(r2):
+                        all_r2_values.append(r2)
+                except Exception:
+                    pass
+
+    if all_r2_values:
+        return float(np.mean(all_r2_values))
+    return float('nan')
+
 def calculate_quant_overhead(groupsize: int, quant_type: str = "gptq") -> float:
 
     # Currently both use the same formula, but we keep the quant_type parameter
