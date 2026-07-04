@@ -15,7 +15,7 @@ from dp_utils import enum_optimal_m_scheme_separate_fast
 from dp_utils import enum_optimal_m_scheme_global_fast
 from dp_utils import enum_optimal_m_scheme_energy_global_fast
 from dp_utils import extrapolate_0bit_loss_fix
-from dp_utils import compute_layer_mean_r2
+from dp_utils import compute_r_squared_for_rates
 from collections import Counter
 from dartmoq_hybridmoe import DartMoQHybridWrapper
 from dartmoq_hybridmoe import restructure_hybrid_qscheme
@@ -139,21 +139,7 @@ def reconstruct_moe_from_existing(model, layer, layer_idx, inps,
             torch.save(q_rates[x], cache_path)
             print(f"Saved {outlier_label} outlier data to {cache_path}")
 
-        # Compute layer mean R² to decide if 0-bit should be used
-        # R²_THRESHOLD = 0.99: Statistically, most models (DeepSeek v1/v2, OLMoE, Moonlight)
-        # have mean R² > 0.99, while Qwen3 has a few layers below 0.99.
-        # We always compute 0-bit (option 2), but decide whether to use it in DP based on R².
-        layer_mean_r2 = compute_layer_mean_r2(q_rates)
-        use_0bit_in_dp = not getattr(args, 'disable_0bit_prune', False)
-        if not np.isnan(layer_mean_r2):
-            # R²_THRESHOLD = 0.99: Use 0-bit only if mean R² >= 0.99
-            # This ensures we only use 0-bit when the log-quadratic extrapolation is reliable
-            use_0bit_in_dp = use_0bit_in_dp and (layer_mean_r2 >= 0.99)
-            print(f"Layer {layer_idx}: mean R² = {layer_mean_r2:.4f}, {'enable' if use_0bit_in_dp else 'disable'} 0-bit in DP")
-        else:
-            print(f"Layer {layer_idx}: could not compute R², {'enable' if use_0bit_in_dp else 'disable'} 0-bit in DP by default")
-
-        # Always compute 0-bit (option 2), but filter it later in DP if needed
+        # Always compute 0-bit (option 2), cache remains untouched as raw fit results
         if 0 in outlier_bits:
             x = 0
             cache_path = os.path.join(cache_dir, f"{model.model_id}_L{layer_idx}_b{x}.pt")
@@ -175,19 +161,72 @@ def reconstruct_moe_from_existing(model, layer, layer_idx, inps,
                 q_rates[0] = [torch.from_numpy(q_rates[0][i]).to(device) for i in range(len(q_rates[0]))]
                 torch.save(q_rates[x], cache_path)
                 print(f"Saved {outlier_label} outlier data to {cache_path}")
+
+        # Compute layer mean R² to decide if 0-bit needs penalty
+        # R²_THRESHOLD = 0.99: Statistically, most models (DeepSeek v1/v2, OLMoE, Moonlight)
+        # have mean R² > 0.99, while Qwen3 has a few layers below 0.99.
+        # We don't modify cache, only apply penalty in-memory for this DP run.
+        r2_stats = compute_r_squared_for_rates(q_rates)
+        layer_mean_r2 = r2_stats['mean']
+        apply_0bit_penalty = not getattr(args, 'disable_0bit_prune', False)
+        q_rates_for_dp = {}  # This is what we pass to DP - cache remains untouched
+
+        # First copy all non-zero bits as-is
+        for x in q_rates:
+            if x != 0:
+                q_rates_for_dp[x] = q_rates[x]
+
+        if 0 in q_rates:
+            if not np.isnan(layer_mean_r2) and layer_mean_r2 < 0.99:
+                # Apply penalty to 0-bit loss: set to an absolute large value (max 1-bit loss * 10)
+                # This discourages DP from choosing 0-bit when extrapolation is unreliable,
+                # but still allows <1 bpw if absolutely needed.
+                apply_0bit_penalty = True
+                # Find max loss across all experts and neurons at 1-bit to use as reference
+                max_1bit_loss = 0.0
+                if 1 in q_rates:
+                    for expert_tensor in q_rates[1]:
+                        max_1bit_loss = max(max_1bit_loss, float(torch.max(expert_tensor)))
+                if max_1bit_loss <= 0:
+                    # Fallback: use max loss from lowest available bit
+                    lowest_bit = min([x for x in q_rates if x != 0])
+                    for expert_tensor in q_rates[lowest_bit]:
+                        max_1bit_loss = max(max_1bit_loss, float(torch.max(expert_tensor)))
+                # Set 0-bit penalty to 10x max 1-bit loss - absolute large value
+                penalty_value = max_1bit_loss * 1e6
+
+                # Apply penalty in-memory only - cache remains original
+                q_rates_for_dp[0] = []
+                for expert_tensor in q_rates[0]:
+                    # Create a new tensor where all values are penalty_value
+                    penalized_tensor = torch.full_like(expert_tensor, penalty_value)
+                    q_rates_for_dp[0].append(penalized_tensor)
+                print(f"Layer {layer_idx}: mean R² = {layer_mean_r2:.4f} (median = {r2_stats['median']:.4f}), "
+                      f"applied 0-bit penalty: set to {penalty_value:.4g}")
+            else:
+                # No penalty needed, copy 0-bit as-is
+                apply_0bit_penalty = False
+                q_rates_for_dp[0] = q_rates[0]
+                if not np.isnan(layer_mean_r2):
+                    print(f"Layer {layer_idx}: mean R² = {layer_mean_r2:.4f} (median = {r2_stats['median']:.4f}), "
+                          f"0-bit penalty not applied")
+                else:
+                    print(f"Layer {layer_idx}: could not compute R², 0-bit penalty not applied by default")
+        else:
+            apply_0bit_penalty = False
             
         if 'target_bpw' not in qscheme:
             all_rates = q_rates[probe_bit]
         else:
-            # Filter bits based on use_0bit_in_dp decision
-            active_bits = [x for x in outlier_bits if use_0bit_in_dp or x != 0]
+            # Use q_rates_for_dp which may have penalized 0-bit loss
+            active_bits = sorted(q_rates_for_dp.keys())
 
             if global_mode:
                 expert_rates_list = []
                 for expert_idx in range(ori_expert_num):
                     rates_x = {}
                     for x in active_bits:
-                        rates_x[x] = q_rates[x][expert_idx].detach().cpu().float().numpy()
+                        rates_x[x] = q_rates_for_dp[x][expert_idx].detach().cpu().float().numpy()
                     expert_rates_list.append(rates_x)
 
                 dp_tick0 = time.time()
@@ -196,7 +235,7 @@ def reconstruct_moe_from_existing(model, layer, layer_idx, inps,
                         expert_activation_rates,
                         slice_expert_num,
                         target_bpw=qscheme['target_bpw'],
-                        enable_0bit_compensation=use_0bit_in_dp and not getattr(args, 'disable_0bit_compensation', False)
+                        enable_0bit_compensation=(0 in active_bits) and not getattr(args, 'disable_0bit_compensation', False)
                     )
                 dp_tick1 = time.time()
                 print(f"enum_optimal_m_scheme_global_fast time {dp_tick1 - dp_tick0}", flush=True)
@@ -215,7 +254,7 @@ def reconstruct_moe_from_existing(model, layer, layer_idx, inps,
                 for expert_idx in range(ori_expert_num):
                     rates_x = {}
                     for x in active_bits:
-                        rates_x[x] = q_rates[x][expert_idx].detach().cpu().float().numpy()
+                        rates_x[x] = q_rates_for_dp[x][expert_idx].detach().cpu().float().numpy()
                     # print(f"expert_idx {expert_idx} scheme search:")
                     dpscheme, rates = enum_optimal_m_scheme_separate_fast(rates_x, slice_expert_num, target_bpw=qscheme['target_bpw'])
                     dpscheme_list.append(dpscheme)

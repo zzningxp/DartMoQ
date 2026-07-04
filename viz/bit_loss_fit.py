@@ -13,7 +13,7 @@ from typing import Dict, List, Set, Tuple
 
 # Add parent directory to path to import dp_utils
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from dp_utils import extrapolate_0bit_loss_fix, extrapolate_0bit_loss
+from dp_utils import extrapolate_0bit_loss_fix, extrapolate_0bit_loss, compute_r_squared_for_rates
 
 INTERMEDIATE_RESULT_DIR = "intermediate_result"
 
@@ -579,104 +579,29 @@ def get_model_layer_stats(
                 continue
 
             bits_sorted = sorted(rates.keys())
-            n_neurons = len(rates[bits_sorted[0]])
-            b_array = np.array(bits_sorted, dtype=float)
 
-            r2_values = []
-            n_all_zero = 0
-            n_constant = 0
-            n_normal_fit = 0
+            # ========== NEW WAY (from dp_utils.py) ==========
+            # Reorganize data structure to match what compute_r_squared_for_rates expects
+            rates_for_dp_utils = {}
+            for b in bits_sorted:
+                rates_for_dp_utils[b] = [rates[b]]  # Wrap in list as single expert
 
-            for i in range(n_neurons):
-                loss_array = np.array([rates[b][i] for b in bits_sorted])
-                positive_mask = loss_array > 0
+            new_stats = compute_r_squared_for_rates(rates_for_dp_utils)
+            new_mean = new_stats['mean']
+            new_median = new_stats['median']
 
-                # 检查是否是绝对拟合情况：全 0 或所有 loss 都是同一个正数
-                if positive_mask.sum() == 0:
-                    r2_values.append(1.0)
-                    n_all_zero += 1
-                elif positive_mask.sum() >= 2 and (loss_array[positive_mask] == loss_array[positive_mask][0]).all():
-                    r2_values.append(1.0)
-                    n_constant += 1
-                elif positive_mask.sum() >= 3:
-                    try:
-                        fit_bits = b_array[positive_mask]
-                        fit_loss = loss_array[positive_mask]
-                        log_loss = np.log(fit_loss)
-
-                        p, q, r = np.polyfit(fit_bits, log_loss, deg=2)
-                        r2 = compute_r_squared(fit_bits, log_loss, p, q, r)
-
-                        if not np.isnan(r2):
-                            r2_values.append(r2)
-                            n_normal_fit += 1
-                    except Exception:
-                        pass
-
-            if r2_values:
-                r2_arr = np.array(r2_values)
+            if not np.isnan(new_mean):
                 result[quant_type][lidx] = {
-                    'mean': np.mean(r2_arr),
-                    'median': np.median(r2_arr)
+                    'mean': new_mean,
+                    'median': new_median
                 }
-                perf_fit_str = f" (perfect: {n_all_zero} all-zero + {n_constant} constant)" if n_all_zero + n_constant > 0 else ""
-                print(f"  {quant_type} layer {lidx}: mean R² = {result[quant_type][lidx]['mean']:.4f}, median = {result[quant_type][lidx]['median']:.4f}{perf_fit_str}")
+                print(f"  {quant_type} layer {lidx}: mean R² = {new_mean:.4f}, median = {new_median:.4f}")
+            else:
+                print(f"  {quant_type} layer {lidx}: no valid data")
 
-                # Debug mode: print detailed info for specific layers
-                if debug_layers and lidx in debug_layers:
-                    print(f"\n  === DEBUG {quant_type} layer {lidx} ===")
-                    # Collect R² distribution
-                    r2_arr = np.array(r2_values)
-                    print(f"  R² stats: min={r2_arr.min():.4f}, max={r2_arr.max():.4f}, median={np.median(r2_arr):.4f}, std={r2_arr.std():.4f}")
-                    print(f"  R² < 0.9: {np.sum(r2_arr < 0.9)}, R² < 0.95: {np.sum(r2_arr < 0.95)}")
-
-                    # Re-calculate to find all neurons' R²
-                    neuron_r2 = []
-                    for i in range(n_neurons):
-                        loss_array = np.array([rates[b][i] for b in bits_sorted])
-                        positive_mask = loss_array > 0
-                        if positive_mask.sum() == 0:
-                            neuron_r2.append((i, 1.0, loss_array))
-                        elif positive_mask.sum() >= 2 and (loss_array[positive_mask] == loss_array[positive_mask][0]).all():
-                            neuron_r2.append((i, 1.0, loss_array))
-                        elif positive_mask.sum() >= 3:
-                            try:
-                                fit_bits = b_array[positive_mask]
-                                fit_loss = loss_array[positive_mask]
-                                log_loss = np.log(fit_loss)
-                                p, q, r = np.polyfit(fit_bits, log_loss, deg=2)
-                                r2_val = compute_r_squared(fit_bits, log_loss, p, q, r)
-                                if not np.isnan(r2_val):
-                                    neuron_r2.append((i, r2_val, loss_array))
-                            except Exception:
-                                pass
-
-                    # Sort and print lowest 5
-                    neuron_r2.sort(key=lambda x: x[1])
-                    print(f"\n  Lowest 5 R² neurons:")
-                    for i, (neuron_idx, r2_val, loss_arr) in enumerate(neuron_r2[:5]):
-                        loss_str = '  '.join([f"{b}:{v:.6g}" for b, v in zip(bits_sorted, loss_arr)])
-                        print(f"    neuron {neuron_idx:4d}: R²={r2_val:.4f} | {loss_str}")
-
-                    # Print highest 5
-                    print(f"\n  Highest 5 R² neurons:")
-                    for i, (neuron_idx, r2_val, loss_arr) in enumerate(neuron_r2[-5:]):
-                        loss_str = '  '.join([f"{b}:{v:.6g}" for b, v in zip(bits_sorted, loss_arr)])
-                        print(f"    neuron {neuron_idx:4d}: R²={r2_val:.4f} | {loss_str}")
-                    print()
-
-                    # Plot this layer for visualization - special debug plot for lowest 5 R² neurons
-                    print(f"  Plotting debug fit comparison for layer {lidx} (lowest 5 R² neurons)...")
-                    plot_lowest_r2_neurons(
-                        model_id=model_id,
-                        layer_idx=lidx,
-                        expert_idx=expert_idx,
-                        quant_type=quant_type,
-                        neuron_r2=neuron_r2[:5],  # lowest 5
-                        outlier_bits=outlier_bits,
-                        save_dir=None,
-                        use_pdf=False,
-                    )
+                # Debug mode temporarily disabled (old code removed)
+                # if debug_layers and lidx in debug_layers:
+                #     pass
     return result
 
 
