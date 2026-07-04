@@ -513,15 +513,8 @@ def run_for_layer(args: argparse.Namespace, model_id: str, cache_dir: str, layer
         slice_df = build_slice_table(matrices, activation_rates, sort_bit, args.slices_per_expert)
 
     sort_dir = "unsorted" if only_unsorted else f"sort_b{sort_bit}"
-    output_root = os.path.join(
-        args.out_dir,
-        model_id,
-        args.quantmode,
-        args.rank_mode,
-        f"L{layer}",
-        f"s{args.slices_per_expert}",
-        sort_dir,
-    )
+    # Simplified: single output directory, all info in filename
+    output_root = args.out_dir
 
     saved = []
     assigned_df = None
@@ -545,8 +538,8 @@ def run_for_layer(args: argparse.Namespace, model_id: str, cache_dir: str, layer
                 df = slice_df.copy()
                 df["score"] = df[f"raw_b{bit}"]
                 df = add_metadata(df, model_id, args.quantmode, args.rank_mode, layer, view, bit, args.target_bpw)
-                out_dir = os.path.join(output_root, view, f"b{bit}")
-                stem = f"{model_id}_L{layer}_{view}_b{bit}"
+                out_dir = output_root
+                stem = f"{model_id}_{args.quantmode}_{args.rank_mode}_L{layer}_s{args.slices_per_expert}_{sort_dir}_{view}_b{bit}"
                 saved.append(save_view(
                     df, out_dir, stem,
                     f"{model_label(model_id)} L{layer}: Raw Slice Error b{bit}",
@@ -556,8 +549,8 @@ def run_for_layer(args: argparse.Namespace, model_id: str, cache_dir: str, layer
             for bit in bits:
                 df = build_raw_neuron_table(matrices[bit])
                 df = add_metadata(df, model_id, args.quantmode, args.rank_mode, layer, view, bit, args.target_bpw)
-                out_dir = os.path.join(output_root, view, f"b{bit}")
-                stem = f"{model_id}_L{layer}_{view}_b{bit}"
+                out_dir = output_root
+                stem = f"{model_id}_{args.quantmode}_{args.rank_mode}_L{layer}_s{args.slices_per_expert}_{sort_dir}_{view}_b{bit}"
                 saved.append(save_view(
                     df, out_dir, stem,
                     f"{model_label(model_id)} L{layer}: Raw Unsorted Neuron Error b{bit}",
@@ -568,8 +561,8 @@ def run_for_layer(args: argparse.Namespace, model_id: str, cache_dir: str, layer
                 df = slice_df.copy()
                 df["score"] = df[f"dp_b{bit}"]
                 df = add_metadata(df, model_id, args.quantmode, args.rank_mode, layer, view, bit, args.target_bpw)
-                out_dir = os.path.join(output_root, view, f"b{bit}")
-                stem = f"{model_id}_L{layer}_{view}_b{bit}"
+                out_dir = output_root
+                stem = f"{model_id}_{args.quantmode}_{args.rank_mode}_L{layer}_s{args.slices_per_expert}_{sort_dir}_{view}_b{bit}"
                 saved.append(save_view(
                     df, out_dir, stem,
                     f"{model_label(model_id)} L{layer}: DP Bit Loss b{bit}",
@@ -579,8 +572,8 @@ def run_for_layer(args: argparse.Namespace, model_id: str, cache_dir: str, layer
             df = slice_df.copy()
             df["score"] = df["ordering_score"]
             df = add_metadata(df, model_id, args.quantmode, args.rank_mode, layer, view, sort_bit, args.target_bpw)
-            out_dir = os.path.join(output_root, view)
-            stem = f"{model_id}_L{layer}_{view}_sortb{sort_bit}"
+            out_dir = output_root
+            stem = f"{model_id}_{args.quantmode}_{args.rank_mode}_L{layer}_s{args.slices_per_expert}_{sort_dir}_{view}_sortb{sort_bit}"
             saved.append(save_view(
                 df, out_dir, stem,
                 f"{model_label(model_id)} L{layer}: DP Ordering Score",
@@ -590,8 +583,8 @@ def run_for_layer(args: argparse.Namespace, model_id: str, cache_dir: str, layer
             assert assigned_df is not None
             df = add_metadata(assigned_df, model_id, args.quantmode, args.rank_mode, layer, view, None, args.target_bpw)
             comp = "no0comp" if args.disable_0bit_compensation else "0comp"
-            out_dir = getattr(args, "comparison_out_dir", None) or os.path.join(output_root, view, f"bpw_{args.target_bpw:g}", comp)
-            stem = f"{model_id}_L{layer}_{view}_bpw{args.target_bpw:g}_{comp}"
+            out_dir = output_root
+            stem = f"{model_id}_{args.quantmode}_{args.rank_mode}_L{layer}_s{args.slices_per_expert}_{sort_dir}_{view}_bpw{args.target_bpw:g}_{comp}"
             saved.append(save_view(
                 df, out_dir, stem,
                 f"{model_label(model_id)} L{layer}: Assigned Loss by Expert",
@@ -601,8 +594,8 @@ def run_for_layer(args: argparse.Namespace, model_id: str, cache_dir: str, layer
             assert assigned_df is not None
             df = add_metadata(assigned_df, model_id, args.quantmode, args.rank_mode, layer, view, None, args.target_bpw)
             comp = "no0comp" if args.disable_0bit_compensation else "0comp"
-            out_dir = os.path.join(output_root, view, f"bpw_{args.target_bpw:g}", comp)
-            stem = f"{model_id}_L{layer}_{view}_bpw{args.target_bpw:g}_{comp}"
+            out_dir = output_root
+            stem = f"{model_id}_{args.quantmode}_{args.rank_mode}_L{layer}_s{args.slices_per_expert}_{sort_dir}_{view}_bpw{args.target_bpw:g}_{comp}"
             saved.append(save_view(
                 df, out_dir, stem,
                 f"{model_label(model_id)} L{layer}: Assigned Loss by DP Order",
@@ -615,8 +608,8 @@ def run_for_layer(args: argparse.Namespace, model_id: str, cache_dir: str, layer
             df = build_assigned_vs_uniform_table(assigned_df, matrices, activation_rates, uniform_bit)
             df = add_metadata(df, model_id, args.quantmode, args.rank_mode, layer, view, uniform_bit, args.target_bpw)
             comp = "no0comp" if args.disable_0bit_compensation else "0comp"
-            out_dir = os.path.join(output_root, view, f"bpw_{args.target_bpw:g}", comp, f"uniform_b{uniform_bit}")
-            stem = f"{model_id}_L{layer}_{view}_bpw{args.target_bpw:g}_{comp}_uniformb{uniform_bit}"
+            out_dir = output_root
+            stem = f"{model_id}_{args.quantmode}_{args.rank_mode}_L{layer}_s{args.slices_per_expert}_{sort_dir}_{view}_bpw{args.target_bpw:g}_{comp}_uniformb{uniform_bit}"
             saved.append(save_view(
                 df, out_dir, stem,
                 f"{model_label(model_id)} L{layer}: DP Mixed Total vs Fixed b{uniform_bit}",
@@ -627,19 +620,8 @@ def run_for_layer(args: argparse.Namespace, model_id: str, cache_dir: str, layer
             assert uniform_bit is not None
             df = build_unsorted_fixed_bit_slice_table(matrices, activation_rates, uniform_bit, args.slices_per_expert)
             df = add_metadata(df, model_id, args.quantmode, args.rank_mode, layer, view, uniform_bit, args.target_bpw)
-            out_dir = getattr(args, "comparison_out_dir", None) or os.path.join(
-                args.out_dir,
-                model_id,
-                args.quantmode,
-                args.rank_mode,
-                f"L{layer}",
-                f"s{args.slices_per_expert}",
-                "unsorted",
-                view,
-                f"bpw_{args.target_bpw:g}",
-                f"uniform_b{uniform_bit}",
-            )
-            stem = f"{model_id}_L{layer}_{view}_bpw{args.target_bpw:g}_uniformb{uniform_bit}"
+            out_dir = output_root
+            stem = f"{model_id}_{args.quantmode}_{args.rank_mode}_L{layer}_s{args.slices_per_expert}_unsorted_{view}_bpw{args.target_bpw:g}_uniformb{uniform_bit}"
             saved.append(save_view(
                 df, out_dir, stem,
                 f"{model_label(model_id)} L{layer}: No-Sort Fixed b{uniform_bit} Loss by Expert",
@@ -677,7 +659,7 @@ def main() -> None:
     parser.add_argument("--target-bpw", type=float, default=None, help="required for assigned-loss views")
     parser.add_argument("--disable-0bit-compensation", action="store_true")
     parser.add_argument("--views", nargs="+", default=["all"], help=f"subset of {ALL_VIEWS}, or all")
-    parser.add_argument("--out-dir", default=os.path.join("figs", "dp_score_views"))
+    parser.add_argument("--out-dir", default=os.path.join("plot", "dp_score_views"))
     args = parser.parse_args()
 
     model_id = resolve_model_id(args.model)
