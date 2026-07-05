@@ -92,8 +92,8 @@ def cmoe_ppl_eval_sequential(model, testloader, eval_set, args):
     # Get all target ids first - keep on GPU!
     all_target_ids = testenc[:, :nsamples * model.seqlen].clone().to(DEV)
 
-    # Batch sizes - use 64 for transformer layers, 4 for lm_head
-    batch_size_transformer = 64
+    # Batch sizes - use smaller batch for memory constrained GPUs
+    batch_size_transformer = 32
     batch_size_lm_head = 4
 
     # Precompute embeddings for all samples and keep on CPU to save GPU memory!
@@ -108,26 +108,8 @@ def cmoe_ppl_eval_sequential(model, testloader, eval_set, args):
     gc.collect()
     torch.cuda.empty_cache()
 
-    # If attention_mask exists, expand it for batch_size_transformer
-    batch_attention_mask_64 = None
-    if attention_mask is not None:
-        if attention_mask.dim() == 4:
-            batch_attention_mask_64 = attention_mask.repeat(batch_size_transformer, 1, 1, 1)
-        elif attention_mask.dim() == 3:
-            batch_attention_mask_64 = attention_mask.repeat(batch_size_transformer, 1, 1)
-        elif attention_mask.dim() == 2:
-            batch_attention_mask_64 = attention_mask.repeat(batch_size_transformer, 1)
-
-    batch_position_ids_64 = None
-    if position_ids is not None:
-        batch_position_ids_64 = position_ids.repeat(batch_size_transformer, 1)
-
-    batch_position_embeddings_64 = None
-    if position_embeddings is not None:
-        if isinstance(position_embeddings, tuple):
-            batch_position_embeddings_64 = tuple(pe.repeat(batch_size_transformer, 1, 1) if pe is not None else None for pe in position_embeddings)
-        else:
-            batch_position_embeddings_64 = position_embeddings.repeat(batch_size_transformer, 1, 1)
+    # Don't pre-allocate large batch tensors - create them on demand to save memory
+    # Just keep the original single-sample tensors and repeat as needed
 
     import inspect
     # Process each transformer layer sequentially, with batches of 64
@@ -149,36 +131,29 @@ def cmoe_ppl_eval_sequential(model, testloader, eval_set, args):
             # Get this batch's hidden states and move to GPU
             batch_hidden = torch.cat(all_hidden_states[batch_start:batch_end], dim=0).to(DEV)
 
-            # Prepare kwargs for this batch size
+            # Prepare kwargs for this batch size - create on demand to save memory
             layer_kwargs = {}
             forward_signature = inspect.signature(layer.forward)
 
-            if 'attention_mask' in forward_signature.parameters and batch_attention_mask_64 is not None:
-                if actual_batch_size != batch_size_transformer:
-                    # Need to resize for last partial batch
-                    if attention_mask.dim() == 4:
-                        layer_kwargs['attention_mask'] = attention_mask.repeat(actual_batch_size, 1, 1, 1)
-                    elif attention_mask.dim() == 3:
-                        layer_kwargs['attention_mask'] = attention_mask.repeat(actual_batch_size, 1, 1)
-                    elif attention_mask.dim() == 2:
-                        layer_kwargs['attention_mask'] = attention_mask.repeat(actual_batch_size, 1)
-                else:
-                    layer_kwargs['attention_mask'] = batch_attention_mask_64
+            if 'attention_mask' in forward_signature.parameters and attention_mask is not None:
+                # Create attention mask for this specific batch size
+                if attention_mask.dim() == 4:
+                    layer_kwargs['attention_mask'] = attention_mask.repeat(actual_batch_size, 1, 1, 1)
+                elif attention_mask.dim() == 3:
+                    layer_kwargs['attention_mask'] = attention_mask.repeat(actual_batch_size, 1, 1)
+                elif attention_mask.dim() == 2:
+                    layer_kwargs['attention_mask'] = attention_mask.repeat(actual_batch_size, 1)
 
-            if 'position_ids' in forward_signature.parameters and batch_position_ids_64 is not None:
-                if actual_batch_size != batch_size_transformer:
-                    layer_kwargs['position_ids'] = position_ids.repeat(actual_batch_size, 1)
-                else:
-                    layer_kwargs['position_ids'] = batch_position_ids_64
+            if 'position_ids' in forward_signature.parameters and position_ids is not None:
+                # Create position_ids for this specific batch size
+                layer_kwargs['position_ids'] = position_ids.repeat(actual_batch_size, 1)
 
-            if 'position_embeddings' in forward_signature.parameters and batch_position_embeddings_64 is not None:
-                if actual_batch_size != batch_size_transformer and position_embeddings is not None:
-                    if isinstance(position_embeddings, tuple):
-                        layer_kwargs['position_embeddings'] = tuple(pe.repeat(actual_batch_size, 1, 1) if pe is not None else None for pe in position_embeddings)
-                    else:
-                        layer_kwargs['position_embeddings'] = position_embeddings.repeat(actual_batch_size, 1, 1)
+            if 'position_embeddings' in forward_signature.parameters and position_embeddings is not None:
+                # Create position_embeddings for this specific batch size
+                if isinstance(position_embeddings, tuple):
+                    layer_kwargs['position_embeddings'] = tuple(pe.repeat(actual_batch_size, 1, 1) if pe is not None else None for pe in position_embeddings)
                 else:
-                    layer_kwargs['position_embeddings'] = batch_position_embeddings_64
+                    layer_kwargs['position_embeddings'] = position_embeddings.repeat(actual_batch_size, 1, 1)
 
             # Forward pass
             with torch.no_grad():
