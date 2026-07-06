@@ -460,22 +460,6 @@ def get_deepseek_v2_lite(model_path, device_map="auto"):
 
     return model, tokenizer
 
-def get_qwen3_moe(model_path, device_map="auto"):
-    from transformers import Qwen3MoeForCausalLM
-
-    model = Qwen3MoeForCausalLM.from_pretrained(
-        model_path,
-        torch_dtype=torch.bfloat16,
-        low_cpu_mem_usage=True,
-        device_map=device_map,
-        trust_remote_code=True
-    )
-
-    model.seqlen = 2048
-    # model.seqlen = 4096
-
-    return model
-
 def get_qwen3_30b_a3b(model_path, device_map="auto"):
     from transformers import Qwen3MoeForCausalLM
     model = Qwen3MoeForCausalLM.from_pretrained(
@@ -559,31 +543,47 @@ def load_model(model_path, standby_cpu=False):
     # If standby_cpu is True, we'll load to CPU directly
     device_map = "cpu" if standby_cpu else "auto"
 
-    # Set model_id
+    # Set model_id and load model in one pass
+    path_lower = model_path.lower()
     model_id = str(model_path).split('/')[-1].split('\\')[-1]
 
-    # Try to infer model_id from path
-    path_lower = model_path.lower()
     if 'llava' in path_lower:
         model_id = 'llava'
+        model = get_llava(model_path, device_map=device_map)
+        tokenizer = AutoTokenizer.from_pretrained(model_path)
     elif 'olmoe' in path_lower:
         model_id = 'olmoe-7b-1b'
+        model = get_olmoe(model_path, device_map=device_map)
+        tokenizer = AutoTokenizer.from_pretrained(model_path)
     elif "deepseek-moe-16b" in path_lower:
         model_id = 'deepseek-v1-moe-16b'
+        model, tokenizer = get_deepseek_moe_16b(model_path, device_map=device_map)
     elif 'deepseek-v2-lite' in path_lower:
         model_id = 'deepseek-v2-lite'
+        model, tokenizer = get_deepseek_v2_lite(model_path, device_map=device_map)
     elif 'llama-2-7b' in path_lower:
         model_id = 'llama2-7b'
+        model = get_llama(model_path, device_map=device_map)
+        tokenizer = AutoTokenizer.from_pretrained(model_path)
     elif 'llama-2-13b' in path_lower:
         model_id = 'llama2-13b'
+        model = get_llama(model_path, device_map=device_map)
+        tokenizer = AutoTokenizer.from_pretrained(model_path)
     elif 'llama-3-8b' in path_lower:
         model_id = 'llama3-8b'
+        model = get_llama(model_path, device_map=device_map)
+        tokenizer = AutoTokenizer.from_pretrained(model_path)
     elif 'llama-3___1-8b' in path_lower:
         model_id = 'llama31-8b'
+        model = get_llama(model_path, device_map=device_map)
+        tokenizer = AutoTokenizer.from_pretrained(model_path)
+    elif 'llama' in path_lower:
+        model = get_llama(model_path, device_map=device_map)
+        tokenizer = AutoTokenizer.from_pretrained(model_path)
     elif 'qwen3-30b-a3b' in path_lower:
         model_id = 'qwen3-30b-a3b'
-    elif 'qwen3_moe' in path_lower:
-        model_id = 'qwen3-moe'
+        model = get_qwen3_30b_a3b(model_path, device_map=device_map)
+        tokenizer = AutoTokenizer.from_pretrained(model_path)
     elif 'qwen3' in path_lower:
         if 'qwen3-4b' in path_lower:
             model_id = 'qwen3-4b'
@@ -591,41 +591,17 @@ def load_model(model_path, standby_cpu=False):
             model_id = 'qwen3-8b'
         else:
             model_id = 'qwen3'
-    elif 'qwen2.5' in path_lower or 'qwen2___5' in path_lower:
-        model_id = 'qwen2.5'
-    elif 'moonlight' in path_lower:
-        model_id = 'moonlight'
-
-    # Original loading path for non-lazy mode
-    if 'llava' in model_path.lower():
-        model = get_llava(model_path, device_map=device_map)
-        tokenizer = AutoTokenizer.from_pretrained(model_path)
-    elif 'olmoe' in model_path.lower():
-        model = get_olmoe(model_path, device_map=device_map)
-        tokenizer = AutoTokenizer.from_pretrained(model_path)
-    elif "deepseek-moe-16b" in model_path.lower():
-        model, tokenizer = get_deepseek_moe_16b(model_path, device_map=device_map)
-    elif 'deepseek-v2-lite' in model_path.lower():
-        model, tokenizer = get_deepseek_v2_lite(model_path, device_map=device_map)
-    elif 'llama' in model_path.lower():
-        model = get_llama(model_path, device_map=device_map)
-        tokenizer = AutoTokenizer.from_pretrained(model_path)
-    elif 'qwen3-30b-a3b' in model_path.lower():
-        model = get_qwen3_30b_a3b(model_path, device_map=device_map)
-        tokenizer = AutoTokenizer.from_pretrained(model_path)
-    elif 'qwen3_moe' in model_path.lower():
-        model = get_qwen3_moe(model_path, device_map=device_map)
-        tokenizer = AutoTokenizer.from_pretrained(model_path)
-    elif 'qwen3' in model_path.lower():
         model = get_qwen3(model_path, device_map=device_map)
         tokenizer = AutoTokenizer.from_pretrained(model_path)
-    elif 'qwen2.5' in model_path.lower() or 'qwen2___5' in model_path.lower():
+    elif 'qwen2.5' in path_lower or 'qwen2___5' in path_lower:
+        model_id = 'qwen2.5'
         model, tokenizer = get_auto(model_path, device_map=device_map)
-        print(model_path.lower(), model_id)
-    elif 'moonlight' in model_path.lower():
+        print(path_lower, model_id)
+    elif 'moonlight' in path_lower:
+        model_id = 'moonlight'
         model = get_moonlight(model_path, device_map=device_map)
         tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
-        print(model_path.lower(), model_id)
+        print(path_lower, model_id)
     else:
         model, tokenizer = get_auto(model_path, device_map=device_map)
 
@@ -635,6 +611,7 @@ def load_model(model_path, standby_cpu=False):
         model.model_id = getattr(model.config, '_name_or_path', None) or getattr(model.config, 'name_or_path', None) or model_path
         model.model_id = str(model.model_id).split('/')[-1].split('\\')[-1]
 
+    print(f"model_id: {model.model_id}, model_type: {model.config.model_type}")
     # Mark if we're in CPU standby mode
     model._standby_cpu = standby_cpu
     model._model_path = model_path
