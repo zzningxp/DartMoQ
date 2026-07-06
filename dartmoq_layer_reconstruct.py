@@ -44,9 +44,14 @@ def reconstruct_moe_from_existing(model, layer, layer_idx, inps,
             expert_activation_rates = analyze_experts_activation(layer, layer_idx, inps, ori_activated, model.config.model_type)
             torch.save(expert_activation_rates.detach().cpu(), cache_path)
             print(f"Saved expert activation rates to {cache_path}")
-
-    ori_expert_num = len(layer.mlp.experts)
     
+    if hasattr(model.config, 'num_experts'):
+        ori_expert_num = model.config.num_experts
+    elif hasattr(model.config, 'n_routed_experts'):
+        ori_expert_num = model.config.n_routed_experts
+    else:
+        ori_expert_num = len(layer.mlp.experts)
+
     if use_hybrid_moe:
         # Hybrid MoE: keep original expert count at first level
         new_expert_num = ori_expert_num
