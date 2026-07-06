@@ -321,7 +321,9 @@ python run_dartmoq.py \
     [--quant-scheme SCHEME] \
     [--quantmode {gptq,turboquant}] \
     [--eval-zero] \
-    [--save-model]
+    [--save-model] \
+    [--standby-layer-cpu] \
+    [--sequential-eval]
 ```
 
 ### Arguments
@@ -338,7 +340,8 @@ python run_dartmoq.py \
 | `--quantmode` | Quantization algorithm: `gptq` or `turboquant` | `turboquant` |
 | `--eval-zero` | Enable zero-shot task evaluation | False |
 | `--save-model` | Save quantized model to disk | False |
-| `--standby-layer-cpu` | Move layers to CPU during quantization | False |
+| `--standby-layer-cpu` | Use CPU standby mode for large models: loads model to CPU and moves layers to GPU one-by-one during quantization. Saves GPU memory but skips zero-shot evaluation. | False |
+| `--sequential-eval` | Use sequential PPL evaluation: keeps layers on CPU and moves them to GPU one by one to save memory. Automatically enabled with `--standby-layer-cpu`. | False |
 | `--no-use-hybrid-moe` | Disable hybrid MoE structure and use original experts | False (hybrid enabled by default) |
 | `--disable-0bit-compensation` | Disable 0bit compensation (0bit weights incur quantization overhead) | False (0bit compensation enabled by default) |
 | `--disable-0bit-prune` | Disable 0bit in DP search (only use 1-4 bits, no pruning) | False (0bit enabled by default) |
@@ -478,6 +481,59 @@ To disable 0bit pruning (only use 1-4 bits for quantization), use:
 | Default | `{0, 1, 2, 3, 4}` | 0bit has no overhead | Full unified quantization + pruning (recommended) |
 | `--disable-0bit-compensation` | `{0, 1, 2, 3, 4}` | 0bit = `0.25` overhead | Ablation: 0bit without overhead advantage |
 | `--disable-0bit-prune` | `{1, 2, 3, 4}` | N/A (no 0bit) | Ablation: pure quantization without pruning |
+
+## Standby CPU Mode for Large Models
+
+DartMoQP supports CPU standby mode to enable quantization of very large MoE models that might not fit entirely in GPU memory.
+
+### `--standby-layer-cpu`
+
+This mode:
+- Loads the entire model to CPU first
+- Moves only one layer at a time to GPU for quantization
+- After processing each layer, moves it back to CPU
+- Automatically enables sequential PPL evaluation
+- Skips zero-shot evaluation (not compatible with CPU standby mode)
+
+**Use case:** Quantizing large models (e.g., Qwen3-30B-A3B, DeepSeekMoE models) on GPUs with limited memory.
+
+### `--sequential-eval`
+
+Standalone sequential evaluation mode that:
+- Keeps all transformer layers on CPU
+- Moves layers to GPU one by one for PPL evaluation
+- Caches intermediate hidden states on CPU to save memory
+- Processes samples in batches for efficiency
+- Keeps embed_tokens, norm, and lm_head on GPU permanently
+
+Can be used independently or is automatically enabled with `--standby-layer-cpu`.
+
+### Memory Saving Benefits
+
+Both modes significantly reduce GPU memory usage by:
+- Avoiding loading the entire model to GPU at once
+- Only keeping one layer active on GPU at a time
+- Caching intermediate results on CPU
+- Performing aggressive garbage collection and cache clearing
+
+### Usage Example
+
+```bash
+# Full standby mode for large models
+python run_dartmoq.py \
+    $MODEL_PATH \
+    wikitext2 \
+    --slices 8 \
+    --rank-mode turboquant_innerproduct \
+    --quant-scheme global-bpw-a8s8m2.0 \
+    --quantmode turboquant \
+    --standby-layer-cpu
+
+# Sequential evaluation only (after normal quantization)
+python eval_dartmoq.py \
+    $MODEL_PATH \
+    --sequential-eval
+```
 
 ## Quantization Modes (`--quantmode`)
 
