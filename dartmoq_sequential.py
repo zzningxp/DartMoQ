@@ -38,20 +38,22 @@ def construct_moe(model, moe_model_flag, layer, layer_idx, inp,
 
     # tick0 = time.time()
     attn_out = torch.zeros_like(hidden_states_inorm)
-    for b_i in range(0, batchsize):
+    mini_batch = 8
+    for b_i in range(0, batchsize, mini_batch):
+        end_i = min(b_i + mini_batch, batchsize)
         # print(modeltype)
         if modeltype == 'olmoe' or modeltype == 'llama' or modeltype == 'qwen3' or modeltype == 'qwen3_moe' or modeltype == 'deepseek_v3':
             with torch.no_grad():
-                attn_out[b_i:b_i+1] = layer.self_attn(
-                    hidden_states=hidden_states_inorm[b_i:b_i+1],
+                attn_out[b_i:end_i] = layer.self_attn(
+                    hidden_states=hidden_states_inorm[b_i:end_i],
                     attention_mask=attention_mask,
                     position_ids=position_ids,
                     position_embeddings=position_embeddings)[0]
         else:
             with torch.no_grad():
-                attn_out[b_i:b_i+1] = layer.self_attn(
-                    hidden_states=hidden_states_inorm[b_i:b_i+1],
-                    attention_mask=attention_mask, 
+                attn_out[b_i:end_i] = layer.self_attn(
+                    hidden_states=hidden_states_inorm[b_i:end_i],
+                    attention_mask=attention_mask,
                     position_ids=position_ids)[0]
     # tick1 = time.time()
     # print(f"Inference in origin attention layer {layer_idx} with batch size {batchsize} time: {tick1 - tick0}")
@@ -96,12 +98,14 @@ def construct_moe(model, moe_model_flag, layer, layer_idx, inp,
 
     # tick0 = time.time()
     moe_out = torch.zeros_like(hidden_states)
-    for b_i in range(0, batchsize):
-        mlp_out = layer.mlp(hidden_states[b_i:b_i+1])
+    mini_batch = 8
+    for b_i in range(0, batchsize, mini_batch):
+        end_i = min(b_i + mini_batch, batchsize)
+        mlp_out = layer.mlp(hidden_states[b_i:end_i])
         if isinstance(mlp_out, tuple):
-            moe_out[b_i:b_i+1] = mlp_out[0]
+            moe_out[b_i:end_i] = mlp_out[0]
         else:
-            moe_out[b_i:b_i+1] = mlp_out
+            moe_out[b_i:end_i] = mlp_out
 
     with torch.no_grad():
         moe_out = moe_out + residual

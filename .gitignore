@@ -6,6 +6,7 @@ test/
 model/
 logs/
 intermediate_result/
+dartmoq-qwen3.5/
 
 run.*.sh
 *.out
@@ -13,3 +14,4 @@ run.*.sh
 *.json
 *.csv
 models
+CLAUDE.md
