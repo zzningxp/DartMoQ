@@ -120,18 +120,18 @@ def plot_lowest_r2_neurons(
                 except Exception as e:
                     pass
 
-        ax.set_xlabel('Bit Width', fontsize=10)
-        ax.set_ylabel('Loss (log scale)', fontsize=10)
-        ax.set_title(f'Neuron {neuron_idx}\nR²={r2_val:.4f}', fontsize=11, fontweight='bold')
+        ax.set_xlabel('Bit Width', fontsize=20)
+        ax.set_ylabel('Loss (log scale)', fontsize=20)
+        ax.set_title(f'Neuron {neuron_idx}\nR²={r2_val:.4f}', fontsize=20, fontweight='bold')
         ax.set_yscale('log')
         ax.grid(True, alpha=0.3, zorder=1)
         all_bits_with_0 = [0] + bits_sorted if len(actual_bits) >= 2 else bits_sorted
         ax.set_xlim(-0.2, max(all_bits_with_0) + 0.2)
         ax.set_xticks(all_bits_with_0)
-        ax.legend(fontsize=8, loc='upper right')
+        ax.legend(fontsize=12, loc='upper right')
 
     plt.suptitle(f'{model_id} Layer {layer_idx} Expert {expert_idx} ({quant_type}) - Lowest 5 R² Neurons',
-                 fontsize=12, fontweight='bold')
+                 fontsize=15, fontweight='bold')
     plt.tight_layout()
 
     # Save plot
@@ -184,8 +184,7 @@ def plot_neuron_rates_with_fit(
     model_id: str,
     layer_idx: int,
     expert_idx: int = 0,
-    p: int = 20,
-    n_show_neurons: int = 30,
+    n_show_neurons: int = 20,
     outlier_bits: Set[int] = None,
     use_0bit: bool = True,
     save_dir: str = None,
@@ -199,7 +198,7 @@ def plot_neuron_rates_with_fit(
         model_id: Model identifier
         layer_idx: Layer index
         expert_idx: Expert index
-        p: Number of neurons to plot
+        n_show_neurons: Number of top neurons to show in plots
         outlier_bits: Set of bit widths to load, defaults to {1,2,3,4}
         use_0bit: Whether to extrapolate and include 0bit
         save_dir: Directory to save plot
@@ -207,7 +206,7 @@ def plot_neuron_rates_with_fit(
     if outlier_bits is None:
         outlier_bits = {1, 2, 3, 4}
 
-    print(f"Plotting neuron rates with fit: model={model_id}, layer={layer_idx}, expert={expert_idx}, p={p}")
+    print(f"Plotting neuron rates with fit: model={model_id}, layer={layer_idx}, expert={expert_idx}")
 
     # Load data for both quant types
     quants = [
@@ -296,7 +295,7 @@ def plot_neuron_rates_with_fit(
                 actual_losses.append(val)
 
             ax1.scatter(actual_bits, actual_losses, color=color, s=80, alpha=0.9,
-                       label=f'Neuron {neuron_idx} (data)')
+                       label=f'Neuron {neuron_idx}')
 
             # Plot 0-bit extrapolation
             if 0 in rates:
@@ -306,12 +305,29 @@ def plot_neuron_rates_with_fit(
                 ax1.scatter([0], [l0], color=color, marker='*', s=150, alpha=0.9,
                            label=f'Neuron {neuron_idx} (0-bit)')
 
-        ax1.set_xlabel('Bit Width', fontsize=11)
-        ax1.set_ylabel('Loss (log scale)', fontsize=11)
-        ax1.set_title(f'Log-Quad Fit Demo\n{model_id} Layer {layer_idx} Expert {expert_idx}', fontsize=12, fontweight='bold')
+            # Plot log-quadratic fit curve
+            if len(actual_bits) >= 3:
+                try:
+                    b_array = np.array(actual_bits)
+                    loss_array = np.array(actual_losses)
+                    log_loss = np.log(loss_array)
+                    p, q, r = np.polyfit(b_array, log_loss, deg=2)
+
+                    # Plot smooth fit curve from 0 to max bit
+                    x_max = max(bits_sorted + ([0] if 0 in rates else []))
+                    x_smooth = np.linspace(0, x_max, 100)
+                    y_smooth_log = p * x_smooth**2 + q * x_smooth + r
+                    y_smooth = np.exp(y_smooth_log)
+                    ax1.plot(x_smooth, y_smooth, color=color, linewidth=2, alpha=0.8, zorder=2)
+                except Exception:
+                    pass
+
+        ax1.set_xlabel('Bit Width', fontsize=20)
+        ax1.set_ylabel('Loss (log scale)', fontsize=20)
+        ax1.set_title(f'Log-Quad Fit Demo\n{model_id} Layer {layer_idx} Expert {expert_idx}', fontsize=20, fontweight='bold')
         ax1.set_yscale('log')
         ax1.grid(True, alpha=0.3)
-        ax1.legend(fontsize=8, loc='upper right')
+        ax1.legend(fontsize=15, loc='upper right')
         ax1.set_xlim(-0.2, max(bits_sorted) + 0.7)
 
     # ------------------------------------------------------------------------
@@ -362,6 +378,22 @@ def plot_neuron_rates_with_fit(
                 ax2.scatter([0], [val_0], color=color, marker='*', s=80, alpha=0.7, zorder=4)
                 all_losses.append(val_0)
 
+            # Plot log-quadratic fit curve using 1-4 bit data
+            if len(bit_values_no0) >= 3:
+                try:
+                    b_array = np.array(bit_values_no0)
+                    loss_array = np.array(rate_values_no0)
+                    log_loss = np.log(loss_array)
+                    p, q, r = np.polyfit(b_array, log_loss, deg=2)
+
+                    # Plot smooth fit curve from 0 to max bit
+                    x_smooth = np.linspace(0, max(bits_sorted_with_0), 100)
+                    y_smooth_log = p * x_smooth**2 + q * x_smooth + r
+                    y_smooth = np.exp(y_smooth_log)
+                    ax2.plot(x_smooth, y_smooth, color=color, linewidth=1.5, alpha=0.7, zorder=2)
+                except Exception:
+                    pass
+
             # Collect handles for legend
             legend_handles.append(scatter)
             legend_labels.append(f'N{neuron_idx}')
@@ -375,14 +407,15 @@ def plot_neuron_rates_with_fit(
                 y_max = np.max(valid_losses) * 2.0
                 ax2.set_ylim(y_min, y_max)
 
-        ax2.set_xlabel('Bit Width', fontsize=11)
-        ax2.set_ylabel('Loss (log scale)', fontsize=11)
-        ax2.set_title(f'TurboQuant\n{model_id} Layer {layer_idx} Expert {expert_idx}', fontsize=12, fontweight='bold')
+        ax2.set_xlabel('Bit Width', fontsize=20)
+        ax2.set_ylabel('Loss (log scale)', fontsize=20)
+        ax2.set_title(f'TurboQuant\n{model_id} Layer {layer_idx} Expert {expert_idx}', 
+                      fontsize=20, fontweight='bold')
         ax2.set_yscale('log')
         ax2.grid(True, alpha=0.3, zorder=1)
         ax2.set_xlim(-0.2, max(bits_sorted_with_0) + 0.2)
         ax2.set_xticks(bits_sorted_with_0)
-        ax2.legend(legend_handles, legend_labels, fontsize=7, loc='upper right', ncol=2)
+        ax2.legend(legend_handles, legend_labels, fontsize=14, loc='upper right', ncol=3)
 
     # ------------------------------------------------------------------------
     # Subplot 3: GPTQ
@@ -432,6 +465,22 @@ def plot_neuron_rates_with_fit(
                 ax3.scatter([0], [val_0], color=color, marker='*', s=80, alpha=0.7, zorder=4)
                 all_losses.append(val_0)
 
+            # Plot log-quadratic fit curve using 1-4 bit data
+            if len(bit_values_no0) >= 3:
+                try:
+                    b_array = np.array(bit_values_no0)
+                    loss_array = np.array(rate_values_no0)
+                    log_loss = np.log(loss_array)
+                    p, q, r = np.polyfit(b_array, log_loss, deg=2)
+
+                    # Plot smooth fit curve from 0 to max bit
+                    x_smooth = np.linspace(0, max(bits_sorted_with_0), 100)
+                    y_smooth_log = p * x_smooth**2 + q * x_smooth + r
+                    y_smooth = np.exp(y_smooth_log)
+                    ax3.plot(x_smooth, y_smooth, color=color, linewidth=1.5, alpha=0.7, zorder=2)
+                except Exception:
+                    pass
+
             # Collect handles for legend
             legend_handles.append(scatter)
             legend_labels.append(f'N{neuron_idx}')
@@ -445,14 +494,15 @@ def plot_neuron_rates_with_fit(
                 y_max = np.max(valid_losses) * 2.0
                 ax3.set_ylim(y_min, y_max)
 
-        ax3.set_xlabel('Bit Width', fontsize=11)
-        ax3.set_ylabel('Loss (log scale)', fontsize=11)
-        ax3.set_title(f'GPTQ\n{model_id} Layer {layer_idx} Expert {expert_idx}', fontsize=12, fontweight='bold')
+        ax3.set_xlabel('Bit Width', fontsize=20)
+        ax3.set_ylabel('Loss (log scale)', fontsize=20)
+        ax3.set_title(f'GPTQ\n{model_id} Layer {layer_idx} Expert {expert_idx}', 
+                      fontsize=20, fontweight='bold')
         ax3.set_yscale('log')
         ax3.grid(True, alpha=0.3, zorder=1)
         ax3.set_xlim(-0.2, max(bits_sorted_with_0) + 0.2)
         ax3.set_xticks(bits_sorted_with_0)
-        ax3.legend(legend_handles, legend_labels, fontsize=7, loc='upper right', ncol=2)
+        ax3.legend(legend_handles, legend_labels, fontsize=14, loc='upper right', ncol=3)
 
     plt.tight_layout()
 
@@ -479,7 +529,7 @@ def test_read_rates_from_file():
     quant_type = "turboquant"
     cache_dir = os.path.join(INTERMEDIATE_RESULT_DIR, f"quant_outlier_{quant_type}", "turboquant_innerproduct", model_id)
 
-    p = 20
+    p = 12
     expert_idx = 0
     rates = {}
     for x in outlier_bits:
@@ -615,6 +665,174 @@ def get_model_layer_stats(
     return result
 
 
+def generate_latex_table(
+    all_model_stats: List[Tuple[str, Dict[str, Dict[int, Dict[str, float]]]]],
+    expert_idx: int = None,
+    save_dir: str = None,
+) -> str:
+    """Generate LaTeX table with R² statistics.
+
+    Args:
+        all_model_stats: List of (model_id, stats) tuples
+        expert_idx: Expert index (None for all experts)
+        save_dir: Directory to save table
+
+    Returns:
+        LaTeX table string
+    """
+    from viz._cache_io import KNOWN_MODELS
+
+    mode_str = "All Experts" if expert_idx is None else f"Expert {expert_idx}"
+
+    lines = []
+    lines.append(r"% ========================================================")
+    lines.append(r"% R² Fit Quality Table")
+    lines.append(r"% Automatically generated by viz.bit_loss_fit")
+    lines.append(r"% ========================================================")
+    lines.append(r"")
+
+    # Determine column layout based on number of models
+    n_models = len(all_model_stats)
+
+    # Begin table
+    lines.append(r"\begin{table*}[t]")
+    lines.append(r"  \centering")
+    lines.append(r"  \caption{Fit Quality ($R^2$) of Log-Quad Extrapolation across Models and Layers}")
+    lines.append(r"  \label{tab:r2_fit_quality}")
+    lines.append(r"  \resizebox{\textwidth}{!}{%")
+    lines.append(r"  \begin{tabular}{l" + "cc" * n_models + r"}")
+    lines.append(r"    \toprule")
+
+    # Header row 1: model names
+    header1 = "    "
+    for model_id, _ in all_model_stats:
+        model_label = KNOWN_MODELS.get(model_id, model_id)
+        header1 += f" & \multicolumn{{2}}{{c}}{{{model_label}}}"
+    header1 += r" \\"
+    lines.append(header1)
+
+    # Header row 2: quant types
+    header2 = "    Layer"
+    for _ in all_model_stats:
+        header2 += r" & TurboQuant & GPTQ"
+    header2 += r" \\"
+    lines.append(header2)
+
+    lines.append(r"    \midrule")
+
+    # Get all layers across all models
+    all_layers = set()
+    for _, stats in all_model_stats:
+        for qt in ['turboquant', 'gptq']:
+            all_layers.update(stats[qt].keys())
+    layer_indices = sorted(all_layers)
+
+    # Data rows: per layer
+    for lidx in layer_indices:
+        row_parts = [f"    {lidx}"]
+        for _, stats in all_model_stats:
+            # TurboQuant
+            tq_stat = stats['turboquant'].get(lidx)
+            if tq_stat is not None:
+                row_parts.append(f" ${tq_stat['median']:.3f}$")
+            else:
+                row_parts.append(r" --")
+
+            # GPTQ
+            gptq_stat = stats['gptq'].get(lidx)
+            if gptq_stat is not None:
+                row_parts.append(f" ${gptq_stat['median']:.3f}$")
+            else:
+                row_parts.append(r" --")
+
+        row = " &".join(row_parts) + r" \\"
+        lines.append(row)
+
+    # Summary row: overall average
+    lines.append(r"    \midrule")
+    summary_parts = [r"    \textbf{Average}"]
+    for _, stats in all_model_stats:
+        # TurboQuant average
+        tq_means = [s['mean'] for s in stats['turboquant'].values()]
+        if tq_means:
+            tq_avg = np.mean(tq_means)
+            summary_parts.append(f" $\\mathbf{{{tq_avg:.3f}}}$")
+        else:
+            summary_parts.append(r" --")
+
+        # GPTQ average
+        gptq_means = [s['mean'] for s in stats['gptq'].values()]
+        if gptq_means:
+            gptq_avg = np.mean(gptq_means)
+            summary_parts.append(f" $\\mathbf{{{gptq_avg:.3f}}}$")
+        else:
+            summary_parts.append(r" --")
+
+    summary_row = " &".join(summary_parts) + r" \\"
+    lines.append(summary_row)
+
+    lines.append(r"    \bottomrule")
+    lines.append(r"  \end{tabular}%")
+    lines.append(r"  }")
+    lines.append(r"  \vspace{1ex}")
+    lines.append(r"  \small \textit{Note:} Values show median $R^2$ per layer. ")
+    if expert_idx is None:
+        lines.append(r"Averages across all experts are shown.")
+    else:
+        lines.append(f"Results are for expert {expert_idx}.")
+    lines.append(r"")
+    lines.append(r"\end{table*}")
+    lines.append(r"")
+
+    latex_str = "\n".join(lines)
+
+    # Save to file
+    if save_dir is None:
+        save_dir = 'plot/neuron_rates_fit'
+    os.makedirs(save_dir, exist_ok=True)
+
+    expert_suffix = "_all_experts" if expert_idx is None else f"_expert{expert_idx}"
+    tex_path = os.path.join(save_dir, f"r2_fit_quality{expert_suffix}.tex")
+
+    with open(tex_path, 'w') as f:
+        f.write(latex_str)
+
+    print(f"\nLaTeX table saved to: {tex_path}")
+
+    # Also save a simple text summary
+    txt_path = os.path.join(save_dir, f"r2_fit_quality{expert_suffix}.txt")
+    with open(txt_path, 'w') as f:
+        f.write("=" * 80 + "\n")
+        f.write(f"R² Fit Quality Summary ({mode_str})\n")
+        f.write("=" * 80 + "\n\n")
+
+        for model_id, stats in all_model_stats:
+            model_label = KNOWN_MODELS.get(model_id, model_id)
+            f.write(f"Model: {model_label}\n")
+            f.write("-" * 80 + "\n")
+
+            for quant_type in ['turboquant', 'gptq']:
+                layer_stats = stats[quant_type]
+                if not layer_stats:
+                    f.write(f"  {quant_type:10s}: No data\n")
+                    continue
+
+                means = [s['mean'] for s in layer_stats.values()]
+                medians = [s['median'] for s in layer_stats.values()]
+
+                f.write(f"  {quant_type:10s}:\n")
+                f.write(f"    Layers: {sorted(layer_stats.keys())}\n")
+                f.write(f"    Mean R²:  {np.mean(means):.4f} (±{np.std(means):.4f})\n")
+                f.write(f"    Med R²:   {np.mean(medians):.4f} (±{np.std(medians):.4f})\n")
+                f.write(f"    Range:    [{np.min(means):.4f}, {np.max(means):.4f}]\n")
+
+            f.write("\n")
+
+    print(f"Text summary saved to: {txt_path}")
+
+    return latex_str
+
+
 def analyze_multi_model_r2(
     model_ids: List[str] = None,
     expert_idx: int = None,
@@ -651,6 +869,12 @@ def analyze_multi_model_r2(
     for model_id in model_ids:
         stats = get_model_layer_stats(model_id, expert_idx, outlier_bits, debug_layers)
         all_model_stats.append((model_id, stats))
+
+    # Generate LaTeX table
+    print("\n" + "=" * 80)
+    print("Generating LaTeX table for paper...")
+    print("=" * 80)
+    generate_latex_table(all_model_stats, expert_idx, save_dir)
 
     # Create figure: 1 row, N columns
     n_models = len(all_model_stats)
@@ -740,17 +964,17 @@ def analyze_multi_model_r2(
             y_min = 0.8
 
         # Formatting
-        ax.set_xlabel('Layer Index', fontsize=10)
-        ax.set_ylabel('R²', fontsize=10)
-        ax.set_title(model_id, fontsize=11, fontweight='bold')
+        ax.set_xlabel('Layer Index', fontsize=13)
+        ax.set_ylabel('R²', fontsize=13)
+        ax.set_title(model_id, fontsize=20, fontweight='bold')
         ax.set_xticks(x)
         if len(layer_indices) > 20:
             # Sparser labels when many layers
             step = max(2, len(layer_indices) // 15)  # aim for ~15 labels
             labels = [str(l) if i % step == 0 else "" for i, l in enumerate(layer_indices)]
-            ax.set_xticklabels(labels, rotation=45, ha='right', fontsize=8)
+            ax.set_xticklabels(labels, rotation=45, ha='right', fontsize=11)
         else:
-            ax.set_xticklabels([str(l) for l in layer_indices], rotation=45, ha='right', fontsize=8)
+            ax.set_xticklabels([str(l) for l in layer_indices], rotation=45, ha='right', fontsize=11)
         ax.set_ylim(y_min, 1.005)
         # Set y-axis ticks
         if expert_idx is None:
@@ -761,7 +985,7 @@ def analyze_multi_model_r2(
 
         # Only show legend on first plot
         if ax_idx == 0:
-            ax.legend(fontsize=8, loc='lower right')
+            ax.legend(fontsize=13, loc='lower right')
 
     plt.tight_layout()
 
@@ -804,9 +1028,7 @@ def main():
                       help="Layer index (for neuron rate plotting)")
     parser.add_argument("--expert", type=int, default=-1,
                       help="Expert index (default: None = all experts)")
-    parser.add_argument("--p", type=int, default=20,
-                      help="Number of neurons to plot (unused now, kept for compatibility)")
-    parser.add_argument("--n-show-neurons", type=int, default=20,
+    parser.add_argument("--n-show-neurons", type=int, default=12,
                       help="Number of top neurons to show in plots")
     parser.add_argument("--bits", nargs="+", type=int, default=[1, 2, 3, 4],
                       help="Bit widths to load")
@@ -847,7 +1069,6 @@ def main():
             model_id=model_to_plot,
             layer_idx=args.layer,
             expert_idx=expert_param,
-            p=args.p,
             n_show_neurons=args.n_show_neurons,
             outlier_bits=set(args.bits),
             use_0bit=not args.no_0bit,

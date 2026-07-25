@@ -79,12 +79,12 @@ class AblationVisualizer:
         import matplotlib as mpl
         mpl.rcParams.update({
             "font.family": "DejaVu Sans",
-            "font.size": 11,
-            "axes.titlesize": 13,
-            "axes.labelsize": 12,
-            "legend.fontsize": 10,
-            "xtick.labelsize": 10,
-            "ytick.labelsize": 10,
+            "font.size": 20,
+            "axes.titlesize": 17,
+            "axes.labelsize": 15,
+            "legend.fontsize": 16,
+            "xtick.labelsize": 16,
+            "ytick.labelsize": 16,
             "axes.grid": True,
             "grid.alpha": 0.3,
             "figure.dpi": 130,
@@ -151,13 +151,13 @@ class AblationVisualizer:
                             # 如果超过显示上限，在柱子顶部标注实际值
                             if dp.c4_ppl > display_limit:
                                 ax.text(pos, display_limit * 0.8,
-                                       f"{dp.c4_ppl:.0f}", ha='center', va='top', fontsize=8,
+                                       f"{dp.c4_ppl:.0f}", ha='center', va='top', fontsize=11,
                                        bbox=dict(boxstyle='square,pad=0.1', facecolor='white', alpha=0.9, edgecolor=bpw_colors[bpw_idx], linewidth=0.5))
 
         # 设置横轴标签 - 只显示模型名
         ax.set_xticks(x_tick_positions)
         ax.set_xticklabels([self.model_display_names.get(m, m) for m in result.models],
-                           fontsize=11, fontweight='bold')
+                           fontsize=14, fontweight='bold')
 
         # 画分隔线 - 在模型组之间
         for i in range(len(group_ends) - 1):
@@ -170,13 +170,13 @@ class AblationVisualizer:
             for num_slices in result.num_slices_list:
                 slice_center = current_x + (n_bpw * bar_width) / 2 - bar_width / 2
                 ax.text(slice_center, display_limit * 0.96,
-                        f"s{num_slices}", ha='center', va='top', fontsize=9,
+                        f"s{num_slices}", ha='center', va='top', fontsize=16,
                         bbox=dict(boxstyle='square,pad=0.1', facecolor='white', alpha=0.8, edgecolor='none'))
                 current_x += n_bpw * bar_width + slice_spacing
             current_x += model_spacing
 
-        ax.set_ylabel('C4 Perplexity (PPL)', fontsize=12)
-        ax.set_title('C4 PPL', fontsize=13, fontweight='bold')
+        ax.set_ylabel('C4 Perplexity (PPL)', fontsize=15)
+        ax.set_title('C4 PPL', fontsize=17, fontweight='bold')
 
         # 创建图例 - 只放BPW，放到图内
         from matplotlib.patches import Patch
@@ -187,7 +187,7 @@ class AblationVisualizer:
             legend_elements.append(Patch(color=bpw_colors[bpw_idx],
                                          label=f'BPW={bpw}'))
 
-        ax.legend(handles=legend_elements, loc='upper right', fontsize=10, bbox_to_anchor=(1, 0.85))
+        ax.legend(handles=legend_elements, loc='upper right', fontsize=16, bbox_to_anchor=(1, 0.85))
 
         # 设置y轴上限
         ax.set_ylim(0, display_limit)

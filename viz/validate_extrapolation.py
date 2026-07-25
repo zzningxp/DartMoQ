@@ -234,6 +234,7 @@ def _expert_forward_with_weights(
 def compute_true_0bit_loss_for_expert(
     expert,
     tokens: torch.Tensor,
+    bit: int,
 ) -> torch.Tensor:
     """
     Compute true 0-bit loss for each neuron: directly compute mean(||output_orig - output_pruned||²)
@@ -267,9 +268,9 @@ def compute_true_0bit_loss_for_expert(
         gate_w_pruned = gate_w.clone()
         down_w_pruned = down_w.clone()
 
-        up_w_pruned[neuron_idx, :] = 0.0
-        gate_w_pruned[neuron_idx, :] = 0.0
-        down_w_pruned[:, neuron_idx] = 0.0
+        up_w_pruned[neuron_idx, :] = bit
+        gate_w_pruned[neuron_idx, :] = bit
+        down_w_pruned[:, neuron_idx] = bit
 
         # Compute pruned output
         output_pruned = _expert_forward_with_weights(expert, tokens, up_w_pruned, gate_w_pruned, down_w_pruned)
@@ -287,6 +288,7 @@ def compute_true_0bit_loss_for_layer(
     layer_idx: int,
     mlp_inputs: torch.Tensor,
     device: torch.device,
+    bit: int,
     num_experts_limit: Optional[int] = None,
 ) -> List[torch.Tensor]:
     """
@@ -313,7 +315,7 @@ def compute_true_0bit_loss_for_layer(
 
     true_losses = []
     for expert_idx in range(ori_expert_num):
-        print(f"    Computing true 0-bit loss for expert {expert_idx}...", flush=True)
+        print(f"    Computing true {bit}-bit loss for expert {expert_idx}...", flush=True)
         expert_capture = captured[expert_idx]
         tokens = _concat_chunks(expert_capture["up_proj"], device, max_rows=4096)
 
@@ -325,7 +327,7 @@ def compute_true_0bit_loss_for_layer(
             continue
 
         expert = layer.mlp.experts[expert_idx]
-        true_loss = compute_true_0bit_loss_for_expert(expert, tokens)
+        true_loss = compute_true_0bit_loss_for_expert(expert, tokens, bit=bit)
         true_losses.append(true_loss.cpu())
 
         gc.collect()
@@ -342,6 +344,7 @@ def main():
     parser.add_argument("--quantmode", type=str, choices=["gptq", "turboquant"], default="turboquant", help="量化模式")
     parser.add_argument("--rank_mode", type=str, default="turboquant_innerproduct", help="rank mode")
     parser.add_argument("--recompute", action="store_true", help="重新计算，不用缓存")
+    parser.add_argument("--bit", type=int, default=0, help="要验证的 bit 位")
     parser.add_argument("--seed", type=int, default=42, help="随机种子")
     parser.add_argument("--nsamples", type=int, default=32, help="采样数")
     parser.add_argument("--device", type=str, default="cuda:0", help="设备")
@@ -358,7 +361,9 @@ def main():
     print(f"layers: {args.layers}")
     print()
 
-    # 加载模型（如果需要计算真实 0-bit 损失）
+    bit = args.bit
+
+    # 加载模型（如果需要计算真实 bit 损失）
     model = None
     dataloader = None
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
@@ -399,9 +404,7 @@ def main():
         print()
         print(f"验证层 {layer_idx}...")
 
-        # 加载 b0-b4
         cached_data = {}
-        found = True
         path = os.path.join(cache_dir, f"{args.model_id}_L{layer_idx}_b0.pt")
         if os.path.exists(path):
             cached_data[0] = torch.load(path, map_location="cpu")
@@ -409,20 +412,21 @@ def main():
         else:
             assert False, f"b{0} 未找到"
 
-        true_0bit_losses = None
+        proxy_losses = {}
+        proxy_cache_path = {}
 
-        true_0bit_cache_path = os.path.join(cache_dir, f"{args.model_id}_L{layer_idx}_true_0bit.pt")
-        if os.path.exists(true_0bit_cache_path) and not args.recompute:
-            print(f"  加载真实 0-bit 损失缓存: {true_0bit_cache_path}")
-            true_0bit_losses = torch.load(true_0bit_cache_path, map_location="cpu")
+        proxy_cache_path[bit] = os.path.join(cache_dir, f"{args.model_id}_L{layer_idx}_proxyloss_{bit}bit.pt")
+        if os.path.exists(proxy_cache_path[bit]) and not args.recompute:
+            print(f"  加载真实 0-bit 损失缓存: {proxy_cache_path[bit]}")
+            proxy_losses[bit] = torch.load(proxy_cache_path[bit], map_location="cpu")
         else:
             print(f"  计算真实 0-bit 损失...")
             mlp_inputs = _collect_layer_mlp_inputs(model, layer_idx, dataloader, args.nsamples, device)
-            true_0bit_losses = compute_true_0bit_loss_for_layer(
-                model, layer_idx, mlp_inputs, device, num_experts_limit=args.num_experts
+            proxy_losses[bit] = compute_true_0bit_loss_for_layer(
+                model, layer_idx, mlp_inputs, device, bit=bit, num_experts_limit=args.num_experts
             )
-            print(f"  保存真实 0-bit 损失缓存: {true_0bit_cache_path}")
-            torch.save(true_0bit_losses, true_0bit_cache_path)
+            print(f"  保存真实 {bit}-bit 损失缓存: {proxy_cache_path[bit]}")
+            torch.save(proxy_losses[bit], proxy_cache_path[bit])
 
         # 处理全部 expert
         all_actual = []
@@ -436,11 +440,10 @@ def main():
             # 外推
             extrapolated = cached_data[0][expert_idx].numpy()
 
-            # 获取真实 0-bit 损失
-            if true_0bit_losses is not None and expert_idx < len(true_0bit_losses):
-                actual = true_0bit_losses[expert_idx].numpy()
+            if proxy_losses[bit] is not None and expert_idx < len(proxy_losses[bit]):
+                actual = proxy_losses[bit][expert_idx].numpy()
             else:
-                assert False, f"    警告: 没有真实 0-bit 损失"
+                assert False, f"    警告: 没有真实 {bit}-bit 损失"
 
             # 过滤
             valid_mask = (
@@ -541,7 +544,7 @@ def main():
             plt.tight_layout()
 
             os.makedirs(args.out_dir, exist_ok=True)
-            out_path = os.path.join(args.out_dir, f"{args.model_id}_L{layer_idx}_extrapolation_check.png")
+            out_path = os.path.join(args.out_dir, f"{args.model_id}_L{layer_idx}_{bit}bit_loss_extrapolation_check.png")
             plt.savefig(out_path, dpi=150)
             print(f"  图已保存至: {out_path}")
             plt.close()

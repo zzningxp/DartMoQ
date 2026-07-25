@@ -16,9 +16,9 @@ _0BIT_PRUNE_COLOR = "#e57373"  # 红色 - 0bit_prune
 DISABLE_0BIT_PRUNE_COLOR = "#64b5f6"  # 蓝色 - disable_0bit_prune
 
 MODEL_DISPLAY_NAMES = {
-    "dsv1": "DeepSeek-V1",
-    "dsv2": "DeepSeek-V2",
-    "moon": "Moonlight",
+    "dsv1": "DS-V1",
+    "dsv2": "DS-V2",
+    "moon": "Moon",
     "olmoe": "OLMoE"
 }
 
@@ -37,12 +37,12 @@ class ZeroBitPruneAblationVisualizer:
         import matplotlib as mpl
         mpl.rcParams.update({
             "font.family": "DejaVu Sans",
-            "font.size": 11,
-            "axes.titlesize": 13,
-            "axes.labelsize": 12,
-            "legend.fontsize": 9,
-            "xtick.labelsize": 10,
-            "ytick.labelsize": 10,
+            "font.size": 20,
+            "axes.titlesize": 17,
+            "axes.labelsize": 16,
+            "legend.fontsize": 16,
+            "xtick.labelsize": 16,
+            "ytick.labelsize": 16,
             "axes.grid": True,
             "grid.alpha": 0.3,
             "figure.dpi": 130,
@@ -117,11 +117,11 @@ class ZeroBitPruneAblationVisualizer:
                             # 如果超过显示上限，在柱子顶部标注实际值
                             if avg_prune > display_limit:
                                 ax.text(current_x - bar_width/2 - 0.5, display_limit * 0.85,
-                                       f"{avg_prune:.2f}", ha='right', va='top', fontsize=8,
+                                       f"{avg_prune:.2f}", ha='right', va='top', fontsize=11,
                                        bbox=dict(boxstyle='square,pad=0.1', facecolor='white', alpha=0.9, edgecolor=_0BIT_PRUNE_COLOR, linewidth=0.5))
                             if avg_disable > display_limit:
                                 ax.text(current_x + bar_width/2 + 0.5, display_limit * 0.8,
-                                       f"{avg_disable:.2f}", ha='left', va='top', fontsize=8,
+                                       f"{avg_disable:.2f}", ha='left', va='top', fontsize=11,
                                        bbox=dict(boxstyle='square,pad=0.1', facecolor='white', alpha=0.9, edgecolor=DISABLE_0BIT_PRUNE_COLOR, linewidth=0.5))
 
                     current_x += 1
@@ -143,8 +143,8 @@ class ZeroBitPruneAblationVisualizer:
             current_x = 0
             for model in models:
                 for i, bpw in enumerate(bpw_list):
-                    ax.text(current_x, display_limit * (0.95 - i * 0.05),
-                           f"{bpw}", ha='center', va='top', fontsize=8,
+                    ax.text(current_x, display_limit * (0.95 - i * 0.06),
+                           f"{bpw}", ha='center', va='top', fontsize=12,
                            bbox=dict(boxstyle='square,pad=0.1', facecolor='white', alpha=0.8, edgecolor='none'))
                     current_x += 1
                 current_x += model_spacing
@@ -158,7 +158,7 @@ class ZeroBitPruneAblationVisualizer:
             qm_title = "TurboQuant" if quantmode == "turboquant" else "GPTQ"
             ax.set_title(f'{qm_title}', fontweight='bold')
 
-            ax.legend(loc='upper right', bbox_to_anchor=(0.3, 0.60))
+            ax.legend(loc='upper right', bbox_to_anchor=(0.45, 0.75), fontsize=14)
 
             ax.set_ylim(0, display_limit)
 

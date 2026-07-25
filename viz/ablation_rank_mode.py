@@ -49,12 +49,12 @@ class RankModeAblationVisualizer:
         import matplotlib as mpl
         mpl.rcParams.update({
             "font.family": "DejaVu Sans",
-            "font.size": 11,
-            "axes.titlesize": 13,
-            "axes.labelsize": 12,
-            "legend.fontsize": 9,
-            "xtick.labelsize": 10,
-            "ytick.labelsize": 10,
+            "font.size": 20,
+            "axes.titlesize": 17,
+            "axes.labelsize": 16,
+            "legend.fontsize": 16,
+            "xtick.labelsize": 16,
+            "ytick.labelsize": 16,
             "axes.grid": True,
             "grid.alpha": 0.3,
             "figure.dpi": 130,
@@ -76,9 +76,9 @@ class RankModeAblationVisualizer:
 
         fig, ax = plt.subplots(1, 1, figsize=(14, 4.5))
 
-        bar_width = 0.2
+        bar_width = 0.4
         model_spacing = 1.5
-        bpw_spacing = 0.4
+        bpw_spacing = 0.45
         rank_mode_spacing = 0.03
 
         # 设置y轴显示上限
@@ -112,7 +112,7 @@ class RankModeAblationVisualizer:
                         # 如果超过显示上限，在柱子顶部标注实际值
                         if ppl_c4 > display_limit:
                             ax.text(x_pos, display_limit * 0.8,
-                                   f"{ppl_c4:.0f}", ha='center', va='top', fontsize=7,
+                                   f"{ppl_c4:.0f}", ha='center', va='top', fontsize=11,
                                    bbox=dict(boxstyle='square,pad=0.1', facecolor='white', alpha=0.9,
                                              edgecolor=RANK_MODE_COLORS[rank_mode], linewidth=0.5))
 
@@ -146,7 +146,7 @@ class RankModeAblationVisualizer:
             for bpw in bpw_list:
                 group_center = current_x + (len(rank_modes) * (bar_width + rank_mode_spacing)) / 2 - rank_mode_spacing / 2
                 ax.text(group_center, display_limit * 0.96,
-                       f"{bpw}", ha='center', va='top', fontsize=9,
+                       f"{bpw}", ha='center', va='top', fontsize=12,
                        bbox=dict(boxstyle='square,pad=0.1', facecolor='white', alpha=0.8, edgecolor='none'))
                 current_x += len(rank_modes) * (bar_width + rank_mode_spacing) + bpw_spacing
             current_x += model_spacing
@@ -163,7 +163,8 @@ class RankModeAblationVisualizer:
         from matplotlib.patches import Patch
         legend_elements = [Patch(color=RANK_MODE_COLORS[rm], label=RANK_MODE_DISPLAY_NAMES[rm])
                           for rm in rank_modes]
-        ax.legend(handles=legend_elements, loc='upper right', bbox_to_anchor=(0.5, 0.85), ncol=2)
+        leg = ax.legend(handles=legend_elements, loc='upper right', bbox_to_anchor=(0.4, 0.9), ncol=1, fontsize=15)
+        leg.get_frame().set_alpha(0.4)
 
         ax.set_ylim(0, display_limit)
 
@@ -232,7 +233,7 @@ class RankModeAblationVisualizer:
                             # 如果超过显示上限，在柱子顶部标注实际值
                             if ppl_val > display_limit:
                                 ax.text(x_pos, display_limit * 0.8,
-                                       f"{ppl_val:.0f}", ha='center', va='top', fontsize=7,
+                                       f"{ppl_val:.0f}", ha='center', va='top', fontsize=11,
                                        bbox=dict(boxstyle='square,pad=0.1', facecolor='white', alpha=0.9,
                                                  edgecolor=RANK_MODE_COLORS[rank_mode], linewidth=0.5))
 
@@ -265,7 +266,7 @@ class RankModeAblationVisualizer:
                 for bpw in bpw_list:
                     group_center = current_x + (len(rank_modes) * (bar_width + rank_mode_spacing)) / 2 - rank_mode_spacing / 2
                     ax.text(group_center, display_limit * 0.96,
-                           f"{bpw}", ha='center', va='top', fontsize=9,
+                           f"{bpw}", ha='center', va='top', fontsize=12,
                            bbox=dict(boxstyle='square,pad=0.1', facecolor='white', alpha=0.8, edgecolor='none'))
                     current_x += len(rank_modes) * (bar_width + rank_mode_spacing) + bpw_spacing
                 current_x += model_spacing
@@ -284,7 +285,7 @@ class RankModeAblationVisualizer:
         from matplotlib.patches import Patch
         legend_elements = [Patch(color=RANK_MODE_COLORS[rm], label=RANK_MODE_DISPLAY_NAMES[rm])
                           for rm in rank_modes]
-        axes[0].legend(handles=legend_elements, loc='upper right', bbox_to_anchor=(0.28, 0.55), ncol=2)
+        axes[0].legend(handles=legend_elements, loc='upper right', bbox_to_anchor=(0.28, 0.55), ncol=2, fontsize=12)
 
         plt.tight_layout()
 

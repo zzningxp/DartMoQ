@@ -23,9 +23,9 @@ MODEL_SHORT_NAMES = {
 }
 
 MODEL_DISPLAY_NAMES = {
-    "dsv1": "DeepSeek-V1",
-    "dsv2": "DeepSeek-V2",
-    "moon": "Moonlight",
+    "dsv1": "DSk-V1",
+    "dsv2": "DSk-V2",
+    "moon": "Moon",
     "olmoe": "OLMoE",
     "qwen": "Qwen"
 }
@@ -45,12 +45,12 @@ class GlobalAblationVisualizer:
         import matplotlib as mpl
         mpl.rcParams.update({
             "font.family": "DejaVu Sans",
-            "font.size": 11,
-            "axes.titlesize": 13,
-            "axes.labelsize": 12,
-            "legend.fontsize": 9,
-            "xtick.labelsize": 10,
-            "ytick.labelsize": 10,
+            "font.size": 25,
+            "axes.titlesize": 17,
+            "axes.labelsize": 15,
+            "legend.fontsize": 12,
+            "xtick.labelsize": 13,
+            "ytick.labelsize": 13,
             "axes.grid": True,
             "grid.alpha": 0.3,
             "figure.dpi": 130,
@@ -116,11 +116,11 @@ class GlobalAblationVisualizer:
                             # 如果超过显示上限，在柱子顶部标注实际值 - 往左偏移
                             if avg_non > display_limit:
                                 ax.text(current_x - bar_width/2 - 0.5, display_limit * 0.85,
-                                       f"{avg_non:.2f}", ha='right', va='top', fontsize=8,
+                                       f"{avg_non:.2f}", ha='right', va='top', fontsize=11,
                                        bbox=dict(boxstyle='square,pad=0.1', facecolor='white', alpha=0.9, edgecolor=NO_GLOBAL_COLOR, linewidth=0.5))
                             if avg_global > display_limit:
                                 ax.text(current_x + bar_width/2 + 0.5, display_limit * 0.8,
-                                       f"{avg_global:.2f}", ha='left', va='top', fontsize=8,
+                                       f"{avg_global:.2f}", ha='left', va='top', fontsize=11,
                                        bbox=dict(boxstyle='square,pad=0.1', facecolor='white', alpha=0.9, edgecolor=GLOBAL_COLOR, linewidth=0.5))
 
                     current_x += 1
@@ -141,9 +141,12 @@ class GlobalAblationVisualizer:
 
             current_x = 0
             for model in models:
-                for bpw in bpw_list:
-                    ax.text(current_x, display_limit * 0.95,
-                           f"{bpw}", ha='center', va='top', fontsize=9,
+                for bpw_idx, bpw in enumerate(bpw_list):
+                    # 给不同bpw设置不同的y位置，避免重叠
+                    y_offsets = [0.99, 0.96, 0.93]  # 1.0, 1.5, 2.0 分别对应不同高度
+                    y_pos = display_limit * y_offsets[bpw_idx % len(y_offsets)]
+                    ax.text(current_x, y_pos,
+                           f"{bpw}", ha='center', va='top', fontsize=12,
                            bbox=dict(boxstyle='square,pad=0.1', facecolor='white', alpha=0.8, edgecolor='none'))
                     current_x += 1
                 current_x += model_spacing
@@ -157,7 +160,7 @@ class GlobalAblationVisualizer:
             qm_title = "TurboQuant" if quantmode == "turboquant" else "GPTQ"
             ax.set_title(f'{qm_title} (Global + dp+0cps)', fontweight='bold')
 
-            ax.legend(loc='upper right', bbox_to_anchor=(0.21, 0.60))
+            ax.legend(loc='upper left', fontsize=15, bbox_to_anchor=(0.02, 0.60))
 
             ax.set_ylim(0, display_limit)
 

@@ -124,30 +124,35 @@ IPE-TQ means inner product encoding with TurboQuant quantization.
 | Model | Method | WikiText2 | C4 | Avg. | ARC-C(norm) | ARC-E(norm) | PIQA(norm) | BoolQ | Winogrande | MNLI | Hella(norm) | MMLU |
 |-------|--------|-----------|----|-------|----------|---------------|------|-------|------------|-----------|------|-------|
 | DSMoEv1 | Energy-DP | 278.704 | 573.556 | 0.347 | 0.245 | 0.256 | 0.519 | 0.379 | 0.506 | 0.363 | 0.271 | 0.235 |
+| DSMoEv1 | GEMQ | 61548916.0 | 139172736.0 | 0.364 | 0.262 | 0.241 | 0.497 | 0.552 | 0.493 | 0.337 | 0.259 | **0.269** |
 | DSMoEv1 | GPTQ-Origin | 132.710 | 566.143 | - | 0.261 | 0.257 | 0.503 | 0.378 | 0.526 | 0.354 | 0.257 | **0.269** |
 | DSMoEv1 | GPTQ-DP | 10.878 | **18.561** | **0.523** | **0.375** | **0.650** | **0.693** | 0.629 | **0.622** | **0.400** | **0.552** | 0.266 |
 | DSMoEv1 | TQ-Origin | 663.677 | 723.955 | 0.350 | 0.246 | 0.266 | 0.517 | 0.378 | 0.531 | 0.355 | 0.258 | 0.250 |
 | DSMoEv1 | IPE-TQ-DP | **9.962** | 20.576 | 0.521 | 0.374 | 0.677 | 0.661 | **0.691** | 0.617 | **0.400** | 0.497 | 0.253 |
 ||
 | DSv2-Lite | Energy-DP | 37.792 | 51.508 | 0.384 | 0.230 | 0.316 | 0.550 | 0.572 | 0.504 | 0.336 | 0.307 | 0.260 |
+| DSv2-Lite | GEMQ | 36.0004 | 70.7173 | 0.397 | 0.228 | 0.378 | 0.576 | 0.556 | 0.524 | 0.358 | 0.323 | 0.231 |
 | DSv2-Lite | GPTQ-Origin | 142.748 | 210.266 | 0.373 | 0.235 | 0.273 | 0.514 | 0.594 | 0.519 | 0.328 | 0.270 | 0.249 |
 | DSv2-Lite | GPTQ-DP | 59.076 | 100.628 | 0.360 | 0.240 | 0.272 | 0.503 | 0.540 | 0.508 | 0.317 | 0.265 | 0.235 |
 | DSv2-Lite | TQ-Origin | 35.779 | 49.428 | 0.386 | 0.220 | 0.341 | 0.554 | 0.570 | 0.486 | **0.347** | 0.316 | 0.252 |
 | DSv2-Lite | IPE-TQ-DP | **8.833** | **18.258** | **0.524** | **0.369** | **0.670** | **0.671** | 0.489 | **0.579** | 0.388 | **0.502** | 0.358 |
 ||
 | Moonlight | Energy-DP | 249.477 | 333.547 | 0.384 | 0.218 | 0.340 | 0.552 | 0.556 | 0.501 | 0.354 | 0.296 | 0.254 |
+| Moonlight | GEMQ | 33.4555 | 67.9376 | 0.442 | 0.272 | 0.476 | 0.607 | **0.638** | **0.558** | 0.352 | 0.387 | 0.247 |
 | Moonlight | GPTQ-Origin | 354.383 | 569.412 | 0.363 | 0.238 | 0.308 | 0.532 | 0.453 | 0.499 | 0.344 | 0.282 | 0.251 |
 | Moonlight | GPTQ-DP | 57.326 | 132.215 | 0.385 | 0.224 | 0.333 | 0.548 | 0.546 | 0.497 | **0.360** | 0.314 | 0.255 |
 | Moonlight | TQ-Origin | 222.648 | 260.441 | 0.383 | 0.225 | 0.327 | 0.549 | 0.556 | 0.500 | 0.348 | 0.300 | 0.261 |
 | Moonlight | IPE-TQ-DP | **14.871** | **36.872** | **0.480** | **0.325** | **0.608** | **0.634** | **0.638** | **0.550** | 0.335 | **0.452** | **0.296** |
 ||
 | OLMoE | Energy-DP | 16753.113 | 8156.675 | 0.374 | 0.264 | 0.292 | 0.521 | 0.565 | 0.504 | 0.319 | 0.262 | 0.263 |
+| OLMoE | GEMQ | 193.1963 | 675.8967 | 0.376 | 0.218 | 0.362 | 0.565 | 0.490 | 0.510 | 0.331 | 0.280 | 0.253 |
 | OLMoE | GPTQ-Origin | 33766.746 | 18911.664 | 0.355 | 0.250 | 0.274 | 0.516 | 0.467 | 0.496 | 0.321 | 0.263 | 0.251 |
 | OLMoE | GPTQ-DP | 162.274 | 302.431 | 0.385 | 0.216 | 0.335 | 0.536 | 0.590 | 0.523 | **0.348** | 0.298 | 0.236 |
 | OLMoE | TQ-Origin | 16508.109 | 8896.238 | 0.365 | 0.249 | 0.282 | 0.522 | 0.538 | 0.506 | 0.321 | 0.260 | 0.243 |
 | OLMoE | IPE-TQ-DP | **22.588** | **42.137** | **0.478** | **0.341** | **0.567** | **0.631** | **0.617** | **0.580** | 0.373 | **0.427** | **0.285** |
 ||
 | Qwen3 | Energy-DP | 1886.718 | 1422.791 | 0.355 | 0.230 | 0.303 | 0.527 | 0.417 | 0.513 | 0.336 | 0.268 | 0.243 |
+| Qwen3 | GEMQ | 179.9578 | 221.5939 | 0.379 | 0.232 | 0.296 | 0.558 | 0.542 | 0.497 | 0.353 | 0.320 | 0.231 |
 | Qwen3 | GPTQ-Origin | 4221.860 | 4872.952 | 0.350 | 0.261 | 0.257 | 0.503 | 0.378 | 0.526 | 0.354 | 0.257 | 0.269 |
 | Qwen3 | GPTQ-DP | 982.384 | 1798.248 | 0.360 | 0.239 | 0.276 | 0.527 | 0.444 | 0.538 | 0.339 | 0.278 | 0.236 |
 | Qwen3 | TQ-Origin | 1514.075 | 1284.209 | 0.359 | 0.246 | 0.283 | 0.516 | 0.455 | 0.500 | 0.335 | 0.284 | 0.252 |
@@ -158,22 +163,27 @@ IPE-TQ means inner product encoding with TurboQuant quantization.
 | Model | Method | WikiText2 | C4 | Avg. | ARC-C(norm) | ARC-E(norm) | PIQA(norm) | BoolQ | Winogrande | MNLI | Hella(norm) | MMLU |
 |-------|--------|-----------|----|-------|----------|---------------|------|-------|------------|-----------|------|-------|
 | DSMoEv1 | Energy-DP | 9.556 | 15.567 | 0.559 | 0.402 | 0.687 | 0.696 | 0.715 | 0.681 | 0.413 | 0.613 | 0.267 |
+| DSMoEv1 | GEMQ | 10.2447 | 19.9957 | 0.484 | 0.312 | 0.545 | 0.686 | 0.642 | 0.600 | 0.356 | 0.496 | 0.238 |
 | DSMoEv1 | GPTQ-DP | 8.735 | **13.669** | 0.566 | 0.404 | 0.687 | **0.739** | 0.618 | 0.680 | **0.427** | **0.660** | **0.314** |
 | DSMoEv1 | IPE-TQ-DP | **8.022** | 13.774 | **0.587** | **0.442** | **0.746** | 0.735 | **0.731** | 0.680 | 0.403 | 0.643 | **0.314** |
 ||
 | DSv2-Lite | Energy-DP | 8.982 | 14.218 | 0.600 | 0.439 | 0.721 | 0.715 | 0.772 | 0.640 | 0.442 | 0.638 | 0.433 |
+| DSv2-Lite | GEMQ | 13.3481 | 31.3275 | 0.451 | 0.261 | 0.499 | 0.652 | 0.640 | 0.560 | 0.356 | 0.410 | 0.232 |
 | DSv2-Lite | GPTQ-DP | 11.119 | 19.646 | 0.485 | 0.339 | 0.605 | 0.636 | 0.585 | 0.562 | 0.375 | 0.495 | 0.281 |
 | DSv2-Lite | IPE-TQ-DP | **7.323** | **12.610** | **0.614** | **0.475** | **0.767** | 0.729 | 0.724 | **0.656** | **0.464** | **0.657** | **0.439** |
 ||
 | Moonlight | Energy-DP | 17.359 | 31.791 | 0.518 | 0.358 | 0.640 | 0.675 | 0.672 | 0.569 | 0.379 | 0.507 | 0.341 |
+| Moonlight | GEMQ | 21.4028 | 55.0761 | 0.448 | 0.291 | 0.495 | 0.641 | 0.561 | 0.551 | 0.356 | 0.437 | 0.256 |
 | Moonlight | GPTQ-DP | 19.319 | 46.681 | 0.449 | 0.277 | 0.488 | 0.605 | 0.636 | 0.546 | 0.323 | 0.428 | 0.289 |
 | Moonlight | IPE-TQ-DP | **9.989** | **23.267** | **0.553** | **0.427** | **0.714** | **0.713** | 0.650 | **0.568** | **0.351** | **0.579** | **0.425** |
 ||
 | OLMoE | Energy-DP | 33.461 | 46.650 | 0.517 | 0.375 | 0.611 | 0.683 | 0.654 | 0.586 | 0.400 | 0.541 | 0.287 |
+| OLMoE | GEMQ | 16.7599 | 31.7759 | 0.463 | 0.300 | 0.519 | 0.651 | 0.640 | 0.539 | 0.356 | 0.430 | 0.268 |
 | OLMoE | GPTQ-DP | 23.587 | 35.777 | 0.463 | 0.289 | 0.500 | 0.607 | 0.608 | 0.552 | 0.409 | 0.466 | 0.277 |
 | OLMoE | IPE-TQ-DP | **15.104** | **22.778** | **0.575** | **0.437** | **0.692** | **0.706** | **0.694** | **0.664** | **0.435** | **0.593** | **0.380** |
 ||
 | Qwen3 | Energy-DP | 12.143 | 19.126 | 0.675 | 0.563 | 0.807 | 0.733 | 0.851 | 0.677 | **0.660** | 0.480 | 0.626 |
+| Qwen3 | GEMQ | **10.9057** | 19.4970 | 0.558 | 0.393 | 0.554 | 0.693 | 0.763 | 0.624 | 0.413 | 0.567 | 0.454 |
 | Qwen3 | GPTQ-DP | 16.931 | 26.856 | 0.490 | 0.279 | 0.439 | 0.661 | 0.695 | 0.625 | 0.404 | 0.526 | 0.293 |
 | Qwen3 | IPE-TQ-DP | **13.787** | **20.877** | **0.705** | **0.577** | **0.817** | **0.752** | 0.847 | **0.698** | 0.697 | **0.602** | **0.649** |
 
@@ -185,6 +195,7 @@ IPE-TQ means inner product encoding with TurboQuant quantization.
 | DSMoEv1 | GPTQ-Origin | 8.617 | 12.911 | 0.583 | 0.427 | 0.722 | 0.755 | 0.666 | 0.695 | 0.355 | 0.720 | 0.324 |
 | DSMoEv1 | GPTQ+Camera | 8.272 | 12.695 | 0.592 | 0.433 | 0.722 | 0.752 | 0.688 | 0.679 | 0.414 | 0.700 | 0.347 |
 | DSMoEv1 | TQ+Camera | 7.978 | 11.792 | 0.615 | 0.464 | 0.742 | 0.751 | 0.774 | 0.693 | **0.452** | 0.690 | 0.352 |
+| DSMoEv1 | GEMQ | 7.2247 | 11.9649 | 0.567 | 0.399 | 0.679 | 0.764 | 0.724 | 0.664 | 0.361 | 0.665 | 0.278 |
 | DSMoEv1 | Energy-DP | 7.804 | 11.856 | 0.624 | 0.464 | 0.750 | 0.763 | 0.764 | 0.712 | 0.450 | **0.729** | 0.358 |
 | DSMoEv1 | GPTQ-DP | 7.994 | 12.304 | 0.603 | 0.437 | 0.747 | **0.779** | 0.666 | 0.702 | 0.415 | 0.728 | 0.355 |
 | DSMoEv1 | IPE-TQ-DP | **7.214** | **11.302** | **0.627** | **0.480** | **0.775** | 0.777 | 0.754 | 0.709 | 0.434 | 0.716 | **0.374** |
@@ -193,6 +204,7 @@ IPE-TQ means inner product encoding with TurboQuant quantization.
 | DSv2-Lite | GPTQ-Origin | 8.884 | 13.530 | 0.579 | 0.412 | 0.708 | 0.744 | 0.672 | 0.607 | 0.407 | 0.690 | 0.398 |
 | DSv2-Lite | GPTQ+Camera | 8.423 | 13.084 | 0.603 | 0.456 | 0.743 | 0.738 | 0.660 | 0.684 | 0.413 | 0.690 | 0.432 |
 | DSv2-Lite | TQ+Camera | 7.396 | 10.952 | 0.656 | 0.487 | 0.781 | 0.770 | 0.785 | 0.725 | 0.469 | 0.730 | 0.504 |
+| DSv2-Lite | GEMQ | 8.4658 | 14.8211 | 0.545 | 0.380 | 0.637 | 0.744 | 0.650 | 0.613 | 0.371 | 0.605 | 0.356 |
 | DSv2-Lite | Energy-DP | 7.350 | 11.267 | 0.665 | 0.504 | 0.790 | 0.774 | **0.797** | 0.707 | 0.502 | **0.742** | 0.503 |
 | DSv2-Lite | GPTQ-DP | 8.106 | 12.583 | 0.608 | 0.448 | 0.757 | 0.750 | 0.692 | 0.658 | 0.404 | 0.698 | 0.456 |
 | DSv2-Lite | IPE-TQ-DP | **6.778** | **10.691** | **0.667** | **0.516** | **0.806** | 0.780 | 0.781 | 0.694 | **0.514** | 0.732 | **0.516** |
@@ -201,6 +213,7 @@ IPE-TQ means inner product encoding with TurboQuant quantization.
 | Moonlight | GPTQ-Origin | 14.142 | 31.466 | 0.473 | 0.342 | 0.598 | 0.622 | 0.546 | 0.549 | 0.366 | 0.487 | 0.271 |
 | Moonlight | GPTQ+Camera | 11.292 | 26.927 | 0.486 | 0.374 | 0.642 | 0.639 | 0.518 | 0.568 | 0.365 | 0.499 | 0.286 |
 | Moonlight | TQ+Camera | 11.606 | 20.794 | 0.615 | 0.475 | **0.757** | 0.737 | 0.738 | 0.594 | 0.425 | 0.630 | 0.565 |
+| Moonlight | GEMQ | 10.6320 | 31.6802 | 0.511 | 0.365 | 0.591 | 0.674 | 0.675 | 0.575 | 0.370 | 0.514 | 0.328 |
 | Moonlight | Energy-DP | 10.357 | 20.762 | 0.607 | 0.468 | 0.747 | 0.733 | 0.734 | 0.594 | 0.428 | 0.628 | 0.526 |
 | Moonlight | GPTQ-DP | 10.173 | 24.141 | 0.524 | 0.381 | 0.654 | 0.660 | 0.644 | 0.542 | 0.394 | 0.530 | 0.385 |
 | Moonlight | IPE-TQ-DP | **8.022** | **16.589** | **0.620** | **0.514** | 0.784 | 0.735 | 0.678 | **0.624** | **0.439** | **0.651** | **0.532** |
@@ -209,6 +222,7 @@ IPE-TQ means inner product encoding with TurboQuant quantization.
 | OLMoE | GPTQ-Origin | 20.790 | 29.033 | 0.529 | 0.377 | 0.612 | 0.681 | 0.628 | 0.571 | 0.421 | 0.607 | 0.336 |
 | OLMoE | GPTQ+Camera | 18.450 | 26.905 | 0.544 | 0.388 | 0.616 | 0.685 | 0.661 | 0.578 | 0.445 | 0.613 | 0.367 |
 | OLMoE | TQ+Camera | 14.726 | 18.834 | 0.637 | 0.493 | 0.741 | 0.761 | 0.755 | 0.681 | 0.471 | 0.717 | 0.480 |
+| OLMoE | GEMQ | **10.4969** | 17.2260 | 0.521 | 0.364 | 0.628 | 0.721 | 0.644 | 0.592 | 0.356 | 0.591 | 0.273 |
 | OLMoE | Energy-DP | 17.284 | 22.748 | 0.613 | 0.468 | 0.734 | 0.721 | 0.748 | 0.648 | 0.496 | 0.682 | 0.410 |
 | OLMoE | GPTQ-DP | 15.547 | 22.333 | 0.558 | 0.409 | 0.646 | 0.687 | 0.681 | 0.613 | 0.427 | 0.620 | 0.383 |
 | OLMoE | IPE-TQ-DP | **12.202** | **17.190** | **0.634** | **0.497** | 0.748 | 0.762 | 0.737 | 0.667 | **0.515** | 0.700 | **0.448** |
@@ -217,6 +231,7 @@ IPE-TQ means inner product encoding with TurboQuant quantization.
 | Qwen3 | GPTQ-Origin | 13.045 | 19.989 | 0.555 | 0.373 | 0.612 | 0.709 | 0.741 | 0.628 | 0.453 | 0.630 | 0.293 |
 | Qwen3 | GPTQ+Camera | 11.685 | 18.581 | 0.553 | 0.387 | 0.633 | 0.729 | 0.679 | 0.665 | 0.385 | 0.670 | 0.278 |
 | Qwen3 | TQ+Camera | 10.933 | 15.288 | 0.746 | 0.619 | 0.845 | 0.783 | 0.872 | 0.696 | 0.723 | 0.690 | 0.736 |
+| Qwen3 | GEMQ | **9.4993** | **14.0397** | 0.638 | 0.455 | 0.661 | 0.777 | 0.866 | 0.683 | 0.328 | 0.712 | 0.620 |
 | Qwen3 | Energy-DP | **10.330** | **14.974** | 0.746 | **0.660** | **0.862** | **0.798** | **0.883** | 0.700 | **0.788** | 0.537 | 0.742 |
 | Qwen3 | GPTQ-DP | 11.644 | 18.151 | 0.635 | 0.471 | 0.729 | 0.737 | 0.820 | 0.680 | 0.578 | 0.677 | 0.387 |
 | Qwen3 | IPE-TQ-DP | 10.882 | 15.509 | **0.757** | 0.638 | 0.855 | 0.789 | 0.880 | **0.698** | 0.763 | **0.698** | **0.737** |
@@ -641,19 +656,114 @@ See `run.sh` for examples of sweeping across bpw values from 0.5 to 4.0.
 
 DartMoQP includes visualization modules in the `viz/` directory:
 
-```bash
-# Headroom analysis
-python -m viz.headroom
+### Motivation & Headroom Panels
 
-# Metric geometry analysis
+| File | Purpose | Paper Section |
+|------|---------|---------------|
+| `headroom.py` | Motivation panels showing untapped headroom | §1 Introduction / §3.1 Preliminary |
+| | AM/GM ratio, top-10% loss share, activation vs sensitivity scatter, layer-expert-neuron comparison | |
+| `budget_transfer.py` | Budget transfer visualization: reallocate bits from low to high sensitivity neurons | Motivation |
+| `diagnose_bucket.py` | Quick diagnostic: LDI bound vs DP curve | Debugging |
+| `dump_activation_rates.py` | One-time dumper for per-layer expert activation rates | Required by `headroom.py` |
+
+### Sensitivity Geometry (Challenge 1)
+
+| File | Purpose | Paper Section |
+|------|---------|---------------|
+| `metric_geometry.py` | G.1-G.4: Sensitivity geometry exploration | §4.1 Challenge 1 |
+| | 3-metric CDF (GPTQ-MSE vs TQ-MSE vs TQ-IP) | |
+| | Synthetic rotation energy-flattening demo | |
+| | Spearman rank agreement matrix | |
+| | Metric validity vs zero-out loss | |
+| `mse_vs_ipe_sensitivity.py` | Standalone experiment: MSE vs IPE sensitivity distinction | Analysis |
+| `neuron_rates_sorted_order_across_bit.py` | How neuron loss order changes across bits when sorted by reference bit | Analysis |
+| `rank_correlation.py` | Rank correlation across bit widths | Analysis |
+| `oscar_together_diagonal_dominance.py` | Verify diagonal dominance after rotation+quantization | Analysis |
+| `high_sensitivity_analysis.py` | High-sensitivity neuron hypothesis validation | Analysis |
+
+### Log-Quad Fit & 0bit Extrapolation (Challenge 2)
+
+| File | Purpose | Paper Section |
+|------|---------|---------------|
+| `bit_loss_fit.py` | 0bit loss extrapolation & validation (log-quadratic fit) | §4.2 Challenge 2 |
+| | Compute R² for fit quality | |
+| | Plot lowest R² neurons with fit curves | |
+| | Multi-model R² summary visualization | |
+| `overlap_distribution.py` | Observation 2 (quantizer distribution differences) & Observation 3 (log-quadratic fit quality) | Analysis |
+| | GPTQ vs TurboQuant loss overlap with Gini coefficients | |
+| | Per-block log-loss quadratic fit visualization | |
+| `validate_extrapolation.py` | Validate 0bit loss extrapolation against true pruned loss | Analysis |
+| | Compute true 0bit loss by zeroing neurons | |
+| | Extrapolated vs true scatter plot (log scale) | |
+| | Spearman correlation & MAE reporting | |
+
+### Seed Stability Analysis
+
+| File | Purpose | Paper Section |
+|------|---------|---------------|
+| `seed_stability.py` | S.1-S.5: TurboQuant seed stability after DartMoQ slicing | Analysis |
+| | Seed sweep: error variance across QR seeds | |
+| | Good/bad: per-neuron error placement for best/worst seeds | |
+| | Alignment: error-sensitivity scatter | |
+| | Homogeneity: within-slice sensitivity dispersion | |
+| | Aggregate: across-target summary (CV, max/min, gap) | |
+| `seed_influence_ppl_boxplot.py` | PPL boxplot visualization across quantization methods and seeds | Analysis |
+| `mp_seed_stability.py` | Multi-scheme seed stability with IPE metric | Analysis |
+
+### Expert & Micro-Expert Analysis
+
+| File | Purpose | Key Features |
+|------|---------|--------------|
+| `expert_cosine.py` | Cosine similarity after high-sensitivity neuron protection | Two strategies, seed sweep, caching |
+| `stat_micro_expert_dist.py` | Micro-expert distribution statistics (Gini, entropy, top-K%) | Per-expert/layer/depth analysis, CSV export |
+| `micro_expert_rank_boxplot.py` | DP score views (5+ visualization types) | Raw slice error, DP bit loss, ordering score, final allocation |
+
+### Ablation & Case Study Visualizations
+
+| File | Purpose |
+|------|---------|
+| `ablation_disable_0bit_prune.py` | Compare 0bit pruning vs disabled pruning |
+| `ablation_global_ablation_plots.py` | Global vs non-global ablation visualization |
+| `ablation_rank_mode.py` | Different rank modes comparison (MSE vs IPE) |
+| `ablation_slices_num.py` | BPW & slice count ablation visualization |
+| `allocation_case_study.py` | 3 allocation strategies comparison: Expert-fixed, Global-fixed, Global-BPW DP |
+
+### `dp_score_tests/` Subdirectory
+
+| Exp | File | Purpose |
+|------|------|---------|
+| Exp.4 | `plot_exp4_assigned_loss_vs_uniform.py` | Plot final assigned loss by expert, with uniform baseline |
+| Exp.5 | `plot_exp5_assigned_loss_by_order.py` | Check final assigned loss along DP sorted order |
+
+### Usage Pattern
+
+All modules follow this pattern:
+```bash
+python -m viz.<module_name> --model <model_id_or_path> [--skip <panels>]
+```
+
+Examples:
+```bash
+# R² analysis for log-quadratic fit (Challenge 2)
+conda run -n cmoe311 python -m viz.bit_loss_fit --analyze-r2 --models deepseek-v1-moe-16b qwen3-30b-a3b
+
+# Seed stability analysis (S.1-S.5)
+python -m viz.seed_stability --model deepseek-v1-moe-16b
+
+# Metric geometry exploration (G.1-G.4)
 python -m viz.metric_geometry
 
-# Loss distribution plots
-python -m viz.distribution
-
-# Activation rate analysis
-python -m viz.dump_activation_rates
+# Motivation panels (AM/GM, top10ratio, etc.)
+python -m viz.headroom
 ```
+
+### Cache Dependencies
+
+The visualization pipeline relies entirely on cached sensitivity data:
+- `intermediate_result/quant_outlier_{quantmode}/{rank_mode}/{model_id}/` - per-bit sensitivity
+- `intermediate_result/expert_activate/{model_id}/` - expert activation rates (optional)
+
+
 
 ## Log Parser
 
@@ -672,8 +782,6 @@ python logs_parser.py --format json slurm-*.out
 # Markdown table output (writes to <logfile>.md)
 python logs_parser.py --format md slurm-*.out
 
-# Only include complete runs (filter out failed/partial)
-python logs_parser.py --complete-only slurm-*.out
 ```
 
 The parser extracts:
@@ -711,6 +819,7 @@ This project is released under the same license as the base models it quantizes.
 - GPTQ for the per-row quantization baseline
 - TurboQuant for the vector quantization approach
 - CAMERA (http://arxiv.org/abs/2508.02322) for energy-based importance estimation (for comparison only)
+- GEMQ (https://arxiv.org/pdf/2605.23078, ICML 2026) for the per-row quantization baseline
 - ExLlamaV3 (https://github.com/turboderp-org/exllamav3)
 - All the MoE model authors for their open-source contributions
 
