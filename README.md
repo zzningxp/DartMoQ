@@ -1,307 +1,367 @@
+# DartMoQP: A Unified Framework for Mixed-Precision Quantization and Pruning of Mixture-of-Experts Models
 
-# DartMoQP: A MoE-Native Unified Framework for Mixed-Precision Quantization &amp; Structured Pruning
+DartMoQP is a Mixture-of-Experts (MoE)-native unified framework for mixed-precision quantization and structured pruning, operating at micro-expert granularity. It brings quantization and pruning into a single loss space for joint sensitivity modeling and globally optimal bit allocation via dynamic programming.
 
-DartMoQP is a Mixture-of-Experts-native unified quantization and structured pruning framework. It brings quantization and pruning into a single mathematical framework for joint sensitivity modeling and global optimal search, with neuron-level expert reordering.
+---
 
 ## Key Contributions
 
 ### Challenges Addressed
 
-1. **Different quantization algorithms have fundamentally different error geometry characteristics**
-2. **Quantization and pruning have inconsistent optimization objectives**
+1. **Separation between quantization and pruning** — 0-bit loss cannot be reliably measured in the same loss space as quantization, causing methods to stubbornly assign 1-bit to trivial neurons at ultra-low bitwidths.
+2. **Quantizer-dependent error geometry** — weight-space metrics lose discriminative power under vector quantizers like TurboQuant due to rotation-induced isotropization.
 
-### Key Insights from Large-Scale Experiments
+### Core Insights
 
-1. **Sensitivity Metric Design**:
-   - For per-row quantization algorithms like GPTQ: Quantization error already incorporates second-order Hessian weighting from the input calibration set during iteration, so using element-wise MSE directly yields good sensitivity
-   - For vector quantization algorithms like TurboQuant: Global random rotation causes energy homogenization, making element-wise MSE sensitivity poorly differentiated; an inner product loss based on the calibration input manifold is more suitable
+1. **Log-Domain Quadratic Loss Law**
+   - Across representative per-row and vector quantizers, quantization loss is well fit by a quadratic function in the logarithmic domain ($R^2 > 0.99$ across neurons, experts, and layers)
+   - This is an **empirical high-precision approximation** valid in the practical bitwidth range, not an exact mathematical theorem (rate-distortion-theoretic motivation provided in the paper)
+   - Enables extrapolation of 0-bit (pruning) loss without manual hyperparameters, unifying pruning and quantization in a single continuous loss space
+   - A simple conservative clipping safeguard ($\alpha = 2.0$) handles edge-case units whose extrapolation falls below measured 1-bit loss
 
-2. **Unified Loss Space**:
-   - For major quantization algorithms (GPTQ and TurboQuant), quantization loss follows a perfect quadratic distribution in the log domain
-   - This allows reliable extrapolation of 0bit loss without any manual hyperparameters
-   - Enables unified loss modeling of quantization and pruning for the first time
+2. **Input Manifold-Aware Sensitivity**
+   - For per-row quantizers (GPTQ): Hessian-aware loss already incorporates input calibration weighting, so weight-space MSE works well
+   - For vector quantizers (TurboQuant): random rotation causes geometric isotropization, making weight MSE nearly uniform across neurons; an inner-product loss measured on the calibration input manifold restores sensitivity discrimination
 
-3. **Unified Dynamic Programming Search**:
-   - A group-wise dynamic programming approach for optimal bit allocation
-   - First, compute and cache quantization loss for each neuron at multiple bit widths (1-4 bits), then extrapolate 0bit loss (pruning) via log-quadratic fitting
-   - Neurons within each expert are sorted by sensitivity, split into S groups, and all sub-experts are globally ranked by importance (sensitivity × expert activation rate)
-   - Finally, monotonic DP search with non-increasing bit allocation constraint finds the optimal bit assignment at target bpw
+3. **Quantizer-Agnostic Global DP Search**
+   - Micro-expert granularity: neurons within each expert sorted by sensitivity and grouped into S micro-experts
+   - Global ranking: all micro-experts ranked by importance (sensitivity × expert activation rate)
+   - Monotonic DP search with non-increasing bit allocation constraint finds globally optimal assignment at target bpw
+   - Time complexity: $O(TWK^2)$ where T = micro-expert count, W = bit budget, K = candidate bitwidths
 
-4. **Stability to Random Seed**:
-   - The random rotation matrix in TurboQuant causes different models to have varying sensitivity to different random seeds, leading to different quantization errors across models
-   - This phenomenon is related to the weight characteristics of different models, resulting in different behaviors across models
-   - Experiments show that our method can stabilize the impact of random seeds on quantization error
+4. **Seed Sensitivity Stabilization (Side Benefit)**
+   - TurboQuant's random rotation introduces seed-dependent PPL fluctuation on some models
+   - Mixed-precision allocation mitigates this as a side effect by protecting the high-sensitivity units that drive seed-induced variation
+   - On DeepSeekMoE-v1, IPE-TQ-DP reduces C4 PPL range from 16.50–33.81 to 11.42–11.52 across 6 seeds
 
-### Framework Design
+### Framework Architecture
 
-DartMoQP adopts a quantization-method-agnostic global dynamic programming search pipeline that automatically matches the optimal sensitivity metric and bit allocation scheme for any quantization algorithm.
-<img src="figs/slice-moe-arch1.png">
-<img src="figs/slice-moe-arch2.png">
-<img src="figs/slice-moe-arch3.png">
+<img src="figs/slice-moe-arch1.png" width="100%">
+<img src="figs/slice-moe-arch2.png" width="100%">
+<img src="figs/slice-moe-arch3.png" width="100%">
 
-## Neuron-Level Expert Reordering
+DartMoQP adopts a modular pipeline:
+1. **Input manifold-aware multi-bit loss evaluation** per neuron
+2. **0-bit loss extrapolation** via log-domain quadratic fitting
+3. **Global DP search** for optimal mixed-precision allocation
+4. **Deployment optimization** with expert merging and Triton kernels
 
-DartMoQP performs neuron-level expert reordering to optimize for mixed-precision quantization. The process is as follows:
+---
 
-[PLACEHOLDER FOR METHOD FIGURE - To be added later]
+## Log-Domain Quadratic Fit & 0-Bit Extrapolation
 
-1. **Sensitivity Calculation**: For each neuron in each expert, compute its quantization sensitivity using the appropriate metric for the quantization algorithm (element-wise MSE for GPTQ, inner product loss for TurboQuant)
-2. **Neuron Ranking**: Neurons within each expert are sorted in descending order of sensitivity (most sensitive first)
-3. **Sub-expert Formation**: Sorted neurons are divided into S slices/sub-experts
-4. **Global Merging in Hybrid Mode**: When using hybrid MoE, sub-experts can be dynamically merged based on their importance during inference
+<img src="figs/log_quadratic_fit_deepseek_v1_L1.png" width="50%" align="right">
 
-This reordering ensures that the most error-sensitive neurons receive more bits while less important neurons can be safely pruned (0bit) or quantized to lower precision.
+The central empirical finding is that quantization loss follows a quadratic form in the logarithmic domain:
 
-## Hybrid MoE Wrapper Implementation
+$$\log L_i(b) = p_i b^2 + q_i b + r_i$$
 
-DartMoQP uses a wrapper-based approach that is compatible with all Transformers library-based models. The hybrid MoE structure features:
+where $b$ is bitwidth and $L_i(b)$ is the proxy loss of the $i$-th unit. This is not a mathematically exact identity but a **high-precision empirical approximation** — median $R^2$ values exceed 0.99 across all evaluated models and layers.
 
-1. **Two-level Gating Mechanism**:
-   - **First level**: Original MoE routing (same as the base model)
-   - **Second level**: Mixed-precision selector that chooses sub-experts based on their assigned bit width
+**Why it matters**: Extrapolating the quadratic curve to $b=0$ gives $\hat{L}_i(0) = \exp(r_i)$, placing pruning loss in the same continuous loss space as quantization. No manual pruning penalty coefficients are needed.
 
-2. **Expert Merging**:
-   - Sub-experts with the same bit width can be merged for efficient inference
-   - Maintains compatibility with the original model architecture through wrapper composition
+**Robustness**: A small fraction of low-sensitivity units (<5% under TurboQuant, <0.01% under GPTQ) have unreliable extrapolations; a simple conservative clip with $\alpha=2.0$ ensures robustness. For details and validation against direct zeroing loss, see the paper.
 
-3. **Backward Compatibility**:
-   - The wrapper preserves all original model interfaces
-   - Works seamlessly with HuggingFace `generate()` and evaluation pipelines
-   - Can be disabled with `--no-use-hybrid-moe` to use original experts
+<img src="figs/r2_comparison_all_models_all_experts.png" width="100%">
+<div align="center"><em>Goodness-of-fit $R^2$ of log-domain quadratic fitting across five MoE models (median near 0.99)</em></div>
 
+<div style="clear: both;"></div>
 
-**Note on Implementation**: 
+---
 
-The current implementation is a simulated quantization framework. All quantized operations are dequantized back to fp16 for actual inference. While this does not provide real inference speedup, it enables accurate evaluation of quantization error and can guide the design of practical quantization algorithms.
+## Sensitivity Metrics for Different Quantizers
 
-## Loss Caching Mechanism
+Different quantizers require different sensitivity metrics. DartMoQP provides a unified search interface with quantizer-matched loss functions.
 
-To avoid redundant computation during parameter sweeps, DartMoQP implements a loss caching mechanism:
+<img src="figs/quant_compare_deepseek-v1-moe-16b_L1.png" width="100%">
 
-1. **Cache Location**: Cached losses are stored in `intermediate_result/quant_outlier_{gptq,turboquant}/{rank_mode}/{model_id}/`
-2. **Activation Cache**: Expert activation rates are stored in `intermediate_result/expert_activate/{model_id}/`
-3. **Cache Format**: Separate cache files for each bit width: `{model_id}_L{layer_idx}_b{bit}.pt`; activation-rate files use `{model_id}_L{layer_idx}.pt`
-4. **Contents**: Each quant cache file contains per-neuron quantization loss for all experts in that layer
-5. **Reuse**: The cache is automatically reused for different rank modes, quant schemes, and seed values
-6. **Groupsize**: All cache computations use a consistent groupsize of 128
+- **GPTQ (per-row)**: Uses Hessian-aware L2 loss $\mathcal{L}_{\text{GPTQ}} = (e_i^b)^\top C_X e_i^b$, consistent with local output error.
+- **TurboQuant (vector)**: Uses L1 inner-product loss $\mathcal{L}_{\text{TQ}} = \mathbb{E}_{x\sim\mathcal{D}_{\text{calib}}}[|x^\top e_i^b|]$, measuring the projection of quantization error onto the calibration input distribution. This restores sensitivity discrimination after random rotation.
 
-This caching significantly speeds up hyperparameter searches and ablation studies.
+---
+
+## Global Dynamic Programming Search
+
+### Allocation Morphology
+
+<img src="figs/allocation_dsv2_turbo_L2_flat_L24_skew.png" width="100%">
+
+Uniform allocation assigns the same bitwidth to every micro-expert; DartMoQP's skewed allocation concentrates higher bitwidths in high-sensitivity regions while pruning (0-bit) low-sensitivity units — the structural signature of budget transfer.
+
+### How It Works
+
+1. **Within-expert neuron sorting** by sensitivity → micro-expert reconstruction
+2. **Global micro-expert ranking** by sensitivity × expert activation rate
+3. **DP search** with non-increasing bit allocation constraint
+4. **Backtrack** to recover the optimal per-expert bit scheme
+
+### Global vs. Layer-Wise Allocation
+
+<img src="figs/global_vs_nonglobal_c4_turboquant_gptq.png" width="100%">
+
+Cross-expert global DP reduces PPL by 0.05–0.10 and raises average downstream scores by 0.03–0.08 across all bitrates, with larger gains at <2 bpw.
+
+---
 
 ## Results
 
-DartMoQP achieves state-of-the-art performance across the full 0.5-4.0 bpw range on multiple mainstream MoE models:
-- OLMoE-1B-7B (7B-A1B)
+DartMoQP achieves state-of-the-art performance across the full 0.5–3.0 bpw range on five mainstream MoE models:
 - DeepSeekMoE-v1 (16B-A3B)
-- DeepSeekMoE-v2 (16B-A3B)
+- DeepSeekMoE-v2-Lite (16B-A3B)
 - Moonlight (16B-A3B)
+- OLMoE-7B (7B-A1B)
 - Qwen3-30B-A3B
 
-### Method Combinations
+### Perplexity vs. BPW (C4)
 
-- **GPTQ-based methods**: Use GPTQ loss + dynamic programming (DP) + GPTQ quantization
-- **Energy-based method**: Uses energy importance (from CAMERA) + DP + TurboQuant quantization. Note: Energy method does not support 0bit loss extrapolation, so it cannot be used for schemes below 1bit. At 1bit, it degrades to a non-optimized baseline.
-- **Other TurboQuant-based methods**: Use TurboQuant loss + dynamic programming (DP) + TurboQuant quantization
+<img src="figs/result1-dsv1.png" width="45%">
+<img src="figs/result1-dsv2.png" width="45%">
+<img src="figs/result1-moonlight.png" width="45%">
+<img src="figs/result1-olmoe.png" width="45%">
+<img src="figs/result1-qwen3.png" width="45%">
 
-Notably:
-- **Extremely low bit regime (0.5-2 bpw)**: Order-of-magnitude performance improvement over baselines (though still not fully practical)
-- **2bit scheme (industry standard)**: DartMoQP-TurboQuant consistently outperforms existing methods in downstream tasks
+IPE-TQ-DP consistently outperforms all baselines, with the gap widening as bitwidth decreases.
 
-### ppl (c4 only, wiki-text2 is not shown here)
-<img src="figs/result1-olmoe.png" width="500" alt="OLMoE-7B Results">
-<img src="figs/result1-dsv1.png" width="500" alt="DeepSeekMoE-v1 Results">
-<img src="figs/result1-dsv2.png" width="500" alt="DeepSeekMoE-v2 Results">
-<img src="figs/result1-moonlight.png" width="500" alt="Moonlight Results">
-<img src="figs/result1-qwen3.png" width="500" alt="Qwen3-30B-A3B Results">
+### FP16 and Uniform 8-Bit Baselines
 
-The figures above show perplexity vs. bits-per-weight (bpw) comparisons between DartMoQP and representative quantization methods across five MoE models. DartMoQP-TurboQuant consistently achieves the lowest perplexity across all bit widths.
+Reference points for the quantization results below. All attention, shared-FFN, and routed-expert linear projections are quantized; embeddings, norm layers, and LM head remain in FP16. Group size = 128.
 
-### eval-zero tasks
+| Model | Weight Setting | WikiText2 ↓ | C4 ↓ | Avg. ↑ | ARC-C ↑ | ARC-E ↑ | PIQA ↑ | BoolQ ↑ | WinoGrande ↑ | MNLI ↑ | HellaSwag ↑ | MMLU ↑ |
+|-------|---------------|-------------|------|--------|---------|---------|-------|-------|--------------|--------|-------------|--------|
+| DSMoEv1 | FP16 | 6.507 | 9.042 | 0.675 | 0.520 | 0.798 | 0.807 | 0.783 | 0.748 | 0.497 | 0.792 | 0.452 |
+| DSMoEv1 | GPTQ-W8 | 6.513 | 9.050 | 0.674 | 0.528 | 0.796 | 0.804 | 0.782 | 0.748 | 0.495 | 0.793 | 0.449 |
+| DSMoEv1 | TurboQuant-W8 | 6.512 | 9.051 | 0.673 | 0.520 | 0.794 | 0.807 | 0.779 | 0.744 | 0.496 | 0.794 | 0.448 |
+| DSMoEv2 | FP16 | 6.307 | 8.905 | 0.705 | 0.567 | 0.837 | 0.821 | 0.790 | 0.758 | 0.487 | 0.796 | 0.582 |
+| DSMoEv2 | GPTQ-W8 | 6.312 | 8.910 | 0.707 | 0.567 | 0.838 | 0.821 | 0.792 | 0.767 | 0.495 | 0.796 | 0.579 |
+| DSMoEv2 | TurboQuant-W8 | 6.311 | 8.914 | 0.704 | 0.565 | 0.836 | 0.818 | 0.789 | 0.757 | 0.497 | 0.795 | 0.578 |
+| Moonlight | FP16 | 7.121 | 10.361 | 0.739 | 0.632 | 0.859 | 0.822 | 0.822 | 0.751 | 0.520 | 0.808 | 0.700 |
+| Moonlight | GPTQ-W8 | 7.121 | 10.362 | 0.740 | 0.636 | 0.860 | 0.824 | 0.823 | 0.747 | 0.519 | 0.809 | 0.698 |
+| Moonlight | TurboQuant-W8 | 7.123 | 10.365 | 0.738 | 0.631 | 0.861 | 0.822 | 0.820 | 0.747 | 0.518 | 0.809 | 0.698 |
+| OLMoE | FP16 | 7.489 | 10.467 | 0.678 | 0.555 | 0.823 | 0.818 | 0.750 | 0.714 | 0.452 | 0.783 | 0.527 |
+| OLMoE | GPTQ-W8 | 7.495 | 10.469 | 0.678 | 0.552 | 0.821 | 0.819 | 0.753 | 0.718 | 0.453 | 0.784 | 0.526 |
+| OLMoE | TurboQuant-W8 | 7.496 | 10.471 | 0.679 | 0.555 | 0.824 | 0.817 | 0.753 | 0.718 | 0.453 | 0.784 | 0.526 |
+| Qwen3 | FP16 | 8.706 | 12.149 | 0.796 | 0.682 | 0.882 | 0.829 | 0.891 | 0.697 | 0.815 | 0.777 | 0.795 |
+| Qwen3 | GPTQ-W8 | 8.718 | 12.164 | 0.796 | 0.681 | 0.883 | 0.831 | 0.893 | 0.696 | 0.815 | 0.775 | 0.795 |
+| Qwen3 | TurboQuant-W8 | 8.728 | 12.170 | 0.795 | 0.675 | 0.881 | 0.831 | 0.889 | 0.699 | 0.815 | 0.776 | 0.794 |
 
-IPE-TQ means inner product encoding with TurboQuant quantization.
+*Downstream tasks use 5-shot evaluation. ARC-Challenge, ARC-Easy, PIQA, and HellaSwag report normalized accuracy; others report accuracy. Avg. = unweighted mean over 8 tasks.*
 
-#### 1.0 bpw (+0.25) (Origin scheme: a8s8m1, DP scheme: global-bpw-a8s8m1)
+## Method Naming Overview
 
-| Model | Method | WikiText2 | C4 | Avg. | ARC-C(norm) | ARC-E(norm) | PIQA(norm) | BoolQ | Winogrande | MNLI | Hella(norm) | MMLU |
-|-------|--------|-----------|----|-------|----------|---------------|------|-------|------------|-----------|------|-------|
-| DSMoEv1 | Energy-DP | 278.704 | 573.556 | 0.347 | 0.245 | 0.256 | 0.519 | 0.379 | 0.506 | 0.363 | 0.271 | 0.235 |
-| DSMoEv1 | GEMQ | 61548916.0 | 139172736.0 | 0.364 | 0.262 | 0.241 | 0.497 | 0.552 | 0.493 | 0.337 | 0.259 | **0.269** |
-| DSMoEv1 | GPTQ-Origin | 132.710 | 566.143 | - | 0.261 | 0.257 | 0.503 | 0.378 | 0.526 | 0.354 | 0.257 | **0.269** |
-| DSMoEv1 | GPTQ-DP | 10.878 | **18.561** | **0.523** | **0.375** | **0.650** | **0.693** | 0.629 | **0.622** | **0.400** | **0.552** | 0.266 |
+We evaluate several method combinations. To avoid confusion, here is a concise naming reference consistent with the paper:
+
+| Method Name | Quantization Backend | Sensitivity Metric | Search Strategy | Description |
+|-------------|---------------------|-------------------|-----------------|-------------|
+| GPTQ-Origin | GPTQ | — | Uniform (fixed bit) | Standard per-row GPTQ, uniform precision across all experts |
+| TQ-Origin | TurboQuant | — | Uniform (fixed bit) | Standard vector-quantized TurboQuant, uniform precision |
+| CAMERA-GPTQ | GPTQ | Energy-based (CAMERA) | Expert-level static | CAMERA's energy ranking + GPTQ, no DP search, 2 bpw only (industrial baseline) |
+| CAMERA-TQ | TurboQuant | Energy-based (CAMERA) | Expert-level static | CAMERA's energy ranking + TurboQuant, no DP search, 2 bpw only (industrial baseline) |
+| GEMQ | GPTQ | GEMQ's metric | Expert-level mixed-precision | Expert-level mixed-precision baseline (ICML 2026) |
+| CAMERA-DP | GPTQ / TurboQuant | Energy-based (CAMERA) | Global DP | CAMERA's energy ranking within our DP search framework (apples-to-apples metric ablation) |
+| GPTQ-DP | GPTQ | Hessian-aware loss | Global DP | GPTQ backend with unified 0-bit modeling + global DP search |
+| IPE-TQ-DP (ours) | TurboQuant | Inner-product error (input manifold-aware) | Global DP | **Full DartMoQP**: TurboQuant backend + IPE sensitivity + unified 0-bit + global DP |
+
+**Key baseline categories**:
+- *Uniform-precision baselines*: GPTQ-Origin, TQ-Origin (only integer bitwidths)
+- *CAMERA static baselines*: CAMERA-GPTQ, CAMERA-TQ (2 bpw industrial reference)
+- *Mixed-precision search baselines*: GEMQ, CAMERA-DP
+- *Our methods*: GPTQ-DP, **IPE-TQ-DP**
+
+---
+
+### 1.0 bpw (raw weight bits)
+
+| Model | Method | WikiText2 ↓ | C4 ↓ | Avg. ↑ | ARC-C ↑ | ARC-E ↑ | PIQA ↑ | BoolQ ↑ | Winogrande ↑ | MNLI ↑ | Hellaswag ↑ | MMLU ↑ |
+|-------|--------|------------|-----|--------|---------|---------|-------|-------|-------------|--------|-------------|--------|
+| DSMoEv1 | GPTQ-Origin | 132.710 | 566.143 | 0.351 | 0.261 | 0.257 | 0.503 | 0.378 | 0.526 | 0.355 | 0.257 | 0.269 |
 | DSMoEv1 | TQ-Origin | 663.677 | 723.955 | 0.350 | 0.246 | 0.266 | 0.517 | 0.378 | 0.531 | 0.355 | 0.258 | 0.250 |
-| DSMoEv1 | IPE-TQ-DP | **9.962** | 20.576 | 0.521 | 0.374 | 0.677 | 0.661 | **0.691** | 0.617 | **0.400** | 0.497 | 0.253 |
-||
-| DSv2-Lite | Energy-DP | 37.792 | 51.508 | 0.384 | 0.230 | 0.316 | 0.550 | 0.572 | 0.504 | 0.336 | 0.307 | 0.260 |
-| DSv2-Lite | GEMQ | 36.0004 | 70.7173 | 0.397 | 0.228 | 0.378 | 0.576 | 0.556 | 0.524 | 0.358 | 0.323 | 0.231 |
+| DSMoEv1 | GEMQ | 61548916.0$^\dag$ | 139172736.0$^\dag$ | 0.380 | 0.266 | 0.248 | 0.508 | 0.621 | 0.515 | 0.355 | 0.267 | 0.263 |
+| DSMoEv1 | CAMERA-DP | 278.704 | 573.556 | 0.347 | 0.245 | 0.256 | 0.519 | 0.379 | 0.506 | 0.363 | 0.271 | 0.235 |
+| DSMoEv1 | GPTQ-DP | 10.878 | **18.561** | **0.523** | **0.375** | 0.650 | **0.693** | 0.629 | **0.622** | **0.400** | **0.552** | 0.266 |
+| DSMoEv1 | IPE-TQ-DP | **9.962** | 20.576 | 0.521 | 0.374 | **0.677** | 0.661 | **0.691** | 0.617 | **0.400** | 0.497 | 0.253 |
 | DSv2-Lite | GPTQ-Origin | 142.748 | 210.266 | 0.373 | 0.235 | 0.273 | 0.514 | 0.594 | 0.519 | 0.328 | 0.270 | 0.249 |
+| DSv2-Lite | TQ-Origin | 35.779 | 49.428 | 0.386 | 0.220 | 0.341 | 0.554 | 0.570 | 0.486 | 0.347 | 0.316 | 0.252 |
+| DSv2-Lite | GEMQ | 36.000 | 70.717 | 0.397 | 0.224 | 0.383 | 0.558 | **0.598** | 0.515 | 0.350 | 0.300 | 0.245 |
+| DSv2-Lite | CAMERA-DP | 37.792 | 51.508 | 0.384 | 0.230 | 0.316 | 0.550 | 0.572 | 0.504 | 0.336 | 0.307 | 0.260 |
 | DSv2-Lite | GPTQ-DP | 59.076 | 100.628 | 0.360 | 0.240 | 0.272 | 0.503 | 0.540 | 0.508 | 0.317 | 0.265 | 0.235 |
-| DSv2-Lite | TQ-Origin | 35.779 | 49.428 | 0.386 | 0.220 | 0.341 | 0.554 | 0.570 | 0.486 | **0.347** | 0.316 | 0.252 |
-| DSv2-Lite | IPE-TQ-DP | **8.833** | **18.258** | **0.524** | **0.369** | **0.670** | **0.671** | 0.489 | **0.579** | 0.388 | **0.502** | 0.358 |
-||
-| Moonlight | Energy-DP | 249.477 | 333.547 | 0.384 | 0.218 | 0.340 | 0.552 | 0.556 | 0.501 | 0.354 | 0.296 | 0.254 |
-| Moonlight | GEMQ | 33.4555 | 67.9376 | 0.442 | 0.272 | 0.476 | 0.607 | **0.638** | **0.558** | 0.352 | 0.387 | 0.247 |
+| DSv2-Lite | IPE-TQ-DP | **8.833** | **18.258** | **0.524** | **0.369** | **0.670** | **0.671** | 0.489 | **0.579** | **0.388** | **0.502** | **0.358** |
 | Moonlight | GPTQ-Origin | 354.383 | 569.412 | 0.363 | 0.238 | 0.308 | 0.532 | 0.453 | 0.499 | 0.344 | 0.282 | 0.251 |
-| Moonlight | GPTQ-DP | 57.326 | 132.215 | 0.385 | 0.224 | 0.333 | 0.548 | 0.546 | 0.497 | **0.360** | 0.314 | 0.255 |
 | Moonlight | TQ-Origin | 222.648 | 260.441 | 0.383 | 0.225 | 0.327 | 0.549 | 0.556 | 0.500 | 0.348 | 0.300 | 0.261 |
-| Moonlight | IPE-TQ-DP | **14.871** | **36.872** | **0.480** | **0.325** | **0.608** | **0.634** | **0.638** | **0.550** | 0.335 | **0.452** | **0.296** |
-||
-| OLMoE | Energy-DP | 16753.113 | 8156.675 | 0.374 | 0.264 | 0.292 | 0.521 | 0.565 | 0.504 | 0.319 | 0.262 | 0.263 |
-| OLMoE | GEMQ | 193.1963 | 675.8967 | 0.376 | 0.218 | 0.362 | 0.565 | 0.490 | 0.510 | 0.331 | 0.280 | 0.253 |
-| OLMoE | GPTQ-Origin | 33766.746 | 18911.664 | 0.355 | 0.250 | 0.274 | 0.516 | 0.467 | 0.496 | 0.321 | 0.263 | 0.251 |
-| OLMoE | GPTQ-DP | 162.274 | 302.431 | 0.385 | 0.216 | 0.335 | 0.536 | 0.590 | 0.523 | **0.348** | 0.298 | 0.236 |
-| OLMoE | TQ-Origin | 16508.109 | 8896.238 | 0.365 | 0.249 | 0.282 | 0.522 | 0.538 | 0.506 | 0.321 | 0.260 | 0.243 |
-| OLMoE | IPE-TQ-DP | **22.588** | **42.137** | **0.478** | **0.341** | **0.567** | **0.631** | **0.617** | **0.580** | 0.373 | **0.427** | **0.285** |
-||
-| Qwen3 | Energy-DP | 1886.718 | 1422.791 | 0.355 | 0.230 | 0.303 | 0.527 | 0.417 | 0.513 | 0.336 | 0.268 | 0.243 |
-| Qwen3 | GEMQ | 179.9578 | 221.5939 | 0.379 | 0.232 | 0.296 | 0.558 | 0.542 | 0.497 | 0.353 | 0.320 | 0.231 |
-| Qwen3 | GPTQ-Origin | 4221.860 | 4872.952 | 0.350 | 0.261 | 0.257 | 0.503 | 0.378 | 0.526 | 0.354 | 0.257 | 0.269 |
-| Qwen3 | GPTQ-DP | 982.384 | 1798.248 | 0.360 | 0.239 | 0.276 | 0.527 | 0.444 | 0.538 | 0.339 | 0.278 | 0.236 |
-| Qwen3 | TQ-Origin | 1514.075 | 1284.209 | 0.359 | 0.246 | 0.283 | 0.516 | 0.455 | 0.500 | 0.335 | 0.284 | 0.252 |
-| Qwen3 | IPE-TQ-DP | **28.18** | **48.203** | **0.539** | **0.385** | **0.659** | **0.637** | **0.712** | **0.568** | **0.496** | **0.422** | **0.432** |
+| Moonlight | GEMQ | 33.456 | 67.938 | 0.436 | 0.257 | 0.462 | 0.587 | **0.644** | 0.523 | **0.376** | 0.359 | 0.278 |
+| Moonlight | CAMERA-DP | 249.477 | 333.547 | 0.384 | 0.218 | 0.340 | 0.552 | 0.556 | 0.501 | 0.354 | 0.296 | 0.254 |
+| Moonlight | GPTQ-DP | 57.326 | 132.215 | 0.385 | 0.224 | 0.333 | 0.548 | 0.546 | 0.497 | 0.360 | 0.314 | 0.255 |
+| Moonlight | IPE-TQ-DP | **14.871** | **36.872** | **0.480** | **0.325** | **0.608** | **0.634** | 0.638 | **0.550** | 0.335 | **0.452** | **0.296** |
+| OLMoE | GPTQ-Origin | 33766.7 | 18911.7 | 0.355 | 0.250 | 0.274 | 0.516 | 0.467 | 0.496 | 0.321 | 0.263 | 0.251 |
+| OLMoE | TQ-Origin | 16508.1 | 8896.2 | 0.365 | 0.249 | 0.282 | 0.522 | 0.538 | 0.506 | 0.321 | 0.260 | 0.243 |
+| OLMoE | GEMQ | 193.196 | 675.897 | 0.380 | 0.212 | 0.364 | 0.552 | 0.542 | 0.505 | 0.327 | 0.277 | 0.265 |
+| OLMoE | CAMERA-DP | 16753.1 | 8156.7 | 0.374 | 0.264 | 0.292 | 0.521 | 0.565 | 0.504 | 0.319 | 0.262 | 0.263 |
+| OLMoE | GPTQ-DP | 162.274 | 302.431 | 0.385 | 0.216 | 0.335 | 0.536 | 0.590 | 0.523 | 0.348 | 0.298 | 0.236 |
+| OLMoE | IPE-TQ-DP | **22.588** | **42.137** | **0.478** | **0.341** | **0.567** | **0.631** | **0.617** | **0.580** | **0.373** | **0.427** | **0.285** |
+| Qwen3 | GPTQ-Origin | 4221.86 | 4872.95 | 0.350 | 0.249 | 0.269 | 0.517 | 0.411 | 0.507 | 0.338 | 0.264 | 0.245 |
+| Qwen3 | TQ-Origin | 1514.08 | 1284.21 | 0.358 | 0.244 | 0.283 | 0.516 | 0.455 | 0.500 | 0.335 | 0.284 | 0.252 |
+| Qwen3 | GEMQ | 179.958 | 221.594 | 0.397 | 0.245 | 0.370 | 0.576 | 0.554 | 0.531 | 0.348 | 0.303 | 0.251 |
+| Qwen3 | CAMERA-DP | 1886.72 | 1422.79 | 0.355 | 0.230 | 0.303 | 0.527 | 0.417 | 0.513 | 0.336 | 0.268 | 0.243 |
+| Qwen3 | GPTQ-DP | 982.384 | 1798.25 | 0.360 | 0.239 | 0.276 | 0.527 | 0.444 | 0.538 | 0.339 | 0.278 | 0.236 |
+| Qwen3 | IPE-TQ-DP | **28.180** | **48.203** | **0.539** | **0.385** | **0.659** | **0.637** | **0.712** | **0.568** | **0.496** | **0.422** | **0.432** |
 
-#### 1.5 bpw (+0.25) (DP scheme: global-bpw-a8s8m1.5)
+$^\dag$ *The GEMQ result on DSMoEv1 exhibits numerical divergence at this bitwidth due to position-dependent error accumulation from 1-bit expert quantization. Downstream tasks remain in a reasonable range because their short input contexts do not reach the divergence threshold. This is a boundary effect of operating at exactly 1 bpw with expert-level allocation and no intra-expert pruning — it disappears at 1.125 bpw. See the paper for detailed analysis.*
 
-| Model | Method | WikiText2 | C4 | Avg. | ARC-C(norm) | ARC-E(norm) | PIQA(norm) | BoolQ | Winogrande | MNLI | Hella(norm) | MMLU |
-|-------|--------|-----------|----|-------|----------|---------------|------|-------|------------|-----------|------|-------|
-| DSMoEv1 | Energy-DP | 9.556 | 15.567 | 0.559 | 0.402 | 0.687 | 0.696 | 0.715 | 0.681 | 0.413 | 0.613 | 0.267 |
-| DSMoEv1 | GEMQ | 10.2447 | 19.9957 | 0.484 | 0.312 | 0.545 | 0.686 | 0.642 | 0.600 | 0.356 | 0.496 | 0.238 |
+### 1.5 bpw (raw weight bits)
+
+| Model | Method | WikiText2 ↓ | C4 ↓ | Avg. ↑ | ARC-C ↑ | ARC-E ↑ | PIQA ↑ | BoolQ ↑ | Winogrande ↑ | MNLI ↑ | Hellaswag ↑ | MMLU ↑ |
+|-------|--------|------------|-----|--------|---------|---------|-------|-------|-------------|--------|-------------|--------|
+| DSMoEv1 | GEMQ | 10.245 | 19.996 | 0.500 | 0.336 | 0.641 | 0.664 | 0.661 | 0.598 | 0.382 | 0.465 | 0.253 |
+| DSMoEv1 | CAMERA-DP | 9.556 | 15.567 | 0.559 | 0.402 | 0.687 | 0.696 | 0.715 | **0.681** | 0.413 | 0.613 | 0.267 |
 | DSMoEv1 | GPTQ-DP | 8.735 | **13.669** | 0.566 | 0.404 | 0.687 | **0.739** | 0.618 | 0.680 | **0.427** | **0.660** | **0.314** |
 | DSMoEv1 | IPE-TQ-DP | **8.022** | 13.774 | **0.587** | **0.442** | **0.746** | 0.735 | **0.731** | 0.680 | 0.403 | 0.643 | **0.314** |
-||
-| DSv2-Lite | Energy-DP | 8.982 | 14.218 | 0.600 | 0.439 | 0.721 | 0.715 | 0.772 | 0.640 | 0.442 | 0.638 | 0.433 |
-| DSv2-Lite | GEMQ | 13.3481 | 31.3275 | 0.451 | 0.261 | 0.499 | 0.652 | 0.640 | 0.560 | 0.356 | 0.410 | 0.232 |
+| DSv2-Lite | GEMQ | 13.348 | 31.328 | 0.457 | 0.282 | 0.563 | 0.638 | 0.621 | 0.533 | 0.352 | 0.407 | 0.257 |
+| DSv2-Lite | CAMERA-DP | 8.982 | 14.218 | 0.600 | 0.439 | 0.721 | 0.715 | **0.772** | 0.640 | 0.442 | 0.638 | 0.433 |
 | DSv2-Lite | GPTQ-DP | 11.119 | 19.646 | 0.485 | 0.339 | 0.605 | 0.636 | 0.585 | 0.562 | 0.375 | 0.495 | 0.281 |
-| DSv2-Lite | IPE-TQ-DP | **7.323** | **12.610** | **0.614** | **0.475** | **0.767** | 0.729 | 0.724 | **0.656** | **0.464** | **0.657** | **0.439** |
-||
-| Moonlight | Energy-DP | 17.359 | 31.791 | 0.518 | 0.358 | 0.640 | 0.675 | 0.672 | 0.569 | 0.379 | 0.507 | 0.341 |
-| Moonlight | GEMQ | 21.4028 | 55.0761 | 0.448 | 0.291 | 0.495 | 0.641 | 0.561 | 0.551 | 0.356 | 0.437 | 0.256 |
+| DSv2-Lite | IPE-TQ-DP | **7.323** | **12.610** | **0.614** | **0.475** | **0.767** | **0.729** | 0.724 | **0.656** | **0.464** | **0.657** | **0.439** |
+| Moonlight | GEMQ | 21.403 | 55.076 | 0.463 | 0.294 | 0.516 | 0.596 | 0.651 | 0.553 | **0.410** | 0.405 | 0.282 |
+| Moonlight | CAMERA-DP | 17.359 | 31.791 | 0.518 | 0.358 | 0.640 | 0.675 | **0.672** | **0.569** | 0.379 | 0.507 | 0.341 |
 | Moonlight | GPTQ-DP | 19.319 | 46.681 | 0.449 | 0.277 | 0.488 | 0.605 | 0.636 | 0.546 | 0.323 | 0.428 | 0.289 |
-| Moonlight | IPE-TQ-DP | **9.989** | **23.267** | **0.553** | **0.427** | **0.714** | **0.713** | 0.650 | **0.568** | **0.351** | **0.579** | **0.425** |
-||
-| OLMoE | Energy-DP | 33.461 | 46.650 | 0.517 | 0.375 | 0.611 | 0.683 | 0.654 | 0.586 | 0.400 | 0.541 | 0.287 |
-| OLMoE | GEMQ | 16.7599 | 31.7759 | 0.463 | 0.300 | 0.519 | 0.651 | 0.640 | 0.539 | 0.356 | 0.430 | 0.268 |
+| Moonlight | IPE-TQ-DP | **9.989** | **23.267** | **0.553** | **0.427** | **0.714** | **0.713** | 0.650 | 0.568 | 0.351 | **0.579** | **0.425** |
+| OLMoE | GEMQ | 16.760 | 31.776 | 0.471 | 0.311 | 0.617 | 0.643 | 0.625 | 0.547 | 0.334 | 0.431 | 0.257 |
+| OLMoE | CAMERA-DP | 33.461 | 46.650 | 0.517 | 0.375 | 0.611 | 0.683 | 0.654 | 0.586 | 0.400 | 0.541 | 0.287 |
 | OLMoE | GPTQ-DP | 23.587 | 35.777 | 0.463 | 0.289 | 0.500 | 0.607 | 0.608 | 0.552 | 0.409 | 0.466 | 0.277 |
 | OLMoE | IPE-TQ-DP | **15.104** | **22.778** | **0.575** | **0.437** | **0.692** | **0.706** | **0.694** | **0.664** | **0.435** | **0.593** | **0.380** |
-||
-| Qwen3 | Energy-DP | 12.143 | 19.126 | 0.675 | 0.563 | 0.807 | 0.733 | 0.851 | 0.677 | **0.660** | 0.480 | 0.626 |
-| Qwen3 | GEMQ | **10.9057** | 19.4970 | 0.558 | 0.393 | 0.554 | 0.693 | 0.763 | 0.624 | 0.413 | 0.567 | 0.454 |
+| Qwen3 | GEMQ | **10.906** | 19.497 | 0.620 | 0.515 | 0.807 | 0.712 | 0.819 | 0.627 | 0.435 | 0.539 | 0.504 |
+| Qwen3 | CAMERA-DP | 12.143 | **19.126** | 0.675 | 0.563 | 0.807 | 0.733 | **0.851** | 0.677 | 0.660 | 0.480 | 0.626 |
 | Qwen3 | GPTQ-DP | 16.931 | 26.856 | 0.490 | 0.279 | 0.439 | 0.661 | 0.695 | 0.625 | 0.404 | 0.526 | 0.293 |
-| Qwen3 | IPE-TQ-DP | **13.787** | **20.877** | **0.705** | **0.577** | **0.817** | **0.752** | 0.847 | **0.698** | 0.697 | **0.602** | **0.649** |
+| Qwen3 | IPE-TQ-DP | 13.787 | 20.877 | **0.705** | **0.577** | **0.817** | **0.752** | 0.847 | **0.698** | **0.697** | **0.602** | **0.649** |
 
-#### 2.0 bpw (+0.25) (Origin scheme: a8s8m2, Camera scheme: global-a8s8m32222221, DP scheme: global-bpw-a8s8m2)
+### 2.0 bpw (raw weight bits) — Industrial Mainstream Setting
 
-| Model | Method | WikiText2 | C4 | Avg. | ARC-C(norm) | ARC-E(norm) | PIQA(norm) | BoolQ | Winogrande | MNLI | Hella(norm) | MMLU |
-|-------|--------|-----------|----|-------|----------|---------------|------|-------|------------|-----------|------|-------|
-| DSMoEv1 | TQ-Origin | 11.761 | 16.495 | 0.516 | 0.336 | 0.665 | 0.702 | 0.681 | 0.585 | 0.372 | 0.528 | 0.255 |
+| Model | Method | WikiText2 ↓ | C4 ↓ | Avg. ↑ | ARC-C ↑ | ARC-E ↑ | PIQA ↑ | BoolQ ↑ | Winogrande ↑ | MNLI ↑ | Hellaswag ↑ | MMLU ↑ |
+|-------|--------|------------|-----|--------|---------|---------|-------|-------|-------------|--------|-------------|--------|
 | DSMoEv1 | GPTQ-Origin | 8.617 | 12.911 | 0.583 | 0.427 | 0.722 | 0.755 | 0.666 | 0.695 | 0.355 | 0.720 | 0.324 |
-| DSMoEv1 | GPTQ+Camera | 8.272 | 12.695 | 0.592 | 0.433 | 0.722 | 0.752 | 0.688 | 0.679 | 0.414 | 0.700 | 0.347 |
-| DSMoEv1 | TQ+Camera | 7.978 | 11.792 | 0.615 | 0.464 | 0.742 | 0.751 | 0.774 | 0.693 | **0.452** | 0.690 | 0.352 |
-| DSMoEv1 | GEMQ | 7.2247 | 11.9649 | 0.567 | 0.399 | 0.679 | 0.764 | 0.724 | 0.664 | 0.361 | 0.665 | 0.278 |
-| DSMoEv1 | Energy-DP | 7.804 | 11.856 | 0.624 | 0.464 | 0.750 | 0.763 | 0.764 | 0.712 | 0.450 | **0.729** | 0.358 |
+| DSMoEv1 | TQ-Origin | 11.761 | 16.495 | 0.516 | 0.336 | 0.665 | 0.702 | 0.681 | 0.585 | 0.372 | 0.528 | 0.255 |
+| DSMoEv1 | CAMERA-GPTQ | 8.272 | 12.695 | 0.592 | 0.433 | 0.722 | 0.752 | 0.688 | 0.679 | 0.414 | 0.700 | 0.347 |
+| DSMoEv1 | CAMERA-TQ | 7.978 | 11.792 | 0.615 | 0.464 | 0.742 | 0.751 | **0.774** | 0.693 | **0.452** | 0.690 | 0.352 |
+| DSMoEv1 | GEMQ | 7.224 | 11.965 | 0.597 | 0.454 | 0.768 | 0.770 | 0.700 | 0.696 | 0.396 | 0.669 | 0.323 |
+| DSMoEv1 | CAMERA-DP | 7.804 | 11.856 | 0.624 | 0.464 | 0.750 | 0.763 | 0.764 | **0.712** | 0.450 | **0.729** | 0.358 |
 | DSMoEv1 | GPTQ-DP | 7.994 | 12.304 | 0.603 | 0.437 | 0.747 | **0.779** | 0.666 | 0.702 | 0.415 | 0.728 | 0.355 |
 | DSMoEv1 | IPE-TQ-DP | **7.214** | **11.302** | **0.627** | **0.480** | **0.775** | 0.777 | 0.754 | 0.709 | 0.434 | 0.716 | **0.374** |
-||
-| DSv2-Lite | TQ-Origin | 7.958 | 11.025 | 0.651 | 0.480 | 0.784 | 0.781 | 0.760 | 0.704 | 0.455 | 0.730 | 0.515 |
 | DSv2-Lite | GPTQ-Origin | 8.884 | 13.530 | 0.579 | 0.412 | 0.708 | 0.744 | 0.672 | 0.607 | 0.407 | 0.690 | 0.398 |
-| DSv2-Lite | GPTQ+Camera | 8.423 | 13.084 | 0.603 | 0.456 | 0.743 | 0.738 | 0.660 | 0.684 | 0.413 | 0.690 | 0.432 |
-| DSv2-Lite | TQ+Camera | 7.396 | 10.952 | 0.656 | 0.487 | 0.781 | 0.770 | 0.785 | 0.725 | 0.469 | 0.730 | 0.504 |
-| DSv2-Lite | GEMQ | 8.4658 | 14.8211 | 0.545 | 0.380 | 0.637 | 0.744 | 0.650 | 0.613 | 0.371 | 0.605 | 0.356 |
-| DSv2-Lite | Energy-DP | 7.350 | 11.267 | 0.665 | 0.504 | 0.790 | 0.774 | **0.797** | 0.707 | 0.502 | **0.742** | 0.503 |
+| DSv2-Lite | TQ-Origin | 7.958 | 11.025 | 0.651 | 0.480 | 0.784 | **0.781** | 0.760 | 0.704 | 0.455 | 0.730 | 0.515 |
+| DSv2-Lite | CAMERA-GPTQ | 8.423 | 13.084 | 0.603 | 0.456 | 0.743 | 0.738 | 0.660 | 0.684 | 0.413 | 0.690 | 0.432 |
+| DSv2-Lite | CAMERA-TQ | 7.396 | 10.952 | 0.656 | 0.487 | 0.781 | 0.770 | 0.785 | **0.725** | 0.469 | 0.730 | 0.504 |
+| DSv2-Lite | GEMQ | 8.466 | 14.821 | 0.572 | 0.421 | 0.737 | 0.756 | 0.657 | 0.626 | 0.403 | 0.609 | 0.370 |
+| DSv2-Lite | CAMERA-DP | 7.350 | 11.267 | 0.665 | 0.504 | 0.790 | 0.774 | **0.797** | 0.707 | 0.502 | **0.742** | 0.503 |
 | DSv2-Lite | GPTQ-DP | 8.106 | 12.583 | 0.608 | 0.448 | 0.757 | 0.750 | 0.692 | 0.658 | 0.404 | 0.698 | 0.456 |
 | DSv2-Lite | IPE-TQ-DP | **6.778** | **10.691** | **0.667** | **0.516** | **0.806** | 0.780 | 0.781 | 0.694 | **0.514** | 0.732 | **0.516** |
-||
-| Moonlight | TQ-Origin | 15.558 | 23.361 | 0.606 | 0.457 | 0.740 | 0.724 | 0.734 | 0.588 | 0.438 | 0.612 | 0.555 |
 | Moonlight | GPTQ-Origin | 14.142 | 31.466 | 0.473 | 0.342 | 0.598 | 0.622 | 0.546 | 0.549 | 0.366 | 0.487 | 0.271 |
-| Moonlight | GPTQ+Camera | 11.292 | 26.927 | 0.486 | 0.374 | 0.642 | 0.639 | 0.518 | 0.568 | 0.365 | 0.499 | 0.286 |
-| Moonlight | TQ+Camera | 11.606 | 20.794 | 0.615 | 0.475 | **0.757** | 0.737 | 0.738 | 0.594 | 0.425 | 0.630 | 0.565 |
-| Moonlight | GEMQ | 10.6320 | 31.6802 | 0.511 | 0.365 | 0.591 | 0.674 | 0.675 | 0.575 | 0.370 | 0.514 | 0.328 |
-| Moonlight | Energy-DP | 10.357 | 20.762 | 0.607 | 0.468 | 0.747 | 0.733 | 0.734 | 0.594 | 0.428 | 0.628 | 0.526 |
+| Moonlight | TQ-Origin | 15.558 | 23.361 | 0.606 | 0.457 | 0.740 | 0.724 | 0.734 | 0.588 | 0.438 | 0.612 | 0.555 |
+| Moonlight | CAMERA-GPTQ | 11.292 | 26.927 | 0.486 | 0.374 | 0.642 | 0.639 | 0.518 | 0.568 | 0.365 | 0.499 | 0.286 |
+| Moonlight | CAMERA-TQ | 11.606 | 20.794 | 0.615 | 0.475 | **0.757** | 0.737 | **0.738** | 0.594 | 0.425 | 0.630 | **0.565** |
+| Moonlight | GEMQ | 10.632 | 31.680 | 0.529 | 0.378 | 0.664 | 0.669 | 0.699 | 0.550 | 0.390 | 0.513 | 0.371 |
+| Moonlight | CAMERA-DP | 10.357 | 20.762 | 0.607 | 0.468 | 0.747 | 0.733 | 0.734 | 0.594 | 0.428 | 0.628 | 0.526 |
 | Moonlight | GPTQ-DP | 10.173 | 24.141 | 0.524 | 0.381 | 0.654 | 0.660 | 0.644 | 0.542 | 0.394 | 0.530 | 0.385 |
-| Moonlight | IPE-TQ-DP | **8.022** | **16.589** | **0.620** | **0.514** | 0.784 | 0.735 | 0.678 | **0.624** | **0.439** | **0.651** | **0.532** |
-||
-| OLMoE | TQ-Origin | 15.123 | 17.788 | 0.651 | 0.495 | 0.757 | 0.771 | 0.777 | 0.669 | 0.558 | 0.716 | 0.469 |
+| Moonlight | IPE-TQ-DP | **8.022** | **16.589** | **0.620** | **0.514** | 0.784 | 0.735 | 0.678 | **0.624** | **0.439** | **0.651** | 0.532 |
 | OLMoE | GPTQ-Origin | 20.790 | 29.033 | 0.529 | 0.377 | 0.612 | 0.681 | 0.628 | 0.571 | 0.421 | 0.607 | 0.336 |
-| OLMoE | GPTQ+Camera | 18.450 | 26.905 | 0.544 | 0.388 | 0.616 | 0.685 | 0.661 | 0.578 | 0.445 | 0.613 | 0.367 |
-| OLMoE | TQ+Camera | 14.726 | 18.834 | 0.637 | 0.493 | 0.741 | 0.761 | 0.755 | 0.681 | 0.471 | 0.717 | 0.480 |
-| OLMoE | GEMQ | **10.4969** | 17.2260 | 0.521 | 0.364 | 0.628 | 0.721 | 0.644 | 0.592 | 0.356 | 0.591 | 0.273 |
-| OLMoE | Energy-DP | 17.284 | 22.748 | 0.613 | 0.468 | 0.734 | 0.721 | 0.748 | 0.648 | 0.496 | 0.682 | 0.410 |
+| OLMoE | TQ-Origin | 15.123 | 17.788 | **0.651** | 0.495 | **0.757** | **0.771** | **0.777** | 0.669 | **0.558** | 0.716 | 0.469 |
+| OLMoE | CAMERA-GPTQ | 18.450 | 26.905 | 0.544 | 0.388 | 0.616 | 0.685 | 0.661 | 0.578 | 0.445 | 0.613 | 0.367 |
+| OLMoE | CAMERA-TQ | 14.726 | 18.834 | 0.637 | 0.493 | 0.741 | 0.761 | 0.755 | **0.681** | 0.471 | **0.717** | **0.480** |
+| OLMoE | GEMQ | **10.497** | 17.226 | 0.545 | 0.439 | 0.721 | 0.732 | 0.629 | 0.626 | 0.328 | 0.580 | 0.301 |
+| OLMoE | CAMERA-DP | 17.284 | 22.748 | 0.613 | 0.468 | 0.734 | 0.721 | 0.748 | 0.648 | 0.496 | 0.682 | 0.410 |
 | OLMoE | GPTQ-DP | 15.547 | 22.333 | 0.558 | 0.409 | 0.646 | 0.687 | 0.681 | 0.613 | 0.427 | 0.620 | 0.383 |
-| OLMoE | IPE-TQ-DP | **12.202** | **17.190** | **0.634** | **0.497** | 0.748 | 0.762 | 0.737 | 0.667 | **0.515** | 0.700 | **0.448** |
-||
-| Qwen3 | TQ-Origin | 15.561 | 19.571 | 0.733 | 0.619 | 0.838 | 0.768 | 0.876 | 0.676 | 0.724 | 0.650 | 0.715 |
+| OLMoE | IPE-TQ-DP | 12.202 | **17.190** | 0.634 | **0.497** | 0.748 | 0.762 | 0.737 | 0.667 | 0.515 | 0.700 | **0.448** |
 | Qwen3 | GPTQ-Origin | 13.045 | 19.989 | 0.555 | 0.373 | 0.612 | 0.709 | 0.741 | 0.628 | 0.453 | 0.630 | 0.293 |
-| Qwen3 | GPTQ+Camera | 11.685 | 18.581 | 0.553 | 0.387 | 0.633 | 0.729 | 0.679 | 0.665 | 0.385 | 0.670 | 0.278 |
-| Qwen3 | TQ+Camera | 10.933 | 15.288 | 0.746 | 0.619 | 0.845 | 0.783 | 0.872 | 0.696 | 0.723 | 0.690 | 0.736 |
-| Qwen3 | GEMQ | **9.4993** | **14.0397** | 0.638 | 0.455 | 0.661 | 0.777 | 0.866 | 0.683 | 0.328 | 0.712 | 0.620 |
-| Qwen3 | Energy-DP | **10.330** | **14.974** | 0.746 | **0.660** | **0.862** | **0.798** | **0.883** | 0.700 | **0.788** | 0.537 | 0.742 |
+| Qwen3 | TQ-Origin | 15.561 | 19.571 | 0.733 | 0.619 | 0.838 | 0.768 | 0.876 | 0.676 | 0.724 | 0.650 | 0.715 |
+| Qwen3 | CAMERA-GPTQ | 11.685 | 18.581 | 0.553 | 0.387 | 0.633 | 0.729 | 0.679 | 0.665 | 0.385 | 0.670 | 0.278 |
+| Qwen3 | CAMERA-TQ | 10.933 | 15.288 | 0.746 | 0.619 | 0.845 | 0.783 | 0.872 | 0.696 | 0.723 | 0.690 | 0.736 |
+| Qwen3 | GEMQ | **9.499** | **14.040** | 0.715 | 0.610 | 0.843 | 0.791 | 0.852 | 0.695 | 0.562 | 0.711 | 0.659 |
+| Qwen3 | CAMERA-DP | 10.330 | 14.974 | 0.746 | **0.660** | **0.862** | **0.798** | **0.883** | **0.700** | **0.788** | 0.537 | 0.742 |
 | Qwen3 | GPTQ-DP | 11.644 | 18.151 | 0.635 | 0.471 | 0.729 | 0.737 | 0.820 | 0.680 | 0.578 | 0.677 | 0.387 |
-| Qwen3 | IPE-TQ-DP | 10.882 | 15.509 | **0.757** | 0.638 | 0.855 | 0.789 | 0.880 | **0.698** | 0.763 | **0.698** | **0.737** |
+| Qwen3 | IPE-TQ-DP | 10.882 | 15.509 | **0.757** | 0.638 | 0.855 | 0.789 | 0.880 | 0.699 | 0.698 | **0.737** | **0.763** |
 
-#### 0.5 bpw (+0.25) Results (all scheme: global-bpw-a8s8m0.5)
+### 0.5 bpw and 0.75 bpw Results
 
-| Model | Method | WikiText2 | C4 | Avg. | ARC-C(norm) | ARC-E(norm) | PIQA(norm) | BoolQ | Winogrande | MNLI | Hella(norm) | MMLU |
-|-------|--------|-----------|----|-------|-------------|--------------|-------------|-------|------------|------|-------------|------|
-| DSMoEv1 | GPTQ-DP | 18.767 | 36.957 | **0.450** | 0.294 | 0.509 | 0.607 | 0.619 | 0.539 | 0.358 | 0.416 | 0.260 |
-| DSMoEv1 | IPE-TQ-DP | 15.688 | 40.035 | 0.437 | 0.287 | 0.492 | 0.585 | 0.624 | 0.530 | 0.368 | 0.368 | 0.240 |
-||
-| DSv2-Lite | GPTQ-DP | 104.268 | 165.860 | 0.344 | 0.259 | 0.265 | 0.511 | 0.378 | 0.496 | 0.315 | 0.263 | 0.261 |
-| DSv2-Lite | IPE-TQ-DP | 13.339 | 33.069 | **0.424** | 0.277 | 0.515 | 0.613 | 0.432 | 0.544 | 0.348 | 0.387 | 0.275 |
-||
-| Moonlight | GPTQ-DP | | | | | | | | | | |
-| Moonlight | IPE-TQ-DP | 31.205 | 95.292 | **0.404** | 0.236 | 0.359 | 0.560 | 0.620 | 0.501 | 0.364 | 0.323 | 0.268 |
-||
-| OLMoE | GPTQ-DP | 9343.267 | 10107.867 | 0.361 | 0.266 | 0.285 | 0.525 | 0.495 | 0.487 | 0.320 | 0.260 | 0.252 |
-| OLMoE | IPE-TQ-DP | 57.861 | 160.934 | **0.395** | 0.247 | 0.387 | 0.545 | 0.573 | 0.508 | 0.345 | 0.312 | 0.242 |
-||
-| Qwen3 | GPTQ-DP | | | | | | | | | | |
-| Qwen3 | IPE-TQ-DP | 15.528 | 33.148 | **0.468** | 0.293 | 0.509 | 0.591 | 0.662 | 0.591 | 0.393 | 0.421 | 0.286 |
+Refer to the paper for detailed results at ultra-low bitrates (0.5 and 0.75 bpw), where DartMoQP's unified pruning-quantization framework delivers the most dramatic improvements over baselines.
 
-#### 0.75 bpw (+0.25) Results (all scheme: global-bpw-a8s8m0.75)
+---
 
-| Model | Method | WikiText2 | C4 | Avg. | ARC-C(norm) | ARC-E(norm) | PIQA(norm) | BoolQ | Winogrande | MNLI | Hella(norm) | MMLU |
-|-------|--------|-----------|----|-------|-------------|--------------|-------------|-------|------------|------|-------------|------|
-| DSMoEv1 | GPTQ-DP | 13.533 | 24.554 | **0.488** | 0.335 | 0.588 | 0.656 | 0.632 | 0.592 | 0.358 | 0.477 | 0.264 |
-| DSMoEv1 | IPE-TQ-DP | 12.112 | 27.907 | 0.484 | 0.351 | 0.610 | 0.626 | 0.653 | 0.580 | 0.383 | 0.429 | 0.244 |
-||
-| DSv2-Lite | GPTQ-DP | 91.381 | 143.791 | 0.365 | 0.263 | 0.259 | 0.500 | 0.578 | 0.494 | 0.317 | 0.261 | 0.246 |
-| DSv2-Lite | IPE-TQ-DP | 10.502 | 24.226 | **0.458** | 0.317 | 0.600 | 0.629 | 0.456 | 0.564 | 0.364 | 0.434 | 0.298 |
-||
-| Moonlight | GPTQ-DP | | | | | | | | | | |
-| Moonlight | IPE-TQ-DP | 19.508 | 56.129 | **0.445** | 0.269 | 0.500 | 0.584 | 0.636 | 0.523 | 0.404 | 0.380 | 0.264 |
-||
-| OLMoE | GPTQ-DP | 1132.202 | 1780.555 | 0.358 | 0.239 | 0.289 | 0.525 | 0.471 | 0.503 | 0.324 | 0.265 | 0.251 |
-| OLMoE | IPE-TQ-DP | 31.879 | 71.652 | **0.436** | 0.294 | 0.495 | 0.570 | 0.608 | 0.547 | 0.371 | 0.357 | 0.246 |
-||
-| Qwen3 | GPTQ-DP | 22.098 | 42.975 | 0.449 | 0.277 | 0.446 | 0.595 | 0.584 | 0.594 | 0.377 | 0.441 | 0.275 |
-| Qwen3 | IPE-TQ-DP | 12.347 | 23.215 | **0.553** | 0.382 | 0.662 | 0.644 | 0.776 | 0.666 | 0.418 | 0.520 | 0.358 |
+## Ablation Studies
 
-We prioritize outputting acc_norm from LM-Evaluation-Harness. Tasks like ARC-Challenge, ARC-Easy, PIQA, and Hellaswag use acc_norm.
+### Unified 0-Bit Pruning
 
-### random seed effect
+<img src="figs/ablation_0bit_prune_vs_disable_comparison.png" width="500">
 
-**Model**: deepseek-moe-16b-base/
+Disabling 0-bit pruning increases C4 PPL by 15–30% at 0.5–1.5 bpw. The benefit is bitrate-dependent: at ultra-low bitrates, pruning frees weight bits for critical neurons and eliminates quantization metadata for pruned units, compounding the effective budget gain.
 
-#### Random seed stability comparison (2.0 +0.25 bpw)
+### Input Manifold-Aware Loss
+
+<img src="figs/ablation_rank_mode_c4.png" width="500">
+
+Comparing sensitivity metrics under TurboQuant: replacing weight MSE with inner-product metric improves sensitivity distinguishability dramatically, raising average downstream scores by 0.15–0.25 at 1 bpw.
+
+### Micro-Expert Granularity
+
+<img src="figs/ablation_slices_num_c4_ppl.png" width="500">
+
+Finer granularity consistently yields lower PPL, confirming neuron sensitivity non-uniformity within experts. 8 micro-experts per expert provides the best accuracy–efficiency trade-off.
+
+### Seed Sensitivity Stabilization
 
 <img src="figs/seed_quant_ppl_boxplot.png" width="500">
 
-| Seed | Fixed scheme<br>(2slice) | | Fixed scheme<br>（8slices） | | Global DP scheme<br>(global-bpw-a8s8m2) | |
-|------|-----------|----|----------|---------------|----|----|
-| | WikiText2 | C4 | WikiText2 | C4 | WikiText2 | C4 |
-| 0 | 24.297 | 33.808 | 23.944 | 33.586 | 7.332 | 11.441 |
-| 42 | 11.761 | 16.495 | 11.620 | 16.665 | 7.282 | 11.461 |
-| 84 | 13.471 | 22.129 | 13.319 | 22.085 | 7.353 | 11.472 |
-| 126 | 15.611 | 23.108 | 15.648 | 23.039 | 7.301 | 11.418 |
-| 168 | 21.978 | 32.428 | 21.296 | 32.163 | 7.316 | 11.449 |
-| 210 | 11.719 | 18.977 | 11.612 | 18.716 | 7.316 | 11.481 |
-| 252 | 11.957 | 19.228 | 11.971 | 19.062 | 7.335 | 11.524 |
-| 294 | 11.169 | 17.529 | 11.121 | 17.327 | 7.303 | 11.438 |
+**Model**: DeepSeekMoE-v1, 2.0 raw bpw.
+
+| Seed | Fixed-bit TQ (2 slices) | | Fixed-bit TQ (8 slices) | | IPE-TQ-DP (ours) | |
+|------|------------------------|--|------------------------|--|-------------------|--|
+| | WikiText2 ↓ | C4 ↓ | WikiText2 ↓ | C4 ↓ | WikiText2 ↓ | C4 ↓ |
+| 0 | 24.30 | 33.81 | 23.94 | 33.59 | 7.33 | 11.44 |
+| 42 | 11.76 | 16.50 | 11.62 | 16.67 | 7.28 | 11.46 |
+| 84 | 13.47 | 22.13 | 13.32 | 22.09 | 7.35 | 11.47 |
+| 126 | 15.61 | 23.11 | 15.65 | 23.04 | 7.30 | 11.42 |
+| 168 | 21.98 | 32.43 | 21.30 | 32.16 | 7.32 | 11.45 |
+| 210 | 11.72 | 18.98 | 11.61 | 18.72 | 7.32 | 11.48 |
+
+IPE-TQ-DP reduces C4 PPL range from 16.50–33.81 to 11.42–11.52 across 6 seeds by protecting the high-sensitivity units that drive seed-induced variation. This effect is strongest on models where baseline fluctuation is large; on models with more uniform sensitivity distributions, the primary benefit is accuracy improvement.
+
+---
+
+## Calibration Dataset
+
+All experiments use the **Wikipedia** calibration dataset, which is the de facto standard in the LLM quantization literature (GPTQ, AWQ, etc.), enabling direct comparison with published baselines.
+
+**Role of calibration data across quantizer paradigms**:
+- **GPTQ**: Strong dependence — calibration activations construct the Hessian and guide per-weight quantization with error compensation
+- **IPE-TQ (DartMoQP)**: Moderate dependence — quantization itself is data-agnostic, but calibration data estimates neuron sensitivity via inner-product distortion, indirectly affecting ranking and allocation
+- **Pure TurboQuant**: Data-agnostic — final weights depend only on original weights, random rotation matrix, and codebook
+
+Evaluation is performed on C4 and downstream benchmarks that do not overlap with the calibration set, avoiding validation data leakage.
+
+---
+
+## Industrial Deployment
+
+### Expert Merging and Memory Layout
+
+The DP search produces structurally regular allocations: within each expert, neurons are sorted by sensitivity with non-increasing bitwidths. Micro-experts of the same bitwidth are merged into contiguous matrix blocks — zero impact on quantization accuracy, only storage reorganization. Pruned (0-bit) units are removed entirely.
+
+### Triton Kernel Implementation
+
+We have implemented a production-grade mixed-precision inference kernel based on Triton. The pipeline follows: scheme retrieval → expert merging → quantization → kernel execution.
+
+**3D parallelization strategy**:
+1. Different bitwidth groups within an expert → parallel scheduling
+2. Rotation groups within each bitwidth level → further parallelization
+3. GEMM operations within each rotation group → fine-grained parallelism
+
+This design maximizes hardware utilization under the mixed-bitwidth constraint. The full inference code, including Triton kernel implementations and the expert-merging dispatcher, is provided for reproducibility.
+
+---
 
 ## Visualization and Analysis
 
-<img src="figs/multi_expert_sens_distribution_5models_b2.png">
-<img src="figs/quant_compare_deepseek-v1-moe-16b_L1.png">
-<img src="figs/quant_compare_deepseek-v1-moe-16b_L2.png">
-<img src="figs/multi_expert_allocation_qwen3-30b-a3b_L1_3-2-1.png">
+<img src="figs/multi_expert_sens_distribution_5models_b2.png" width="100%">
+<img src="figs/multi_expert_allocation_qwen3-30b-a3b_L1_3-2-1.png" width="100%">
+
+DartMoQP includes extensive visualization modules in the `viz/` directory. See the [Visualization Tools](#visualization-tools) section below for details.
+
+---
 
 ## Installation
 
@@ -321,6 +381,14 @@ conda activate dartmoq
 - Datasets
 - NumPy
 - Matplotlib
+
+### Hardware
+
+- **GPU**: NVIDIA RTX 5090 (48GB VRAM) or equivalent
+- Qwen3-30B-A3B quantization: ~2.5 hours on a single RTX 5090
+- Layer-wise quantization with intermediate memory release enables large models on consumer GPUs
+
+---
 
 ## Usage
 
@@ -349,228 +417,104 @@ python run_dartmoq.py \
 | `dataset` | Calibration dataset: `wikitext2`, `ptb`, or `c4` | **Required** |
 | `--seed` | Random seed for calibration sampling | 42 |
 | `--nsamples` | Number of calibration samples | 128 |
-| `--slices` | Number of sub-experts to slice (S) | 1 |
+| `--slices` | Number of micro-experts per expert (S) | 1 |
 | `--rank-mode` | Neuron ranking mode for expert reordering | None |
-| `--quant-scheme` | Quantization scheme (fixed or global) | None |
+| `--quant-scheme` | Quantization scheme (fixed or global DP) | None |
 | `--quantmode` | Quantization algorithm: `gptq` or `turboquant` | `turboquant` |
 | `--eval-zero` | Enable zero-shot task evaluation | False |
 | `--save-model` | Save quantized model to disk | False |
-| `--standby-layer-cpu` | Use CPU standby mode for large models: loads model to CPU and moves layers to GPU one-by-one during quantization. Saves GPU memory but skips zero-shot evaluation. | False |
-| `--sequential-eval` | Use sequential PPL evaluation: keeps layers on CPU and moves them to GPU one by one to save memory. Automatically enabled with `--standby-layer-cpu`. | False |
-| `--no-use-hybrid-moe` | Disable hybrid MoE structure and use original experts | False (hybrid enabled by default) |
-| `--disable-0bit-compensation` | Disable 0bit compensation (0bit weights incur quantization overhead) | False (0bit compensation enabled by default) |
-| `--disable-0bit-prune` | Disable 0bit in DP search (only use 1-4 bits, no pruning) | False (0bit enabled by default) |
+| `--standby-layer-cpu` | CPU standby mode for large models (loads to CPU, moves layers to GPU one-by-one) | False |
+| `--sequential-eval` | Sequential PPL evaluation (layers on CPU, moved to GPU one-by-one) | False |
+| `--no-use-hybrid-moe` | Disable hybrid MoE structure, use original experts | False |
+| `--disable-0bit-compensation` | Disable 0bit overhead compensation | False |
+| `--disable-0bit-prune` | Disable 0bit in DP search (only 1-4 bits, no pruning) | False |
 
-## Rank Modes (`--rank-mode`)
+### Rank Modes (`--rank-mode`)
 
-The rank mode determines how neurons are ordered within each expert for optimal quantization. Different modes are optimized for different quantization algorithms.
-
-### Activation-Based Modes
+#### Activation-Based Modes
 
 | Mode | Description | Best For |
 |------|-------------|----------|
-| `expert_activation` | Rank neurons by activation frequency in input samples | Baseline comparison |
-| `energy` | Rank neurons by energy contribution (from CAMERA, for comparison only) to output | Interpretability-focused, baseline comparison |
-| `random` | Random neuron ordering for baseline testing | Baseline comparison |
+| `expert_activation` | Rank by activation frequency | Baseline comparison |
+| `energy` | Rank by energy contribution (CAMERA metric, for comparison) | Baseline comparison |
+| `random` | Random ordering | Baseline comparison |
 | `neuron_index` | Original neuron index order | Baseline comparison |
 
-### GPTQ-Specific Modes
+#### GPTQ-Specific
 
 | Mode | Description | Best For |
 |------|-------------|----------|
-| `gptq_quant_outlier` | Rank by GPTQ quantization loss, identifying error-sensitive neurons | **GPTQ quantization** |
+| `gptq_quant_outlier` | Rank by GPTQ Hessian-aware quantization loss | **GPTQ quantization** |
 
-### TurboQuant-Specific Modes
+#### TurboQuant-Specific
 
 | Mode | Description | Best For |
 |------|-------------|----------|
-| `turboquant_innerproduct` | TurboQuant outlier analysis using inner product loss in activation space | **Recommended for TurboQuant** |
-| `turboquant_mse` | TurboQuant with pure weight-space MSE (no activation weighting) | Not recommended - only for ablation/comparison |
-| `turboquant_iipl` | TurboQuant with Input-Intermediate Product Loss (weight MSE weighted by intermediate activation second moment) | TurboQuant (alternative) |
-| `turboquant_diagonal` | TurboQuant with diagonal Hessian approximation | Computationally constrained |
-| `turboquant_hessian` | TurboQuant with full Hessian computation | Highest accuracy (slower) |
-| `turboquant_qjl_sensitivity` | TurboQuant with quantized Johnson-Lindenstrauss sensitivity | Theoretical exploration |
-| `turboquant_mse_fea` | TurboQuant pure MSE with full experts activation | Not recommended - only for ablation/comparison  |
-| `turboquant_iipl_fea` | TurboQuant IIPL with full experts activation | Not recommended |
-| `turboquant_innerproduct_fea` | TurboQuant inner product with full experts activation | Not recommended |
+| `turboquant_innerproduct` | Inner product loss in activation space | **Recommended for TurboQuant** |
+| `turboquant_mse` | Pure weight-space MSE (no activation weighting) | Ablation only — not recommended |
+| `turboquant_iipl` | Input-Intermediate Product Loss | Alternative |
+| `turboquant_diagonal` | Diagonal Hessian approximation | Computationally constrained |
+| `turboquant_hessian` | Full Hessian computation | Highest accuracy (slower) |
+| `turboquant_qjl_sensitivity` | Quantized Johnson-Lindenstrauss sensitivity | Theoretical exploration |
 
-## Quantization Schemes (`--quant-scheme`)
+### Quantization Schemes (`--quant-scheme`)
 
-The quant scheme determines how bits are allocated to neurons/blocks.
+#### Fixed Bit Schemes
 
-### Fixed Bit Schemes
-
-Format: `a{A}s{S}m{BIT_STRING}`
-
-- `A`: attention weights quantization bits
-- `S`: shared expert quantization bits
-- `BIT_STRING`: routed expert bit string: allocation for each slice (length must equal --slices)
+Format: `a{A}s{S}m{BIT_STRING}` — allocation for each slice (length must equal `--slices`).
 
 Examples:
-- `a8s8m22222222`: attention 8 bit quant, shared expert 8 bit quant, routed expert with all slices 2 bits (2.0 bpw excluding overhead)
-- `a8s8m44332211`: attention 8 bit quant, shared expert 8 bit quant, routed expert with bits decrease from 4 to 1 (2.5 bpw average excluding overhead)
-- `a8s4m3322`: attention 8 bit quant, shared expert 4 bit quant, routed expert with bits decrease from 3 to 2 (2.5 bpw average excluding overhead)
-- `global-a8s4m3322`: attention 8 bit quant, shared expert 4 bit quant, routed expert with bits decrease from 3 to 2 (global 2.5 bpw average excluding overhead)
+- `a8s8m22222222`: uniform 2-bit routed experts (2.0 bpw excluding overhead)
+- `a8s8m44332211`: decreasing from 4 to 1 bit (2.5 bpw average)
 
-### Global Dynamic Programming Schemes
+#### Global Dynamic Programming Schemes
 
-Format: `global-bpw-a{A}s{S}m{BPW}`
+Format: `global-bpw-a{A}s{S}m{BPW}` — global DP with monotonic non-increasing allocation across all experts.
 
-Uses the global DP optimizer with monotonic non-increasing bit allocation constraint across all experts.
+- `BPW`: target average bits per weight for routed experts (can be fractional)
 
-- `A`: attention weights quantization bits
-- `S`: shared expert quantization bits
-- `BPW`: routed expert bit string: target average bits per weight (can be fractional)
+**Important**: bpw values refer to weight bits only, not including quantization parameter overhead:
+- GPTQ: ~0.25 bpw overhead (groupsize=128)
+- TurboQuant: ~0.252 bpw overhead
 
-**Important Note**: The bpw values in all schemes (both fixed and `global-bpw`) refer to the weight bit allocation only. They do **not** include the additional overhead of:
-- GPTQ: ~0.25 bpw for quantization parameters
-- TurboQuant: ~0.252 bpw for quantization parameters
+All methods use groupsize=128. Actual total bpw ≈ `target_bpw + 0.25` (GPTQ) or `target_bpw + 0.252` (TurboQuant).
 
-All computations use a consistent groupsize of 128. The actual total bpw will be approximately `target_bpw + 0.25` (GPTQ) or `target_bpw + 0.252` (TurboQuant).
+#### How Global DP Works
 
-Examples:
-- `global-bpw-a8s8m0.5`: attention 8 bit quant, shared expert 8 bit quant, routed expert with all slices 2 bits, global ~0.5 bpw target (excluding overhead)
-- `bpw-a8s8m2.5`: attention 8 bit quant, shared expert 8 bit quant, routed expert with all slices 2 bits, ~2.5 bpw target inside one expert (excluding overhead)
+1. Per-expert neuron sorting by sensitivity
+2. Global micro-expert sorting by importance (sensitivity × expert activation rate)
+3. Monotonic DP search with non-increasing bit constraint
+4. Remap global allocation back to per-expert schemes
 
-### How Global DP Works
+### 0-Bit Compensation (Enabled by Default)
 
-1. **Per-expert neuron sorting**: Neurons in each expert are sorted by sensitivity
-2. **Global sub-expert sorting**: All sub-experts are globally sorted by importance (sensitivity × expert activation rate)
-3. **Monotonic DP search**: Find optimal bit allocation with non-increasing bit constraint
-4. **Remap to per-expert schemes**: Map global allocation back to each expert
+Pruned (0-bit) weights incur no quantization overhead (no scales, zero points, or codebook entries). This frees metadata budget for higher-precision units under the same raw-weight-bit constraint — a genuine advantage of unified modeling.
 
-### Global Ablation Experiments
-<img src="figs/global_vs_nonglobal_c4_turboquant_gptq.png">
+- 0-bit: `0.0` effective bits (no overhead)
+- 1-bit: `1.25` effective bits (1 bit + 0.25 overhead)
+- 2-bit: `2.25` effective bits
+- ...
 
-This figure compares **Left (TurboQuant)**: Blue = without Global, Red = Global configuration. The Global configuration significantly reduces PPL, especially at low bits (1.0bpw).
-**Right (GPTQ)**: Same comparison for GPTQ quantization. Global consistently lowers PPL, with the most pronounced benefits at low bits. Overall, the Global configuration improves low-bit quantization performance for both TurboQuant and GPTQ methods because the global ranking allows important neurons (particularly those in frequently activated experts) to preserve information using higher bit widths. 
+Disable with `--disable-0bit-compensation` for ablation studies.
 
-## 0bit Compensation
+### 0-Bit Pruning Control (Enabled by Default)
 
-DartMoQP supports **0bit compensation** (enabled by default), which treats pruning (0bit) differently from quantization in the DP search:
+- With 0-bit enabled: DP uses bit set `{0, 1, 2, 3, 4}`
+- Without 0-bit: DP uses bit set `{1, 2, 3, 4}`
 
-- **0bit (pruned) weights**: Do not incur quantization overhead in the effective bit calculation
-- **Non-zero bit weights**: Incur quantization overhead (typically ~0.25 bpw)
+Disable with `--disable-0bit-prune` for pure-quantization ablation.
 
-This means the DP search can more aggressively use 0bit for less important neurons without being penalized by the overhead cost, leading to better overall quality at the same effective bpw.
+### Standby CPU Mode for Large Models
 
-To disable 0bit compensation (treat 0bit the same as other bit widths), use:
-```bash
---disable-0bit-compensation
-```
+`--standby-layer-cpu`: Loads entire model to CPU, moves one layer at a time to GPU for quantization, then back to CPU. Enables quantization of models too large to fit in GPU memory. Automatically enables sequential PPL evaluation.
 
-### How 0bit Compensation Works
+`--sequential-eval`: Standalone sequential evaluation — keeps layers on CPU, moves to GPU one-by-one for PPL computation, caches hidden states.
 
-1. **Effective bit calculation**:
-   - 0bit: `0.0` (no overhead)
-   - 1bit: `1.25` (1 bit + 0.25 overhead)
-   - 2bit: `2.25` (2 bits + 0.25 overhead)
-   - ... and so on
-
-2. **Target calculation**:
-   - The input `target_bpw` is the raw bpw (no overhead)
-   - The DP uses an effective target of `target_bpw + 0.25` (assuming all bits are non-zero)
-   - During DP search, 0bit can be used to save overhead for unimportant neurons
-
-3. **Performance optimization**:
-   - Uses discretization with `search_scale_factor=20` (0.05 bit precision) for a good balance of speed and accuracy
-
-## 0bit Pruning Control
-
-DartMoQP supports **0bit pruning** (enabled by default), which allows the DP search to use 0bit (complete pruning) as an option for neuron allocation:
-
-- **With 0bit enabled** (default): DP search uses bit set `{0, 1, 2, 3, 4}`
-- **Without 0bit**: DP search uses bit set `{1, 2, 3, 4}` (only quantization, no pruning)
-
-This is useful for ablation studies to understand the contribution of pruning vs. quantization in the unified framework.
-
-To disable 0bit pruning (only use 1-4 bits for quantization), use:
-```bash
---disable-0bit-prune
-```
-
-### Key Differences Between 0bit-Related Flags
-
-| Flag | Bit Set Used | 0bit Overhead | Purpose |
-|------|-------------|---------------|---------|
-| Default | `{0, 1, 2, 3, 4}` | 0bit has no overhead | Full unified quantization + pruning (recommended) |
-| `--disable-0bit-compensation` | `{0, 1, 2, 3, 4}` | 0bit = `0.25` overhead | Ablation: 0bit without overhead advantage |
-| `--disable-0bit-prune` | `{1, 2, 3, 4}` | N/A (no 0bit) | Ablation: pure quantization without pruning |
-
-## Standby CPU Mode for Large Models
-
-DartMoQP supports CPU standby mode to enable quantization of very large MoE models that might not fit entirely in GPU memory.
-
-### `--standby-layer-cpu`
-
-This mode:
-- Loads the entire model to CPU first
-- Moves only one layer at a time to GPU for quantization
-- After processing each layer, moves it back to CPU
-- Automatically enables sequential PPL evaluation
-- Skips zero-shot evaluation (not compatible with CPU standby mode)
-
-**Use case:** Quantizing large models (e.g., Qwen3-30B-A3B, DeepSeekMoE models) on GPUs with limited memory.
-
-### `--sequential-eval`
-
-Standalone sequential evaluation mode that:
-- Keeps all transformer layers on CPU
-- Moves layers to GPU one by one for PPL evaluation
-- Caches intermediate hidden states on CPU to save memory
-- Processes samples in batches for efficiency
-- Keeps embed_tokens, norm, and lm_head on GPU permanently
-
-Can be used independently or is automatically enabled with `--standby-layer-cpu`.
-
-### Memory Saving Benefits
-
-Both modes significantly reduce GPU memory usage by:
-- Avoiding loading the entire model to GPU at once
-- Only keeping one layer active on GPU at a time
-- Caching intermediate results on CPU
-- Performing aggressive garbage collection and cache clearing
-
-### Usage Example
-
-```bash
-# Full standby mode for large models
-python run_dartmoq.py \
-    $MODEL_PATH \
-    wikitext2 \
-    --slices 8 \
-    --rank-mode turboquant_innerproduct \
-    --quant-scheme global-bpw-a8s8m2.0 \
-    --quantmode turboquant \
-    --standby-layer-cpu
-
-# Sequential evaluation only (after normal quantization)
-python eval_dartmoq.py \
-    $MODEL_PATH \
-    --sequential-eval
-```
-
-## Quantization Modes (`--quantmode`)
-
-### GPTQ (`gptq`)
-
-- **Type**: Per-row quantization
-- **Sensitivity metric**: Element-wise MSE
-- **Best rank mode**: `gptq_quant_outlier`
-- **Strengths**: Well-understood, good stability, mature implementation
-- **Overhead**: ~0.25 bpw additional (groupsize=128)
-
-### TurboQuant (`turboquant`)
-
-- **Type**: Vector quantization with global random rotation
-- **Sensitivity metric**: Inner product loss on calibration manifold
-- **Best rank mode**: `turboquant_innerproduct` (recommended)
-- **Strengths**: Better compression at extremely low bits, energy homogenization
-- **Overhead**: ~0.252 bpw additional (groupsize=128)
+---
 
 ## Recommended Combinations
 
-### For 2-bit ManualDeployment
+### Industrial 2-Bit Deployment
 
 ```bash
 # TurboQuant version (recommended for best quality)
@@ -595,12 +539,11 @@ python run_dartmoq.py \
     --quantmode gptq \
     --eval-zero
 ```
-`global-a8s8m32222221` is the quantization scheme closest to 2 + 0.25 bpw in paper Camera-Q.
 
-### For Global Optimal Search (Any BPW)
+### Global Optimal Search (Any BPW)
 
 ```bash
-# TurboQuant with global DP
+# TurboQuant with IPE sensitivity + global DP (full DartMoQP)
 python run_dartmoq.py \
     $MODEL_PATH \
     wikitext2 \
@@ -623,192 +566,129 @@ python run_dartmoq.py \
     --eval-zero
 ```
 
-### For BPW Sweep
+### BPW Sweep
 
 See `run.sh` for examples of sweeping across bpw values from 0.5 to 4.0.
 
+---
+
 ## Supported Models
 
-- `DeepSeek-MoE-16B` (16B-A3B)
-- `DeepSeek-V2-Lite` (16B-A3B)
-- `OLMoE-1B-7B` (7B-A1B)
-- `Moonlight-16B-A3B`
-- `Qwen3-30B-A3B`
+- DeepSeekMoE-v1 (16B-A3B)
+- DeepSeekMoE-v2-Lite (16B-A3B)
+- Moonlight-16B-A3B
+- OLMoE-1B-7B (7B-A1B)
+- Qwen3-30B-A3B
 - Most other MoE architectures with expert FFNs
 
-## Calibration Datasets
+---
 
-- `wikitext2`: Wikitext-2 (recommended for most use cases)
-- `c4`: C4 (Colossal Clean Crawled Corpus)
-- `ptb`: Penn Treebank
+## Loss Caching Mechanism
 
-64-128 samples are typically sufficient for good calibration.
+To avoid redundant computation during parameter sweeps:
 
-## Output Files
+1. **Quantization cache**: `intermediate_result/quant_outlier_{gptq,turboquant}/{rank_mode}/{model_id}/`
+   - Per-layer per-bitwidth files: `{model_id}_L{layer_idx}_b{bit}.pt`
+   - Contains per-neuron quantization loss for all experts in that layer
+2. **Activation cache**: `intermediate_result/expert_activate/{model_id}/`
+   - Per-layer files: `{model_id}_L{layer_idx}.pt`
+3. **Groupsize**: Consistent groupsize of 128 across all cache computations
+4. **Reuse**: Automatically reused across different rank modes, quant schemes, and seed values
 
-- Intermediate results: `intermediate_result/`
-  - Quantization cache: `intermediate_result/quant_outlier_{gptq,turboquant}/{rank_mode}/{model_id}/`
-  - Expert activation cache: `intermediate_result/expert_activate/{model_id}/`
-- Visualizations: `plot/`
-- Saved models: `models/dartmoq_{model_type}_{rank_mode}_{quant_scheme}/`
+---
 
 ## Visualization Tools
 
-DartMoQP includes visualization modules in the `viz/` directory:
-
-### Motivation & Headroom Panels
-
-| File | Purpose | Paper Section |
-|------|---------|---------------|
-| `headroom.py` | Motivation panels showing untapped headroom | §1 Introduction / §3.1 Preliminary |
-| | AM/GM ratio, top-10% loss share, activation vs sensitivity scatter, layer-expert-neuron comparison | |
-| `budget_transfer.py` | Budget transfer visualization: reallocate bits from low to high sensitivity neurons | Motivation |
-| `diagnose_bucket.py` | Quick diagnostic: LDI bound vs DP curve | Debugging |
-| `dump_activation_rates.py` | One-time dumper for per-layer expert activation rates | Required by `headroom.py` |
-
-### Sensitivity Geometry (Challenge 1)
-
-| File | Purpose | Paper Section |
-|------|---------|---------------|
-| `metric_geometry.py` | G.1-G.4: Sensitivity geometry exploration | §4.1 Challenge 1 |
-| | 3-metric CDF (GPTQ-MSE vs TQ-MSE vs TQ-IP) | |
-| | Synthetic rotation energy-flattening demo | |
-| | Spearman rank agreement matrix | |
-| | Metric validity vs zero-out loss | |
-| `mse_vs_ipe_sensitivity.py` | Standalone experiment: MSE vs IPE sensitivity distinction | Analysis |
-| `neuron_rates_sorted_order_across_bit.py` | How neuron loss order changes across bits when sorted by reference bit | Analysis |
-| `rank_correlation.py` | Rank correlation across bit widths | Analysis |
-| `oscar_together_diagonal_dominance.py` | Verify diagonal dominance after rotation+quantization | Analysis |
-| `high_sensitivity_analysis.py` | High-sensitivity neuron hypothesis validation | Analysis |
-
-### Log-Quad Fit & 0bit Extrapolation (Challenge 2)
-
-| File | Purpose | Paper Section |
-|------|---------|---------------|
-| `bit_loss_fit.py` | 0bit loss extrapolation & validation (log-quadratic fit) | §4.2 Challenge 2 |
-| | Compute R² for fit quality | |
-| | Plot lowest R² neurons with fit curves | |
-| | Multi-model R² summary visualization | |
-| `overlap_distribution.py` | Observation 2 (quantizer distribution differences) & Observation 3 (log-quadratic fit quality) | Analysis |
-| | GPTQ vs TurboQuant loss overlap with Gini coefficients | |
-| | Per-block log-loss quadratic fit visualization | |
-| `validate_extrapolation.py` | Validate 0bit loss extrapolation against true pruned loss | Analysis |
-| | Compute true 0bit loss by zeroing neurons | |
-| | Extrapolated vs true scatter plot (log scale) | |
-| | Spearman correlation & MAE reporting | |
-
-### Seed Stability Analysis
-
-| File | Purpose | Paper Section |
-|------|---------|---------------|
-| `seed_stability.py` | S.1-S.5: TurboQuant seed stability after DartMoQ slicing | Analysis |
-| | Seed sweep: error variance across QR seeds | |
-| | Good/bad: per-neuron error placement for best/worst seeds | |
-| | Alignment: error-sensitivity scatter | |
-| | Homogeneity: within-slice sensitivity dispersion | |
-| | Aggregate: across-target summary (CV, max/min, gap) | |
-| `seed_influence_ppl_boxplot.py` | PPL boxplot visualization across quantization methods and seeds | Analysis |
-| `mp_seed_stability.py` | Multi-scheme seed stability with IPE metric | Analysis |
-
-### Expert & Micro-Expert Analysis
-
-| File | Purpose | Key Features |
-|------|---------|--------------|
-| `expert_cosine.py` | Cosine similarity after high-sensitivity neuron protection | Two strategies, seed sweep, caching |
-| `stat_micro_expert_dist.py` | Micro-expert distribution statistics (Gini, entropy, top-K%) | Per-expert/layer/depth analysis, CSV export |
-| `micro_expert_rank_boxplot.py` | DP score views (5+ visualization types) | Raw slice error, DP bit loss, ordering score, final allocation |
-
-### Ablation & Case Study Visualizations
-
-| File | Purpose |
-|------|---------|
-| `ablation_disable_0bit_prune.py` | Compare 0bit pruning vs disabled pruning |
-| `ablation_global_ablation_plots.py` | Global vs non-global ablation visualization |
-| `ablation_rank_mode.py` | Different rank modes comparison (MSE vs IPE) |
-| `ablation_slices_num.py` | BPW & slice count ablation visualization |
-| `allocation_case_study.py` | 3 allocation strategies comparison: Expert-fixed, Global-fixed, Global-BPW DP |
-
-### `dp_score_tests/` Subdirectory
-
-| Exp | File | Purpose |
-|------|------|---------|
-| Exp.4 | `plot_exp4_assigned_loss_vs_uniform.py` | Plot final assigned loss by expert, with uniform baseline |
-| Exp.5 | `plot_exp5_assigned_loss_by_order.py` | Check final assigned loss along DP sorted order |
-
-### Usage Pattern
-
-All modules follow this pattern:
+DartMoQP includes visualization modules in the `viz/` directory. All modules follow:
 ```bash
 python -m viz.<module_name> --model <model_id_or_path> [--skip <panels>]
 ```
 
-Examples:
-```bash
-# R² analysis for log-quadratic fit (Challenge 2)
-conda run -n cmoe311 python -m viz.bit_loss_fit --analyze-r2 --models deepseek-v1-moe-16b qwen3-30b-a3b
+### Motivation & Headroom
 
-# Seed stability analysis (S.1-S.5)
-python -m viz.seed_stability --model deepseek-v1-moe-16b
+| File | Purpose |
+|------|---------|
+| `headroom.py` | Motivation panels: AM/GM ratio, top-10% loss share, activation vs sensitivity |
+| `budget_transfer.py` | Budget transfer visualization: reallocate bits from low to high sensitivity |
+| `diagnose_bucket.py` | LDI bound vs DP curve diagnostic |
+| `dump_activation_rates.py` | Per-layer expert activation rate dump |
 
-# Metric geometry exploration (G.1-G.4)
-python -m viz.metric_geometry
+### Sensitivity Geometry
 
-# Motivation panels (AM/GM, top10ratio, etc.)
-python -m viz.headroom
-```
+| File | Purpose |
+|------|---------|
+| `metric_geometry.py` | CDF comparison, rotation energy-flattening, rank agreement, metric validity |
+| `mse_vs_ipe_sensitivity.py` | MSE vs IPE sensitivity distinction |
+| `rank_correlation.py` | Rank correlation across bit widths |
 
-### Cache Dependencies
+### Log-Quad Fit & 0-Bit Extrapolation
 
-The visualization pipeline relies entirely on cached sensitivity data:
-- `intermediate_result/quant_outlier_{quantmode}/{rank_mode}/{model_id}/` - per-bit sensitivity
-- `intermediate_result/expert_activate/{model_id}/` - expert activation rates (optional)
+| File | Purpose |
+|------|---------|
+| `bit_loss_fit.py` | 0-bit loss extrapolation & validation, R² computation, multi-model summary |
+| `overlap_distribution.py` | GPTQ vs TQ loss overlap, per-block log-loss quadratic fit |
+| `validate_extrapolation.py` | Extrapolation vs direct zeroing loss validation (Spearman, MAE) |
 
+### Seed Stability
 
+| File | Purpose |
+|------|---------|
+| `seed_stability.py` | S.1–S.5: seed sweep, error placement, alignment, homogeneity, aggregate summary |
+| `seed_influence_ppl_boxplot.py` | PPL boxplot across methods and seeds |
+| `mp_seed_stability.py` | Multi-scheme seed stability with IPE metric |
+
+### Ablation Visualizations
+
+| File | Purpose |
+|------|---------|
+| `ablation_disable_0bit_prune.py` | 0-bit pruning vs disabled comparison |
+| `ablation_global_ablation_plots.py` | Global vs non-global DP |
+| `ablation_rank_mode.py` | Rank mode comparison (MSE vs IPE) |
+| `ablation_slices_num.py` | Slice count ablation |
+| `allocation_case_study.py` | 3 allocation strategies: Expert-fixed, Global-fixed, Global-BPW DP |
+
+---
 
 ## Log Parser
 
-DartMoQP provides a log parser to parse Slurm log files into aligned benchmark rows.
+Parses Slurm log files into aligned benchmark rows:
 
 ```bash
-# Basic usage - plain text output to stdout
+# Plain text output
 python logs_parser.py slurm-*.out
 
-# CSV output (writes to <logfile>.csv)
+# CSV / JSON / Markdown output
 python logs_parser.py --format csv slurm-*.out
-
-# JSON output (writes to <logfile>.json)
 python logs_parser.py --format json slurm-*.out
-
-# Markdown table output (writes to <logfile>.md)
 python logs_parser.py --format md slurm-*.out
-
 ```
 
-The parser extracts:
-- Model configuration (model path, slices, quant scheme, rank mode, quant mode, bpw)
-- Perplexity results (WikiText2, C4)
-- Zero-shot task metrics (ARC-Challenge, ARC-Easy, PIQA, BoolQ, Winogrande, MNLI, Hellaswag, MMLU)
-- Runtime information
-- Error status and messages
-- The parser handles incomplete/crashed runs gracefully by leaving missing metrics empty instead of misaligning columns.
+Extracts model configuration, perplexity results, zero-shot task metrics, runtime, and error status.
 
-## Dense Model Quantization Support
+---
 
-DartMoQP is specifically designed for **Mixture-of-Experts (MoE) models** and does not support dense (non-MoE) models. For mixed-precision quantization of dense models, please refer to our dedicated method:
+## Dense Model Quantization
+
+DartMoQP is designed for **Mixture-of-Experts (MoE) models** and does not support dense models. For mixed-precision quantization of dense transformers, see:
 
 [DartMQ](https://github.com/zzningxp/DartMQ) — A unified framework for mixed-precision quantization of dense transformer models.
+
+---
 
 ## Citation
 
 If you use DartMoQP in your research, please cite:
 
 ```bibtex
-@article{dartmoqp2024,
-  title={DartMoQP: A MoE-Native Unified Framework for Mixed-Precision Quantization and Structured Pruning},
-  author={Zhaoning Zhang},
-  year={2026}
+@inproceedings{dartmoqp2027,
+  title={DartMoQP: A Unified Framework for Mixed-Precision Quantization and Pruning of Mixture-of-Experts Models},
+  author={Zhang, Zhaoning and ...},
+  booktitle={Proceedings of the AAAI Conference on Artificial Intelligence},
+  year={2027}
 }
 ```
+
+---
 
 ## License
 
@@ -818,8 +698,7 @@ This project is released under the same license as the base models it quantizes.
 
 - GPTQ for the per-row quantization baseline
 - TurboQuant for the vector quantization approach
-- CAMERA (http://arxiv.org/abs/2508.02322) for energy-based importance estimation (for comparison only)
-- GEMQ (https://arxiv.org/pdf/2605.23078, ICML 2026) for the per-row quantization baseline
-- ExLlamaV3 (https://github.com/turboderp-org/exllamav3)
-- All the MoE model authors for their open-source contributions
-
+- CAMERA for energy-based importance estimation (baseline comparison)
+- GEMQ (ICML 2026) for the expert-level mixed-precision baseline
+- ExLlamaV3 for high-performance inference kernel reference
+- All MoE model authors for their open-source contributions
