@@ -352,6 +352,30 @@ We have implemented a production-grade mixed-precision inference kernel based on
 
 This design maximizes hardware utilization under the mixed-bitwidth constraint. The full inference code, including Triton kernel implementations and the expert-merging dispatcher, is provided for reproducibility.
 
+### Accelerated Inference (WxA16 / WxA8)
+
+The quantized models run through two real-quantization inference paths, sharing the **same packed checkpoint** (safetensors + meta.json, saved by `--save-quantized`):
+
+- **WxA16** — mixed-bit packed weights (1/2/4/8 bit per micro-expert) with FP16 activations and FP16 tensor cores. Dequantization and GEMM are fused in a single Triton kernel (group-first layout: indices-packed uint8 + codebook + norms, per-expert row/column slicing), with rotation hoisting (grouped QR rotation lifted out of the expert loop) and per-bit tile configuration tables.
+- **WxA8** — same packed weights with INT8 activations and INT8 tensor cores (IMMA). Activations are quantized per-token per-group by a fused rotate+quantize kernel (measured **18.75×** over the two-stage rotate-then-quantize path at realistic scales); the FP16 codebook is converted to INT8 at load time, with zero tensor copies between A16 and A8 (`--inference-quant-mode wxa8`).
+
+Kernel-level comparison on RTX 5090 (2 bpw, realistic eval shapes): WxA8 kernels are **1.52×** faster than WxA16 (gate_up 1.59× / down 1.40×, `test/test_wxa8_kernel.py`), with per-token-per-group activation quantization keeping PPL within ±0.005 of the A16 path.
+
+### Speed Benchmarking
+
+End-to-end wall time and PPL are measured per model × inference mode with the same eval harness:
+
+```bash
+# 1. Quantize and save packed checkpoints (5 MoE models × 2 bpw)
+sh run.q.sh
+# 2. Speed comparison: fp16 baseline vs wxa16 vs wxa8
+sh run.e.sh
+```
+
+- fp16 baseline runs in CPU-standby mode (`--standby-cpu`, layers streamed to GPU one at a time); wxa16/wxa8 load the packed checkpoint directly into GPU memory.
+- The first wxa8 run pays a one-time Triton JIT compilation cost (per expert shape); warm up the kernel cache with any single wxa8 eval before timing.
+- Quantized checkpoints for the five supported models at 2 bpw occupy 2.3–9.4 GB on disk (see `roadmaps/ROADMAP-turboquant-wxa16-wxa8-port.md` for the per-model PPL table and development log).
+
 ---
 
 ## Visualization and Analysis

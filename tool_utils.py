@@ -3,13 +3,19 @@ import gc
 
 def force_release_inactive_splits(device=0):
     # print(f" GPU {device} inactive_split_bytes...")
-    
-    gc.collect()    
+
+    gc.collect()
     torch.cuda.empty_cache()
-    
+
+    # remember and restore the original device: set_device changes the
+    # process-wide current device; without restoring it, later triton kernels
+    # launch in the wrong CUDA context (cuda:0 tensors + cuda:1 context ->
+    # cuPointerGetAttribute INVALID_VALUE, reported as
+    # "Pointer argument cannot be accessed from Triton (cpu tensor?)")
+    orig_device = torch.cuda.current_device()
     torch.cuda.set_device(device)
     free_mem, total_mem = torch.cuda.mem_get_info()
-    
+
     for ratio in [0.95, 0.9, 0.8, 0.7, 0.5, 0.3]:
         try:
             target_size = int(free_mem * ratio)
@@ -18,9 +24,11 @@ def force_release_inactive_splits(device=0):
             break
         except:
             continue
-    
+
     gc.collect()
     torch.cuda.empty_cache()
+
+    torch.cuda.set_device(orig_device)
     
     # stats = torch.cuda.memory_stats(device=device)
     # print(f"inactive_split_bytes: {stats['inactive_split_bytes.all.current'] / 1024**3:.2f} GB")

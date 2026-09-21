@@ -13,6 +13,7 @@ from dartmoq_sequential import *
 # from sft_utils import simple_sft
 from eval_dartmoq import eval_zero_shot, load_model
 from dartmoq_io import save_dartmoq_model, load_dartmoq_model
+from data_utils import get_git_hash
 
 def save_results(file_name, results):
     if results is not str:
@@ -97,9 +98,33 @@ if __name__ == '__main__':
     parser.add_argument(        '--save-model', action='store_true', default=False,
         help='Whether to save the model to disk.'
     )
+    parser.add_argument(        '--wxa16', action='store_true', default=False,
+        help='Enable WxA16 true quantization path (packed weights + Triton kernels). '
+             '--save-quantized 时自动启用，无需重复指定'
+    )
+    parser.add_argument(        '--save-quantized', type=str, default=None,
+        help='Save quantized checkpoint (packed safetensors + meta.json) to this directory '
+             'after quantization. 自动启用 WxA16 真量化路径。'
+    )
 
     args = parser.parse_args()
-    
+
+    # structured log header (parsed by logs_parser.py's new format;
+    # keep the leading field names unchanged)
+    print("DartMoQ Quantization Run")
+    print(f"Git HEAD: {get_git_hash()}")
+    print(f"Model: {args.model}")
+    print(f"Quant scheme: {args.quant_scheme}")
+    print(f"Rank mode: {args.rank_mode}")
+    print(f"Slices per expert: {args.slices}")
+    print(f"MOE struct: {'hybrid' if args.use_hybrid_moe else 'origin'}")
+    print(f"Quant mode: {args.quantmode}")
+    print(f"WxA16 real quantization: {'Yes' if (args.wxa16 or args.save_quantized) else 'No (fake quant)'}")
+    print(f"CPU standby: {'Yes' if args.standby_layer_cpu else 'No'}")
+    if args.save_quantized:
+        print(f"Save quantized checkpoint: {args.save_quantized}")
+    print(f"Current time: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())}")
+
     print("-" * 50)
     print(f"Current start time: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())}")
 
@@ -130,6 +155,25 @@ if __name__ == '__main__':
         print("###: Save dartmoq model to: ", save_dir)
         save_dartmoq_model(dartmoq_model, tokenizer, save_dir, args)
 
+    if args.save_quantized:
+        # save the real quantized parameters (packed safetensors + meta.json);
+        # load them back with --load-quantized /
+        # --inference-quant-mode {wxa16,wxa8}
+        from dartmoq_quant_io import save_quantized_model
+        print("###: Save quantized (packed) model to: ", args.save_quantized)
+        save_quantized_model(
+            dartmoq_model,
+            save_dir=args.save_quantized,
+            base_model_path=args.model,
+            quant_args={
+                "seed": args.seed,
+                "quant_scheme": args.quant_scheme,
+                "rank_mode": args.rank_mode,
+                "quantmode": args.quantmode,
+                "slices": args.slices,
+            },
+        )
+
     time_zero_eval = 0.0
     if args.eval_zero and not args.standby_layer_cpu:
         tick_zero_start = time.time()
@@ -149,4 +193,5 @@ if __name__ == '__main__':
 
     print(f"Runtime of training-free construction (ppl): {tick1 - tick:.2f}")
     print(f"Current finish time: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())}")
+    print(f"Finish time: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())}")
     time.sleep(120)

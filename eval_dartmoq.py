@@ -1,5 +1,6 @@
 from enum import auto
 from os import name
+import os
 import time
 
 import torch
@@ -179,6 +180,12 @@ def cmoe_ppl_eval_sequential(model, testloader, eval_set, args):
 
         # Move layer back to CPU
         layer = layer.to('cpu')
+        # packed quantization path: drop runtime caches holding tensors on
+        # the old device (gf layout etc.), so stale GPU tensors do not stay
+        # resident across per-layer moves
+        for sub in layer.modules():
+            if hasattr(sub, 'drop_runtime_caches'):
+                sub.drop_runtime_caches()
 
         # Cleanup
         gc.collect()
@@ -241,11 +248,14 @@ def cmoe_ppl_eval_sequential(model, testloader, eval_set, args):
 def cmoe_ppl_eval(model, testloader, eval_set, args):
     # Check if we should use sequential mode
     use_sequential = getattr(args, 'sequential_eval', False)
-    use_standby_cpu = getattr(args, 'standby_layer_cpu', False)
+    # run_dartmoq uses standby_layer_cpu and eval_dartmoq uses standby_cpu;
+    # accept both
+    use_standby_cpu = (getattr(args, 'standby_layer_cpu', False)
+                       or getattr(args, 'standby_cpu', False))
 
-    # If standby_layer_cpu is True, force sequential_eval to avoid device mismatch issues
+    # If standby is True, force sequential_eval to avoid device mismatch issues
     if use_standby_cpu and not use_sequential:
-        print("Warning: standby_layer_cpu enabled, forcing sequential_eval for stability.")
+        print("Warning: standby enabled, forcing sequential_eval for stability.")
         use_sequential = True
 
     if use_sequential:
@@ -293,8 +303,32 @@ def cmoe_ppl_eval(model, testloader, eval_set, args):
     # print(model)
     nlls = []
 
-    for i in range(nsamples):
-        batch = testenc[:, (i * model.seqlen):((i + 1) * model.seqlen)].to(DEV)
+    # Batch samples instead of running them one by one: per-sample forwards
+    # give the packed MoE only B=2048 tokens per forward, where the
+    # per-expert x per-bit sort/gather/scatter Python overhead and kernel
+    # launch cost dominate. Batching amortizes that overhead and feeds the
+    # triton kernels with the B regime they were tuned for. PPL math is
+    # unchanged: all samples have equal length, so the mean loss over a batch
+    # equals the mean of the per-sample losses.
+    #
+    # Batch size is memory-bound in this resident path: the attention score
+    # matrix (B, heads, 2048, 2048) in fp32 plus the final logits
+    # (B, 2048, vocab) must coexist with the fully resident model. With the
+    # largest vocab (qwen3: 151936) even 16 needs ~31GB, so 8 is the safe
+    # default. For large-batch benchmarking use --sequential-eval, where only
+    # one layer is on GPU at a time and the batch can be 32.
+    batch_size_transformer = 8
+    for start_idx in range(0, nsamples, batch_size_transformer):
+        end_idx = min(start_idx + batch_size_transformer, nsamples)
+        if start_idx % (batch_size_transformer * 4) == 0:
+            print(f"  eval progress: samples {start_idx}/{nsamples} "
+                  f"(+{time.time() - tick0:.1f}s)", flush=True)
+        # IMPORTANT: view into (B, seqlen), NOT one long sequence —
+        # the causal attention score matrix is O((B*seqlen)^2) for a long
+        # sequence (a 32-sample concatenation would need a (65536, 65536)
+        # score matrix = 128GB), while (B, seqlen) keeps it per-sample
+        batch = testenc[:, (start_idx * model.seqlen):(end_idx * model.seqlen)].to(DEV)
+        batch = batch.view(end_idx - start_idx, model.seqlen)
         target_ids = batch.clone()
 
         for hook in hooks:
@@ -624,8 +658,9 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
 
-    parser.add_argument(        'model', type=str,
-        help='Model to load; pass location of hugginface converted checkpoint.'
+    parser.add_argument(        'model', type=str, nargs='?', default=None,
+        help='Model to load; pass location of hugginface converted checkpoint. '
+             '使用 --load-quantized 时可省略（从 meta.json 取 base_model 路径）。'
     )
     parser.add_argument(        '--seed',
         type=int, default=0, help='Seed for sampling the calibration data.'
@@ -646,15 +681,58 @@ if __name__ == '__main__':
     parser.add_argument(        '--standby-cpu', action='store_true', default=False,
         help='Use CPU standby mode (load model to CPU first for large models).'
     )
+    parser.add_argument(        '--load-quantized', type=str, default=None,
+        help='Load quantized checkpoint (packed safetensors + meta.json) from this directory, '
+             'skip calibration & quantization, directly run eval.'
+    )
+    parser.add_argument(        '--inference-quant-mode', type=str, default='wxa16',
+        choices=['wxa16', 'wxa8'],
+        help='Inference quant mode when loading quantized checkpoint: wxa16 (fp16 act) '
+             'or wxa8 (int8 act, same checkpoint).'
+    )
 
 
     args = parser.parse_args()
 
     print("", args.model)
 
+    # auto-detect: a quantized checkpoint dir passed positionally is treated
+    # as --load-quantized
+    def _is_quant_dir(p):
+        return bool(p) and os.path.isdir(p) and os.path.isfile(os.path.join(p, "meta.json"))
+
+    if args.model and not args.load_quantized and _is_quant_dir(args.model):
+        args.load_quantized = args.model
+
+    # structured log header (parsed by logs_parser.py's new format;
+    # keep the leading field names unchanged)
+    print("DartMoQ Evaluation")
+    print(f"Git HEAD: {get_git_hash()}")
+    if args.load_quantized:
+        print(f"Load quantized checkpoint: {args.load_quantized}")
+        print(f"Inference quant mode: {args.inference_quant_mode}")
+    else:
+        print(f"Model: {args.model}")
+    print("Datasets: wikitext2, c4")
+    print(f"Sequential eval: {args.sequential_eval}")
+    print(f"Standby CPU: {args.standby_cpu}")
+    print(f"Current time: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())}")
+
+    def _load_eval_model():
+        """按 load-quantized / 原始模型两种方式加载模型。"""
+        if args.load_quantized:
+            from dartmoq_quant_io import load_quantized_model
+            return load_quantized_model(
+                args.model if not _is_quant_dir(args.model) else None,
+                args.load_quantized,
+                standby_cpu=args.standby_cpu,
+                inference_quant_mode=args.inference_quant_mode,
+            )
+        return load_model(args.model, standby_cpu=args.standby_cpu)
+
     if not args.eval_zero:
-        print("Loading model: ", args.model.lower())
-        model, tokenizer = load_model(args.model, standby_cpu=args.standby_cpu)
+        print("Loading model: ", (args.model or "").lower())
+        model, tokenizer = _load_eval_model()
 
         # If in CPU standby mode, make sure everything is on CPU
         if args.standby_cpu:
@@ -681,8 +759,8 @@ if __name__ == '__main__':
             ppl.append(f"{dataset}: {ppl_i}")
 
     if args.eval_zero:
-        print("Loading model: ", args.model.lower())
-        model, tokenizer = load_model(args.model, standby_cpu=args.standby_cpu)
+        print("Loading model: ", (args.model or "").lower())
+        model, tokenizer = _load_eval_model()
 
         task_list = ["arc_challenge", "arc_easy", "piqa", "boolq", "winogrande", "sciq", "mnli", "hellaswag", "gsm8k", "mmlu", "triviaqa"]
         # task_list = ["arc_challenge", "arc_easy", "boolq", "winogrande", "piqa", "sciq", "hellaswag", "mmlu", "gsm8k", "triviaqa"]

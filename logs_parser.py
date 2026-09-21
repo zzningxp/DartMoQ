@@ -42,10 +42,12 @@ TASK_FIELDS = [
 ]
 
 FIELDNAMES = [
-    "model_name", "slices", "quant_scheme", "rank_mode",
-    "moe_struct", "quantmode", "disable_0bit_prune", "standby_layer_cpu", "bpw", "ppl_wikitext2", "ppl_c4",
+    "git_hash", "model_name", "slices", "quant_scheme", "rank_mode",
+    "moe_struct", "quantmode", "disable_0bit_prune", "standby_layer_cpu",
+    "quant_layers", "wxa16_real_quant", "bpw", "ppl_wikitext2", "ppl_c4",
     *TASK_FIELDS,
-    "status", "runtime_ppl", "runtime_quant", "runtime_ppl_eval", "runtime_zero_eval",
+    "status", "runtime_ppl", "runtime_quant", "runtime_ppl_eval",
+    "runtime_ppl_wikitext2", "runtime_ppl_c4", "runtime_zero_eval", "error",
 ]
 
 LOADING_RE = re.compile(r"Loading model:\s*\(ppl\)\s*(?P<path>\S+)")
@@ -55,7 +57,7 @@ QUANTMODE_RE = re.compile(
     r"(?P<moe_struct>\S+)\s+(?P<quantmode>\S+)(?:\s+(?P<disable_0bit_prune>\S+))?(?:\s+(?P<standby_layer_cpu>\S+))?"
 )
 BPW_RE = re.compile(r"\bwith bpw\s+(?P<bpw>[-+0-9.eE]+)")
-PPL_RE = re.compile(r"ppl on (?P<dataset>wikitext2|c4)(?:\s+\([^)]+\))?:\s*(?P<value>[-+0-9.eE]+)")
+PPL_RE = re.compile(r"ppl on (?P<dataset>wikitext2|c4)(?:\s+\([^)]+\))?:\s*(?P<value>[-+0-9.eE]+|nan|inf)")
 TASK_RE = re.compile(r"^(?P<task>[A-Za-z0-9_]+)\s+\{(?P<body>.*)\}\s+time:")
 METRIC_RE_TEMPLATE = r"['\"]{name}['\"]:\s*(?:np\.float64\()?([-+0-9.eE]+)"
 RUNTIME_RE = re.compile(r"Runtime of training-free construction \(ppl\):\s*(?P<value>[-+0-9.eE]+)")
@@ -67,10 +69,44 @@ FATAL_RE = re.compile(r"Segmentation fault|Traceback|RuntimeError|CUDA out of me
 MODEL_NAME_RE = re.compile(r"^model:\s+(?P<path>\S+)\s+(?P<name>\S+)")
 NUMERIC_RE = re.compile(r"^[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?$")
 
+# ===========================================================================
+# New-format logs (structured header printed by run_dartmoq.py /
+# eval_dartmoq.py)
+# ===========================================================================
+START_RUN_RE = re.compile(r"DartMoQ Quantization Run")
+EVAL_START_RUN_RE = re.compile(r"DartMoQ Evaluation")
+NEW_MODEL_RE = re.compile(r"^Model:\s+(?P<path>\S+)")
+NEW_GIT_HASH_RE = re.compile(r"^Git HEAD:\s+(?P<git_hash>[a-f0-9]+\+?)")
+NEW_QUANT_SCHEME_RE = re.compile(r"^Quant scheme:\s+(?P<quant_scheme>\S+)")
+NEW_RANK_MODE_RE = re.compile(r"^Rank mode:\s+(?P<rank_mode>\S+)")
+NEW_SLICES_RE = re.compile(r"^Slices per expert:\s+(?P<slices>\S+)")
+NEW_MOE_STRUCT_RE = re.compile(r"^MOE struct:\s+(?P<moe_struct>\S+)")
+NEW_QUANTMODE_RE = re.compile(r"^Quant mode:\s+(?P<quantmode>\S+)")
+NEW_STANDBY_CPU_RE = re.compile(r"^CPU standby:\s+(?P<standby_layer_cpu>\S+)")
+NEW_WXA16_REAL_QUANT_RE = re.compile(r"^WxA16 real quantization:\s+(?P<wxa16_real_quant>\S+)")
+NEW_START_TIME_RE = re.compile(r"^Current time:\s*(?P<value>.+)")
+NEW_FINISH_TIME_RE = re.compile(r"^Finish time:\s*(?P<value>.+)")
+NEW_PPL_RE = re.compile(r"ppl on (?P<dataset>wikitext2|c4)(?:\s+\([^)]+\))?:\s*(?P<value>[-+0-9.eE]+|nan|inf)(?:\s+time:\s*(?P<time_value>[-+0-9.eE]+))?")
+# Eval format
+EVAL_LOAD_QUANTIZED_RE = re.compile(r"^Load quantized checkpoint:\s+(?P<path>\S+)")
+EVAL_INFERENCE_QUANT_MODE_RE = re.compile(r"^Inference quant mode:\s+(?P<mode>\S+)")
+EVAL_SEQUENTIAL_RE = re.compile(r"^Sequential eval:\s+(?P<sequential>\S+)")
+EVAL_STANDBY_CPU_RE = re.compile(r"^Standby CPU:\s+(?P<standby_cpu>\S+)")
+EVAL_DATASETS_RE = re.compile(r"^Datasets:\s+(?P<datasets>.+)")
+
 # For backward compatibility with old logs
 LAYER_TIME_RE = re.compile(r"Layer (?P<layer>\d+) total reconstruct and quantization time:\s*(?P<value>[-+0-9.eE]+) s")
-PPL_INDIVIDUAL_TIME_RE = re.compile(r"ppl on (?P<dataset>wikitext2|c4)(?:\s+\([^)]+\))?:\s*[-+0-9.eE]+\s*time:\s*(?P<value>[-+0-9.eE]+)")
+PPL_INDIVIDUAL_TIME_RE = re.compile(r"ppl on (?P<dataset>wikitext2|c4)(?:\s+\([^)]+\))?:\s*(?:[-+0-9.eE]+|nan|inf)\s*time:\s*(?P<value>[-+0-9.eE]+)")
 ZERO_EVAL_OLD_RE = re.compile(r"Zero-shot evaluation time:\s*(?P<value>[-+0-9.eE]+)")
+
+# ===========================================================================
+# bpw fallback derived from quant_scheme (used when the log has no
+# "with bpw" line)
+# ===========================================================================
+# Qwen3.5 style: w8a8 / w4a4 ...
+QUANT_SCHEME_BPW_RE = re.compile(r"w(?P<weight_bits>\d+)(?:a(?P<act_bits>\d+))?")
+# DartMoQ fixed schemes: a8s4m3221 -> MoE expert bitwidth list 3221 (mean = bpw)
+DARTMOQ_SCHEME_BPW_RE = re.compile(r"a\d+s\d+m(?P<bits>[\d.]+)")
 
 
 @dataclass
@@ -90,6 +126,9 @@ class RunRecord:
     quantmode: str = ""
     disable_0bit_prune: str = ""
     standby_layer_cpu: str = ""
+    quant_layers: str = ""
+    wxa16_real_quant: str = ""
+    git_hash: str = ""
     bpw: str = ""
     ppl_wikitext2: str = ""
     ppl_c4: str = ""
@@ -108,6 +147,8 @@ class RunRecord:
     runtime_ppl: str = ""
     runtime_quant: str = ""
     runtime_ppl_eval: str = ""
+    runtime_ppl_wikitext2: str = ""
+    runtime_ppl_c4: str = ""
     runtime_zero_eval: str = ""
     error: str = ""
     _fatal: bool = field(default=False, repr=False)
@@ -126,25 +167,66 @@ class RunRecord:
         if not self.runtime_ppl_eval and self._ppl_eval_times:
             total = sum(self._ppl_eval_times)
             self.runtime_ppl_eval = f"{total:.2f}"
+        # Calculate bpw from quant_scheme if not already set
+        if not self.bpw and self.quant_scheme:
+            bpw = self._calculate_bpw_from_scheme(self.quant_scheme)
+            if bpw is not None:
+                self.bpw = f"{bpw:.2f}"
+        # Calculate total time: time = t_q + t_ppl
+        if not self.runtime_ppl:
+            t_quant = 0.0
+            t_ppl = 0.0
+            try:
+                if self.runtime_quant:
+                    t_quant = float(self.runtime_quant)
+            except ValueError:
+                pass
+            try:
+                if self.runtime_ppl_eval:
+                    t_ppl = float(self.runtime_ppl_eval)
+            except ValueError:
+                pass
+            if t_quant > 0 or t_ppl > 0:
+                self.runtime_ppl = f"{t_quant + t_ppl:.2f}"
         if self._fatal:
             self.status = "failed"
         elif self.ppl_wikitext2 and self.ppl_c4:
             # Have both ppl results
-            missing = [name for name in TASK_FIELDS if not getattr(self, name)]
-            if missing:
-                self.status = "partial"
-            else:
-                self.status = "ok"
-        elif self.runtime_ppl or self.mmlu_acc:
-            # Have other results but not both ppl
-            missing = [name for name in TASK_FIELDS if not getattr(self, name)]
-            if missing:
-                self.status = "partial"
-            else:
-                self.status = "ok"
+            self.status = "ok"
+        elif self.runtime_ppl or any(getattr(self, name) for name in TASK_FIELDS):
+            # Have other results but not both ppl（含纯 zero-shot 运行）
+            self.status = "partial"
         else:
             # Have only one ppl or nothing at all
             self.status = "incomplete"
+
+    @staticmethod
+    def _calculate_bpw_from_scheme(quant_scheme: str) -> float | None:
+        """Calculate bpw from the quant_scheme string.
+
+        Supports:
+          - DartMoQ fixed schemes "a8s4m3221" -> mean of the MoE expert
+            bitwidths, (3+2+2+1)/4 = 2.0
+          - w8a8 / w4a4 style (Qwen3.5) -> weight bits or (w+a)/2
+        Returns None if parsing fails.
+        """
+        match = DARTMOQ_SCHEME_BPW_RE.search(quant_scheme)
+        if match:
+            bits = match.group("bits")
+            if bits.isdigit():
+                return sum(int(d) for d in bits) / len(bits)
+            try:
+                return float(bits)
+            except ValueError:
+                pass
+        match = QUANT_SCHEME_BPW_RE.search(quant_scheme)
+        if match:
+            weight_bits = int(match.group("weight_bits"))
+            act_bits = match.group("act_bits")
+            if act_bits:
+                return (weight_bits + int(act_bits)) / 2.0
+            return float(weight_bits)
+        return None
 
     def public_dict(self) -> dict[str, str | int]:
         row = asdict(self)
@@ -181,6 +263,9 @@ def parse_log(path: str) -> list[RunRecord]:
     pending_start_time = ""
     source = os.path.basename(path)
     last_line_no = 0
+    # Track which format we're using
+    using_new_format = False
+    using_eval_format = False
 
     with open(path, "r", encoding="utf-8", errors="replace") as f:
         for line_no, raw_line in enumerate(f, 1):
@@ -189,12 +274,9 @@ def parse_log(path: str) -> list[RunRecord]:
             if not line:
                 continue
 
-            start_match = START_TIME_RE.search(line)
-            if start_match:
-                pending_start_time = start_match.group("value").strip()
-
-            loading_match = LOADING_RE.search(line)
-            if loading_match:
+            # Check for eval format start
+            eval_start_match = EVAL_START_RUN_RE.search(line)
+            if eval_start_match:
                 if current is not None:
                     current.finalize(line_no - 1)
                     records.append(current)
@@ -202,15 +284,179 @@ def parse_log(path: str) -> list[RunRecord]:
                     source=source,
                     run_idx=len(records) + 1,
                     start_line=line_no,
-                    start_time=pending_start_time,
-                    model_path=loading_match.group("path"),
+                    start_time="",
+                    model_path="",
                 )
-                current.model_name = _last_path_component(current.model_path)
+                current.quantmode = "fp16"
+                using_eval_format = True
+                using_new_format = False
                 continue
+
+            # Check for new format start
+            start_run_match = START_RUN_RE.search(line)
+            if start_run_match:
+                if current is not None:
+                    current.finalize(line_no - 1)
+                    records.append(current)
+                current = RunRecord(
+                    source=source,
+                    run_idx=len(records) + 1,
+                    start_line=line_no,
+                    start_time="",
+                    model_path="",
+                )
+                using_new_format = True
+                using_eval_format = False
+                continue
+
+            # If not using new format yet, check for old format patterns
+            if not using_new_format and not using_eval_format:
+                start_time_match = START_TIME_RE.search(line)
+                if start_time_match:
+                    pending_start_time = start_time_match.group("value").strip()
+
+                loading_match = LOADING_RE.search(line)
+                if loading_match:
+                    if current is not None:
+                        current.finalize(line_no - 1)
+                        records.append(current)
+                    current = RunRecord(
+                        source=source,
+                        run_idx=len(records) + 1,
+                        start_line=line_no,
+                        start_time=pending_start_time,
+                        model_path=loading_match.group("path"),
+                    )
+                    current.model_name = _last_path_component(current.model_path)
+                    using_new_format = False
+                    using_eval_format = False
+                    continue
 
             if current is None:
                 continue
 
+            # Parse layer times - do this first for all formats!
+            layer_time_match = LAYER_TIME_RE.search(line)
+            if layer_time_match:
+                try:
+                    t = float(layer_time_match.group("value"))
+                    current._layer_times.append(t)
+                except ValueError:
+                    pass
+                # Don't continue, fall through to other matches
+
+            # Both new formats use model line
+            model_match = NEW_MODEL_RE.search(line)
+            if model_match:
+                current.model_path = model_match.group("path")
+                current.model_name = _last_path_component(current.model_path)
+                continue
+
+            # Parse git hash
+            git_hash_match = NEW_GIT_HASH_RE.search(line)
+            if git_hash_match:
+                current.git_hash = git_hash_match.group("git_hash")
+                continue
+
+            # Eval format parsing
+            if using_eval_format:
+                eval_standby_cpu_match = EVAL_STANDBY_CPU_RE.search(line)
+                if eval_standby_cpu_match:
+                    current.standby_layer_cpu = eval_standby_cpu_match.group("standby_cpu")
+                    continue
+
+                # direct eval of a quantized checkpoint (--load-quantized)
+                eval_quant_match = EVAL_LOAD_QUANTIZED_RE.search(line)
+                if eval_quant_match:
+                    qpath = eval_quant_match.group("path")
+                    current.model_path = qpath
+                    current.model_name = _last_path_component(qpath)
+                    current.wxa16_real_quant = "Yes"
+                    current.quantmode = "wxa16_load"
+                    continue
+
+                # inference quant mode: wxa8 overrides the default wxa16_load
+                # marker (printed after the "Load quantized checkpoint" line)
+                eval_inf_mode_match = EVAL_INFERENCE_QUANT_MODE_RE.search(line)
+                if eval_inf_mode_match:
+                    mode = eval_inf_mode_match.group("mode")
+                    current.quantmode = f"{mode}_load"
+                    continue
+
+                # Eval uses the same PPL format
+                new_ppl_match = NEW_PPL_RE.search(line)
+                if new_ppl_match:
+                    dataset = new_ppl_match.group("dataset")
+                    setattr(current, f"ppl_{dataset}", new_ppl_match.group("value"))
+                    time_value = new_ppl_match.groupdict().get("time_value")
+                    if time_value:
+                        try:
+                            t = float(time_value)
+                            current._ppl_eval_times.append(t)
+                            setattr(current, f"runtime_ppl_{dataset}", f"{t:.2f}")
+                        except ValueError:
+                            pass
+                    continue
+
+            # New format parsing
+            elif using_new_format:
+                quant_scheme_match = NEW_QUANT_SCHEME_RE.search(line)
+                if quant_scheme_match:
+                    current.quant_scheme = quant_scheme_match.group("quant_scheme")
+                    continue
+
+                rank_mode_match = NEW_RANK_MODE_RE.search(line)
+                if rank_mode_match:
+                    current.rank_mode = rank_mode_match.group("rank_mode")
+                    continue
+
+                slices_match = NEW_SLICES_RE.search(line)
+                if slices_match:
+                    current.slices = slices_match.group("slices")
+                    continue
+
+                moe_struct_match = NEW_MOE_STRUCT_RE.search(line)
+                if moe_struct_match:
+                    current.moe_struct = moe_struct_match.group("moe_struct")
+                    continue
+
+                quantmode_match = NEW_QUANTMODE_RE.search(line)
+                if quantmode_match:
+                    current.quantmode = quantmode_match.group("quantmode")
+                    continue
+
+                standby_cpu_match = NEW_STANDBY_CPU_RE.search(line)
+                if standby_cpu_match:
+                    current.standby_layer_cpu = standby_cpu_match.group("standby_layer_cpu")
+                    continue
+
+                wxa16_real_quant_match = NEW_WXA16_REAL_QUANT_RE.search(line)
+                if wxa16_real_quant_match:
+                    current.wxa16_real_quant = wxa16_real_quant_match.group("wxa16_real_quant")
+                    continue
+
+                start_time_match = NEW_START_TIME_RE.search(line)
+                if start_time_match:
+                    current.start_time = start_time_match.group("value").strip()
+                    continue
+
+                # New format PPL with time
+                new_ppl_match = NEW_PPL_RE.search(line)
+                if new_ppl_match:
+                    dataset = new_ppl_match.group("dataset")
+                    setattr(current, f"ppl_{dataset}", new_ppl_match.group("value"))
+                    time_value = new_ppl_match.groupdict().get("time_value")
+                    if time_value:
+                        try:
+                            t = float(time_value)
+                            current._ppl_eval_times.append(t)
+                            setattr(current, f"runtime_ppl_{dataset}", f"{t:.2f}")
+                        except ValueError:
+                            pass
+                    continue
+
+            # Old-format parsing (new-format lines that did not match fall
+            # through here as well, so mixed logs keep working)
             quantmode_match = QUANTMODE_RE.search(line)
             if quantmode_match:
                 for key, value in quantmode_match.groupdict().items():
@@ -278,16 +524,6 @@ def parse_log(path: str) -> list[RunRecord]:
                 current.runtime_zero_eval = runtime_zero_eval_match.group("value")
                 continue
 
-            # Backward compatibility: parse layer times for old logs
-            layer_time_match = LAYER_TIME_RE.search(line)
-            if layer_time_match:
-                try:
-                    t = float(layer_time_match.group("value"))
-                    current._layer_times.append(t)
-                except ValueError:
-                    pass
-                continue
-
             # Backward compatibility: parse old zero-eval time format
             zero_eval_old_match = ZERO_EVAL_OLD_RE.search(line)
             if zero_eval_old_match and not current.runtime_zero_eval:
@@ -337,12 +573,12 @@ def write_csv(records: list[RunRecord], out) -> None:
 
 
 DISPLAY_FIELDS = [
-    "model_name", "slices", "quant_scheme", "rank_mode", "quantmode", "bpw",
+    "git_hash", "model_name", "slices", "quant_scheme", "rank_mode", "moe_struct", "quantmode",
+    "quant_layers", "wxa16_real_quant", "bpw",
     "ppl_wikitext2", "ppl_c4",
-    "arc_c_acc", "arc_c_acc_norm", "arc_e_acc", "arc_e_acc_norm",
-    "piqa_acc", "piqa_acc_norm", "boolq_acc", "wino_acc", "mnli_acc",
-    "hella_acc", "hella_acc_norm", "mmlu_acc", "status",
-    "runtime_ppl", "runtime_quant", "runtime_ppl_eval", "runtime_zero_eval", "error",
+    "status",
+    "runtime_ppl", "runtime_quant", "runtime_ppl_eval",
+    "runtime_ppl_wikitext2", "runtime_ppl_c4", "error",
 ]
 
 PLAIN_HEADERS = {
@@ -354,25 +590,18 @@ PLAIN_HEADERS = {
     "quantmode": "qmode",
     "disable_0bit_prune": "no0prune",
     "standby_layer_cpu": "stdbycpu",
+    "quant_layers": "qlayers",
+    "wxa16_real_quant": "wxa16",
+    "git_hash": "git",
     "bpw": "bpw",
     "ppl_wikitext2": "wiki",
     "ppl_c4": "c4",
-    "arc_c_acc": "arc_c",
-    "arc_c_acc_norm": "arc_c_n",
-    "arc_e_acc": "arc_e",
-    "arc_e_acc_norm": "arc_e_n",
-    "piqa_acc": "piqa",
-    "piqa_acc_norm": "piqa_n",
-    "boolq_acc": "boolq",
-    "wino_acc": "wino",
-    "mnli_acc": "mnli",
-    "hella_acc": "hella",
-    "hella_acc_norm": "hella_n",
-    "mmlu_acc": "mmlu",
     "status": "status",
     "runtime_ppl": "time",
     "runtime_quant": "t_quant",
     "runtime_ppl_eval": "t_ppl",
+    "runtime_ppl_wikitext2": "t_wiki",
+    "runtime_ppl_c4": "t_c4",
     "runtime_zero_eval": "t_zero",
     "error": "err",
 }
@@ -386,6 +615,9 @@ EXPORT_HEADERS = {
     "quantmode": "quantmode",
     "disable_0bit_prune": "disable_0bit_prune",
     "standby_layer_cpu": "standby_layer_cpu",
+    "quant_layers": "quant_layers",
+    "wxa16_real_quant": "wxa16_real_quant",
+    "git_hash": "git_hash",
     "bpw": "bpw",
     "ppl_wikitext2": "ppl_wikitext2",
     "ppl_c4": "ppl_c4",
@@ -405,13 +637,19 @@ EXPORT_HEADERS = {
     "runtime_ppl": "total_time",
     "runtime_quant": "quant_time",
     "runtime_ppl_eval": "ppl_eval_time",
+    "runtime_ppl_wikitext2": "t_wiki",
+    "runtime_ppl_c4": "t_c4",
     "runtime_zero_eval": "zero_eval_time",
+    "error": "error",
 }
 
 
 def _format_value(field: str, value) -> str:
     if field == "error":
         return ""
+    # git_hash looks numeric but must not be formatted
+    if field == "git_hash":
+        return str(value).replace("\t", " ")
     text = str(value)
     if NUMERIC_RE.fullmatch(text):
         try:

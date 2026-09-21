@@ -15,3 +15,4 @@ run.*.sh
 *.csv
 models
 CLAUDE.md
+quant_ckpt/**

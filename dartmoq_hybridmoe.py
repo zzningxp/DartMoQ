@@ -8,10 +8,12 @@ class DartMoQHybridWrapper(nn.Module):
     This class wraps multiple sub-experts (with different bit configs) into a single callable expert.
     When called, it forwards input through all sub-experts and sums the results.
     """
-    def __init__(self, sub_experts):
+    def __init__(self, sub_experts, bit_to_indices=None):
         super().__init__()
         # Wrap each expert's sub-experts in a ModuleList
         self.sub_experts = sub_experts
+        # metadata: original neuron indices per bit (packed rebuild path)
+        self.bit_to_indices = bit_to_indices
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         # If all sub-experts are pruned (0bit), return zero directly

@@ -1,4 +1,7 @@
 from pyexpat import model
+import os
+import subprocess
+
 import numpy as np
 import torch
 
@@ -12,6 +15,32 @@ from datasets import load_dataset
 def set_seed(seed):
     np.random.seed(seed)
     torch.random.manual_seed(seed)
+
+
+def get_git_hash() -> str:
+    """Get git HEAD hash with optional + if workspace is dirty."""
+    try:
+        hash_result = subprocess.run(
+            ['git', 'rev-parse', '--short', 'HEAD'],
+            capture_output=True,
+            text=True,
+            cwd=os.path.dirname(os.path.abspath(__file__))
+        )
+        if hash_result.returncode != 0:
+            return ""
+        git_hash = hash_result.stdout.strip()
+        # Check if workspace is dirty
+        status_result = subprocess.run(
+            ['git', 'status', '--porcelain'],
+            capture_output=True,
+            text=True,
+            cwd=os.path.dirname(os.path.abspath(__file__))
+        )
+        if status_result.returncode == 0 and status_result.stdout.strip():
+            git_hash += "+"
+        return git_hash
+    except Exception:
+        return ""
 
 
 def get_wikitext2(nsamples, seed, seqlen, tokenizer, bsz = 1):

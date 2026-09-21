@@ -493,7 +493,7 @@ def analyze_turboquant_outlier_activation_aware(
 @torch.no_grad()
 def quant_layer_mix_precision(layer, layer_idx, quant_attn, n_experts, slice_expert_num,
                 attn_hidden_states, ffn_hidden_states, attention_mask, position_ids, position_embeddings,
-                qscheme, use_hybrid_moe, quantmode, seed=42):
+                qscheme, use_hybrid_moe, quantmode, seed=42, update_weight=True):
     print(f"Quantize layer {layer_idx}")
     nsample = attn_hidden_states.shape[0]
     assert attn_hidden_states.shape[0] == ffn_hidden_states.shape[0], f"attn_hidden_states.shape: {attn_hidden_states.shape}, ffn_hidden_states.shape: {ffn_hidden_states.shape}"
@@ -631,7 +631,8 @@ def quant_layer_mix_precision(layer, layer_idx, quant_attn, n_experts, slice_exp
                 with torch.cuda.stream(ss):
                     ss.wait_event(forward_event)
                     if gptq[name].quantizer.bits == 0:
-                        gptq[name].layer.weight = nn.Parameter(torch.zeros_like(gptq[name].layer.weight))
+                        if update_weight:
+                            gptq[name].layer.weight = nn.Parameter(torch.zeros_like(gptq[name].layer.weight))
                         loss[name] = torch.zeros(1)
                     else:
                         if quantmode == 'turboquant':
@@ -641,6 +642,7 @@ def quant_layer_mix_precision(layer, layer_idx, quant_attn, n_experts, slice_exp
                                 group_size=groupsize,
                                 seed=seed+layer_idx,
                                 rotation="qr",
+                                update=update_weight,
                             )
                         else:
                             loss[name] = gptq[name].fasterquant(
@@ -674,3 +676,152 @@ def quant_layer_mix_precision(layer, layer_idx, quant_attn, n_experts, slice_exp
 
     torch.cuda.empty_cache()
     gc.collect()
+
+
+@torch.no_grad()
+def collect_all_linears_recursive(module, result=None):
+    """Recursively collect all nn.Linear submodules, returning a list of
+    (parent_module, name, linear_module) tuples.
+
+    Handles nested structures such as the deepseek family's
+    kv_a_proj_with_mqa (which contains q_a_proj / kv_a_proj), collecting by
+    parent + attr name so each linear can be swapped back in place after
+    quantization.
+    """
+    if result is None:
+        result = []
+    for name, child in module.named_children():
+        if isinstance(child, nn.Linear):
+            result.append((module, name, child))
+        else:
+            collect_all_linears_recursive(child, result)
+    return result
+
+
+@torch.no_grad()
+def quant_layer_mix_precision_wxa16(layer, layer_idx, quant_attn, n_experts, slice_expert_num,
+                attn_hidden_states, ffn_hidden_states, attention_mask, position_ids, position_embeddings,
+                qscheme, use_hybrid_moe, quantmode, seed=42, group_size=128):
+    """
+    WxA16 版本：真实量化，将 nn.Linear 替换为 WxA16Linear，删除原始 fp16 权重。
+
+    流程：
+        1. run the existing fake-quant flow without touching the weights
+        (update_weight=False, loss computation only)
+      2. quantize the original fp16 attention / shared-expert weights into
+        packed format and swap them in place
+    Ordering matters: this function must run after MoE reconstruction
+    (reconstruct_moe_from_existing) and before
+    WxA16BitPartitionedGroupMoE.from_build_block — the MoE experts' packed
+    quantization is done by from_build_block; only attention and
+    shared-expert linears are handled here.
+    """
+    print(f"Quantize layer {layer_idx} (WxA16 mode)")
+
+    # ========== stage 0: pre-quantization memory stats ==========
+    tick_stats = time.time()
+    from quantization.wxa16.memory_stats import print_memory_stats_layer_before
+    before_stats = print_memory_stats_layer_before(layer, layer_idx)
+    print(f"  [DEBUG] print_memory_stats_layer_before time: {time.time() - tick_stats:.4f}s")
+
+    # ========== stage 1: fake-quant analysis, weights untouched ==========
+    tick_fakequant = time.time()
+    quant_layer_mix_precision(
+        layer, layer_idx, quant_attn, n_experts, slice_expert_num,
+        attn_hidden_states, ffn_hidden_states, attention_mask, position_ids, position_embeddings,
+        qscheme, use_hybrid_moe, quantmode, seed=seed, update_weight=False,
+    )
+    print(f"  [DEBUG] quant_layer_mix_precision (analyze only) time: {time.time() - tick_fakequant:.4f}s")
+
+    gc.collect()
+    torch.cuda.empty_cache()
+
+    # ========== stage 2: convert original fp16 weights to packed format ==========
+    print(f"  Converting to WxA16 packed format...")
+    tick_convert_start = time.time()
+
+    from quantization.wxa16.dartmoq_backend import wxa16_quantize_linear
+
+    ffn_filters = ['up_proj', 'gate_proj', 'down_proj']
+
+    # collect modules to quantize: (parent, name, linear, bit)
+    tick_collect = time.time()
+    all_modules = []
+
+    # attention: recursively collect every nn.Linear inside self_attn
+    # (including the MLA kv_a_proj_with_mqa nesting)
+    if quant_attn:
+        attn = getattr(layer, 'self_attn', None)
+        if attn is not None:
+            bit_attn = qscheme['attn'][0] if isinstance(qscheme['attn'], (list, tuple)) else qscheme['attn']
+            for parent, name, linear in collect_all_linears_recursive(attn):
+                all_modules.append((parent, name, linear, bit_attn))
+
+    # shared experts: gated single expert (shared_expert, qwen3-style) and
+    # ungated shared expert (shared_experts, deepseek family's single MLP with
+    # n_shared-times intermediate) are both supported
+    bit_share = qscheme['share'][0] if isinstance(qscheme['share'], (list, tuple)) else qscheme['share']
+    for shared_attr in ('shared_expert', 'shared_experts'):
+        shared_mod = getattr(layer.mlp, shared_attr, None)
+        if shared_mod is None:
+            continue
+        for name in ffn_filters:
+            if hasattr(shared_mod, name):
+                linear = getattr(shared_mod, name)
+                if isinstance(linear, nn.Linear):
+                    all_modules.append((shared_mod, name, linear, bit_share))
+
+    # standard MLP of non-MoE layers (deepseek family first layer) hangs off
+    # layer.mlp directly; quantize at the share bitwidth (same treatment as
+    # the fake-quant path in quant_layer_mix_precision)
+    if hasattr(layer.mlp, 'gate_proj'):
+        for name in ffn_filters:
+            if hasattr(layer.mlp, name):
+                linear = getattr(layer.mlp, name)
+                if isinstance(linear, nn.Linear):
+                    all_modules.append((layer.mlp, name, linear, bit_share))
+
+    # MoE experts are not handled here: from_build_block takes care of them
+    print(f"  [DEBUG] Collect {len(all_modules)} modules to convert: {time.time() - tick_collect:.4f}s")
+
+    # convert the collected linears to WxA16
+    tick_convert_modules = time.time()
+    for i, (parent, name, linear, bit) in enumerate(all_modules):
+        tick_module = time.time()
+        if bit == 0:
+            # 0-bit: zero the weights and keep the nn.Linear
+            with torch.no_grad():
+                linear.weight.zero_()
+                if linear.bias is not None:
+                    linear.bias.zero_()
+            print(f"    [{i+1}/{len(all_modules)}] {name}: 0-bit zeroed: {time.time() - tick_module:.4f}s")
+            continue
+
+        # convert to WxA16Linear (8-bit goes through W8A16Linear with a
+        # uniform codebook, which enables the A8 conversion later)
+        tick_quantize = time.time()
+        wxa16_linear = wxa16_quantize_linear(
+            linear,
+            bit_width=bit,
+            group_size=group_size,
+            seed=seed + layer_idx,
+            rotation="qr",
+            keep_on_gpu=True,
+        )
+        print(f"      wxa16_quantize_linear time: {time.time() - tick_quantize:.4f}s")
+
+        # swap in place and drop the original fp16 weights
+        setattr(parent, name, wxa16_linear)
+        del linear
+        gc.collect()
+        print(f"    Done {name}: {time.time() - tick_module:.4f}s")
+
+    print(f"  [DEBUG] All modules converted: {time.time() - tick_convert_modules:.4f}s")
+
+    tick_convert_end = time.time()
+    print(f"  Done WxA16 conversion: {tick_convert_end - tick_convert_start:.4f}s")
+
+    torch.cuda.empty_cache()
+    gc.collect()
+
+    return before_stats

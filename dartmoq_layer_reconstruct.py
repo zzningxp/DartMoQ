@@ -18,8 +18,14 @@ from dp_utils import extrapolate_0bit_loss_fix
 from collections import Counter
 from dartmoq_hybridmoe import DartMoQHybridWrapper
 from dartmoq_hybridmoe import restructure_hybrid_qscheme
+from quantization.common.adapters import detect_conventions, mlp_returns_tuple
 
 INTERMEDIATE_RESULT_DIR = "intermediate_result"
+
+# The packed path's triton kernels (WxA16) only support 1/2/4/8 bits, so
+# the DP candidate bitwidths must exclude 3 (0 is pruning semantics and
+# never enters a packed bucket)
+PACKED_SUPPORTED_BITS = {0, 1, 2, 4}
 
 @torch.no_grad()
 def reconstruct_moe_from_existing(model, layer, layer_idx, inps,
@@ -80,6 +86,15 @@ def reconstruct_moe_from_existing(model, layer, layer_idx, inps,
 
     probe_bit = 2
     dpscheme_list = None
+    # packed mode (--wxa16 or --save-quantized): kernels do not support
+    # 3-bit, so 3 is excluded from the DP candidates
+    packed_mode = getattr(args, 'wxa16', False) or bool(getattr(args, 'save_quantized', None))
+    if packed_mode:
+        assert 'target_bpw' in qscheme, (
+            "the packed quantization path only supports the global DP "
+            "bitwidth allocation (global-bpw schemes); fixed schemes "
+            "a8s8m... must not contain bit 3 (kernels support 1/2/4/8 only)")
+
     turboquant_outlier_modes = {
         "turboquant_iipl_fea": "iipl",
         "turboquant_iipl": "iipl",
@@ -103,6 +118,8 @@ def reconstruct_moe_from_existing(model, layer, layer_idx, inps,
                 outlier_bits = {1, 2, 3, 4}
             else:
                 outlier_bits = {0, 1, 2, 3, 4}
+            if packed_mode:
+                outlier_bits = outlier_bits & PACKED_SUPPORTED_BITS
         outlier_label = args.rank_mode if turboquant_outlier_mode else quantmode
         print(f"simulate {outlier_label} outlier_bits {outlier_bits}")
 
@@ -212,6 +229,8 @@ def reconstruct_moe_from_existing(model, layer, layer_idx, inps,
             energy_bits = [1, 2, 3, 4]
         else:
             energy_bits = [0, 1, 2, 3, 4]
+        if packed_mode:
+            energy_bits = [b for b in energy_bits if b in PACKED_SUPPORTED_BITS]
         dpscheme_list, all_rates_arr = enum_optimal_m_scheme_energy_global_fast(
                 expert_energy_list,
                 expert_activation_rates,
@@ -229,6 +248,7 @@ def reconstruct_moe_from_existing(model, layer, layer_idx, inps,
 
     all_new_expert_rates = []
     all_expert_groups = []  # Store groups for each expert
+    layer_expert_bit_indices = []  # packed rebuild path: per-expert bit -> original neuron indices
 
     for expert_idx, expert in enumerate(layer.mlp.experts):
         # print(f"\nProcessing original expert {expert_idx} / {ori_expert_num}")
@@ -313,13 +333,16 @@ def reconstruct_moe_from_existing(model, layer, layer_idx, inps,
 
             bit_to_indices = {}
             bit_to_slice_count = {}
-            
+
             for bit, group_indices in zip(orig_bit_config, expert_groups):
                 if bit not in bit_to_indices:
                     bit_to_indices[bit] = []
                     bit_to_slice_count[bit] = 0
                 bit_to_indices[bit].extend(group_indices)
                 bit_to_slice_count[bit] += 1
+
+            # for the packed rebuild path: record this expert's bit -> original neuron indices
+            layer_expert_bit_indices.append(bit_to_indices)
             
             for bit in restructured_config:
                 # Skip bit == 0 - those neurons are pruned entirely
@@ -395,21 +418,30 @@ def reconstruct_moe_from_existing(model, layer, layer_idx, inps,
     if use_hybrid_moe:
         # Create hybrid MoE using the original model's MLP class
         moe = layer.mlp.__class__(model.config).to(device)
-        
+
         # Keep gate and top_k configuration consistent with original
         moe.gate = layer.mlp.gate
         moe.num_experts = len(all_new_experts)
-        
+
         # Replace experts with nn.ModuleList of DartMoQHybridWrapper wrappers
         # Each DartMoQHybridWrapper wraps multiple sub-experts with different bit configs
-        moe.experts = nn.ModuleList([DartMoQHybridWrapper(sub_experts) for sub_experts in all_new_experts])
-        
+        # bit_to_indices is consumed by the packed rebuild path
+        # (WxA16BitPartitionedGroupMoE.from_build_block)
+        moe.experts = nn.ModuleList([
+            DartMoQHybridWrapper(sub_experts, bit_to_indices=layer_expert_bit_indices[expert_idx])
+            for expert_idx, sub_experts in enumerate(all_new_experts)
+        ])
+
         counter = Counter(sub_expert_bit_configs)
-        print("reconstruct moe with sub_expert_bit_configs: ", counter) 
-        
-        # Copy shared_experts if exists
+        print("reconstruct moe with sub_expert_bit_configs: ", counter)
+
+        # Copy shared experts if they exist (gated and ungated variants)
         if hasattr(layer.mlp, 'shared_experts'):
             moe.shared_experts = layer.mlp.shared_experts
+        if hasattr(layer.mlp, 'shared_expert'):
+            moe.shared_expert = layer.mlp.shared_expert
+        if hasattr(layer.mlp, 'shared_expert_gate'):
+            moe.shared_expert_gate = layer.mlp.shared_expert_gate
         moe.training = False
     else:
         # Original behavior
@@ -423,4 +455,33 @@ def reconstruct_moe_from_existing(model, layer, layer_idx, inps,
     gc.collect()
     torch.cuda.empty_cache()
 
-    return moe
+    # build layer_metadata for the packed rebuild path (including behavioral
+    # conventions, consumed by from_build_block and meta.json)
+    if use_hybrid_moe:
+        router_mode, shared_mode = detect_conventions(model.config)
+        top_k = (getattr(layer.mlp, 'top_k', None)
+                 or getattr(layer.mlp, 'num_experts_per_tok', None)
+                 or model.config.num_experts_per_tok)
+        hidden_size = model.config.hidden_size
+        if hasattr(model.config, 'moe_intermediate_size'):
+            intermediate_size = model.config.moe_intermediate_size
+        elif hasattr(model.config, 'intermediate_size'):
+            intermediate_size = model.config.intermediate_size
+        else:
+            intermediate_size = layer.mlp.experts[0].gate_proj.weight.shape[0]
+        layer_metadata = {
+            'layer_idx': layer_idx,
+            'expert_bit_indices': layer_expert_bit_indices,
+            'num_experts': ori_expert_num,
+            'hidden_size': hidden_size,
+            'intermediate_size': intermediate_size,
+            'bit_list': sorted(b for b in set().union(*[set(bi.keys()) for bi in layer_expert_bit_indices]) if b != 0),
+            'top_k': int(top_k),
+            'router_mode': router_mode,
+            'shared_mode': shared_mode,
+            'mlp_returns_tuple': mlp_returns_tuple(model.config),
+        }
+    else:
+        layer_metadata = None
+
+    return moe, layer_metadata
