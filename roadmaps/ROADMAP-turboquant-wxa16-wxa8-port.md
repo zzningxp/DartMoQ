@@ -60,8 +60,18 @@
 - [x] 全模型量化+保存：五个模型 2bpw checkpoint 全部生成并 eval 通过（2026-09-20，run.q.sh）：
   olmoe wiki 12.6387/c4 17.9668、dsv1 7.409/11.7952、dsv2 7.0075/11.2046、
   moon 8.6242/19.5983、qwen3-30b 9.2282/13.7167（2.3G/5.5G/5.3G/5.8G/9.4G）
-- [ ] wxa16/wxa8 推理测速 vs fp16 baseline（run.e.sh 已就绪：fp16 走 --standby-cpu 逐层搬移，量化加载整卡直跑）
+- [x] wxa16/wxa8 推理测速 vs fp16 baseline（2026-09-21，run.e.sh 全量完成，三模式同 sequential + 32 批量口径）：
+  | 模型 | fp16 | wxa16 | wxa8 | wxa16 vs fp16 | wxa8 vs fp16 |
+  |---|---|---|---|---|---|
+  | olmoe | 97.3s | 83.0s | 75.3s | -14.7% | -22.7% |
+  | dsv1 | 194.2s | 151.3s | 129.7s | -22.1% | -33.2% |
+  | dsv2 | 254.7s | 200.6s | 168.2s | -21.3% | -34.0% |
+  | moon | 182.2s | 194.7s | 160.9s | +6.8% | -11.7% |
+  | qwen3-30b | 377.1s | 261.9s | 230.7s | -30.5% | -38.8% |
+  ppl 全部与量化时一致（如 moon 8.6260 vs 8.6242、qwen3 9.2268 vs 9.2282）。
+  moon wxa16 的 c4（120s vs fp16 90s）是唯一未过线的点，c4 路由分散场景待优化。
 - [ ] autotune 驱动（test/test_p53_tune.py / test_wxa8_tune.py 已就绪，按五模型真实形状跑）
+- [ ] moon wxa16 c4 场景优化（活跃专家/bit 多、内核启动密集；CudaStageProfiler 定位 + 配置重调）
 - [ ] 遗留：_build_hoisted_rotations 上游原版有结果被覆盖的死循环已删；packed 字典缓存跨设备移动的陈旧引用与上游同构（load 路径 cache=None 惰性重建，安全）
 
 ## 修复记录（2026-09-19/20）

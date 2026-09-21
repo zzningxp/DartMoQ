@@ -363,7 +363,7 @@ Kernel-level comparison on RTX 5090 (2 bpw, realistic eval shapes): WxA8 kernels
 
 ### Speed Benchmarking
 
-End-to-end wall time and PPL are measured per model × inference mode with the same eval harness:
+End-to-end wall time and PPL are measured per model × inference mode with the same eval harness (wikitext2 + c4, sequential eval, 32-sample batches, RTX 5090):
 
 ```bash
 # 1. Quantize and save packed checkpoints (5 MoE models × 2 bpw)
@@ -372,9 +372,19 @@ sh run.q.sh
 sh run.e.sh
 ```
 
-- fp16 baseline runs in CPU-standby mode (`--standby-cpu`, layers streamed to GPU one at a time); wxa16/wxa8 load the packed checkpoint directly into GPU memory.
-- The first wxa8 run pays a one-time Triton JIT compilation cost (per expert shape); warm up the kernel cache with any single wxa8 eval before timing.
-- Quantized checkpoints for the five supported models at 2 bpw occupy 2.3–9.4 GB on disk (see `roadmaps/ROADMAP-turboquant-wxa16-wxa8-port.md` for the per-model PPL table and development log).
+| Model | fp16 | WxA16 | WxA8 | WxA16 vs fp16 | WxA8 vs fp16 |
+|---|---|---|---|---|---|
+| OLMoE-1B-7B | 97.3s | 83.0s | 75.3s | −14.7% | −22.7% |
+| DeepSeekMoE-16B | 194.2s | 151.3s | 129.7s | −22.1% | −33.2% |
+| DeepSeek-V2-Lite | 254.7s | 200.6s | 168.2s | −21.3% | −34.0% |
+| Moonlight-16B-A3B | 182.2s | 194.7s | 160.9s | +6.8% | −11.7% |
+| Qwen3-30B-A3B | 377.1s | 261.9s | 230.7s | −30.5% | −38.8% |
+
+Quantized PPL matches the quantization-time numbers to 3 decimals in every cell (e.g. Moonlight 8.6260 vs 8.6242, Qwen3-30B-A3B 9.2268 vs 9.2282).
+
+- All three modes use the same sequential-eval harness and batch granularity; the fp16 baseline is streamed layer-by-layer from CPU (`--standby-cpu`), while the quantized checkpoints (2.3–9.4 GB on disk) stream with a fraction of the transfer cost — the memory-footprint advantage is part of the measured speedup.
+- The first wxa8 run per model pays a one-time Triton JIT compilation cost (per expert shape); warm up the kernel cache with any single wxa8 eval before timing.
+- Moonlight's WxA16 c4 case (120s vs 90s fp16) is the one cell above baseline: c4 routing activates many more experts/bits per token than wikitext2, which is the current optimization target (see `roadmaps/ROADMAP-turboquant-wxa16-wxa8-port.md` for the per-model table and development log).
 
 ---
 
