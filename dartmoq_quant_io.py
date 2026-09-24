@@ -336,6 +336,16 @@ def save_quantized_model(model, save_dir: str, base_model_path: str = None,
     gc.collect()
     print(f"Saved quantized checkpoint to {save_dir} in {time.time() - tick0:.2f}s, "
           f"total {total_bytes / 1024**3:.2f}GB")
+
+    # 保存期间 collect_quant_metadata 访问 gate_up_packed/down_packed 属性，会在
+    # （已回到 CPU 的）buffer 上物化 CPU 端 packed 缓存；若保存后还要 forward
+    # （如 run_dartmoq 的 PPL eval），layer.to(GPU) 只搬注册 buffer，这些缓存
+    # 仍是 CPU 张量，triton 内核会拿到 CPU 指针。按 standby 流程惯例统一
+    # drop，让 forward 在下一个设备上懒重建。
+    for sub in model.modules():
+        if hasattr(sub, 'drop_runtime_caches'):
+            sub.drop_runtime_caches()
+
     return meta
 
 

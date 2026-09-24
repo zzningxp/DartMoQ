@@ -148,7 +148,9 @@ if __name__ == '__main__':
     tick = time.time()
 
     with torch.no_grad():
-        dartmoq_model = dartmoq_sequential(model, tokenizer, dataloader, args) #, test_ppl=False)
+        # test_ppl=False：量化后先返回，save 落盘完成再统一跑 wikitext2/c4
+        # PPL（见下方 run_wiki_c4_ppl），eval 崩溃不再丢失量化成果
+        dartmoq_model = dartmoq_sequential(model, tokenizer, dataloader, args, test_ppl=False)
 
     if args.save_model:
         save_dir = f"models/dartmoq_{model.config.model_type}_{args.rank_mode}_{args.quant_scheme}"
@@ -173,6 +175,10 @@ if __name__ == '__main__':
                 "slices": args.slices,
             },
         )
+
+    # wikitext2/c4 PPL 验证挪到 save 之后：eval 阶段崩溃（如 dsv2 1bpw c4
+    # 段错误）不再丢失量化 checkpoint
+    run_wiki_c4_ppl(dartmoq_model, tokenizer, args)
 
     time_zero_eval = 0.0
     if args.eval_zero and not args.standby_layer_cpu:

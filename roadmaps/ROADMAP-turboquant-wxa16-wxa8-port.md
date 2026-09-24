@@ -70,6 +70,23 @@
   | qwen3-30b | 377.1s | 261.9s | 230.7s | -30.5% | -38.8% |
   ppl 全部与量化时一致（如 moon 8.6260 vs 8.6242、qwen3 9.2268 vs 9.2282）。
   moon wxa16 的 c4（120s vs fp16 90s）是唯一未过线的点，c4 路由分散场景待优化。
+- [x] 1bpw 全模型量化+保存+eval（2026-09-22/24，run.q.sh 的 bpw 抽为 MOE_BPW 变量）：
+  五模型 1bpw checkpoint 落盘（1.6/3.8/3.7/4.1/6.1G，2bpw 为 2.3/5.5/5.3/5.8/9.4G），
+  wxa16/wxa8 双模式 eval 全过（0922.3），量化时 vs 加载时 ppl 一致（偏差 ≤0.001，
+  如 dsv2 9.2610 vs 9.2612、moon 17.0465 vs 17.0474）。
+  1bpw vs 2bpw ppl（wiki/c4，wxa16）：olmoe 23.046/41.234 vs 12.644/17.966、
+  dsv1 10.540/21.620 vs 7.410/11.795、dsv2 9.261/18.925 vs 7.007/11.203、
+  moon 17.047/40.170 vs 8.626/19.600、qwen3 10.940/19.419 vs 9.227/13.718；
+  速度与 2bpw 基本持平（0bit 专家整只跳过计算路径，checkpoint 缩小约 30%），
+  moon wxa16 1bpw c4（112s）仍超 fp16 基线（88s），优化目标不变。
+- [x] 码本均匀性实测（2026-09-24）：A16 路径 MoE 专家码本为 fp16 非均匀（Lloyd-Max），
+  A8 路径加载时重映射到均匀 int8 网格（codebook[i]≈cb_i8[i]·step，
+  build_int8_codebook），attention/shared 8bit 量化即用均匀对称码本（indices 直接
+  映射 int8，WxA8Linear 前置条件）。五模型 × 1/2bpw 实测 wxa8 vs wxa16 ppl 无区别：
+  wiki Δ≤0.036、c4 Δ≤0.091（相对 ≤0.25%，最差 moon 1bpw c4 40.170 vs 40.262）；
+  与 kernel 级 relerr 一致（1bit 0.00647 vs 0.00651，码本贡献可忽略；8bit
+  Lloyd-Max 直转 int8 会塌级（等效 W8→W6），已由量化期均匀码本规避，
+  见 turboquant_utils/triton_kernels_a8.build_int8_codebook 注释）。
 - [ ] autotune 驱动（test/test_p53_tune.py / test_wxa8_tune.py 已就绪，按五模型真实形状跑）
 - [ ] moon wxa16 c4 场景优化（活跃专家/bit 多、内核启动密集；CudaStageProfiler 定位 + 配置重调）
 - [ ] 遗留：_build_hoisted_rotations 上游原版有结果被覆盖的死循环已删；packed 字典缓存跨设备移动的陈旧引用与上游同构（load 路径 cache=None 惰性重建，安全）
@@ -102,6 +119,21 @@
    当场定位。
 8. cmoe_ppl_eval 的 standby 参数名修复：同时认 standby_layer_cpu / standby_cpu，
    fp16 基线 CPU standby 时强制 sequential eval。
+9. **save→eval 顺序调整**（2026-09-22）：原 run_dartmoq 顺序 量化→eval→save，
+   dsv2-1bpw 一次 c4 eval 原生段错误（无 Python 栈，0922.1，layer 0-4 forward 内）
+   导致 20 分钟量化成果丢失；改为 量化→save→eval——dartmoq_sequential 尾部
+   wikitext2/c4 eval 块抽为 run_wiki_c4_ppl()，run_dartmoq 传 test_ppl=False，
+   save 后再调，eval 崩溃不再丢 checkpoint。段错误本身复跑未复现（dsv2-1bpw
+   0922.3 / 0922.4 两次全流程通过），若复发带 PYTHONFAULTHANDLER=1 抓栈。
+10. **save 后 eval 的 packed 缓存设备污染**（2026-09-23，0922.4 上午复现）：
+    save_quantized_model 的 collect_quant_metadata 访问 gate_up_packed/down_packed
+    属性，在已回 CPU 的层上物化 CPU 端 packed 缓存；eval 时 layer.to(GPU) 只搬
+    注册 buffer，缓存仍是 CPU 张量 → triton 报 "Pointer argument (at 1) cannot
+    be accessed from Triton (cpu tensor?)"。修复：save 末尾按 standby 惯例统一
+    drop_runtime_caches()，forward 在下一设备惰性重建（0922.4 当天 16:50 重跑
+    save→eval 全通过，dsv2-1bpw 3.61G 落盘 + wiki 9.2610 / c4 18.9262 验证）。
+11. run.q.sh 的 bpw 抽为 MOE_BPW 变量（scheme global-bpw-a8s8m${MOE_BPW}，
+    落盘 quant_ckpt/<name>-${MOE_BPW}bpw，支持小数如 1.5）。
 
 ## 风险点
 

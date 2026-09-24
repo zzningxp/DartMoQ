@@ -14,10 +14,10 @@ DartMoQP is a Mixture-of-Experts (MoE)-native unified framework for mixed-precis
 ### Core Insights
 
 1. **Log-Domain Quadratic Loss Law**
-   - Across representative per-row and vector quantizers, quantization loss is well fit by a quadratic function in the logarithmic domain ($R^2 > 0.99$ across neurons, experts, and layers)
+   - Across representative per-row and vector quantizers, quantization loss is well fit by a quadratic function in the logarithmic domain (R² > 0.99 across neurons, experts, and layers)
    - This is an **empirical high-precision approximation** valid in the practical bitwidth range, not an exact mathematical theorem (rate-distortion-theoretic motivation provided in the paper)
    - Enables extrapolation of 0-bit (pruning) loss without manual hyperparameters, unifying pruning and quantization in a single continuous loss space
-   - A simple conservative clipping safeguard ($\alpha = 2.0$) handles edge-case units whose extrapolation falls below measured 1-bit loss
+   - A simple conservative clipping safeguard (α = 2.0) handles edge-case units whose extrapolation falls below measured 1-bit loss
 
 2. **Input Manifold-Aware Sensitivity**
    - For per-row quantizers (GPTQ): Hessian-aware loss already incorporates input calibration weighting, so weight-space MSE works well
@@ -27,7 +27,7 @@ DartMoQP is a Mixture-of-Experts (MoE)-native unified framework for mixed-precis
    - Micro-expert granularity: neurons within each expert sorted by sensitivity and grouped into S micro-experts
    - Global ranking: all micro-experts ranked by importance (sensitivity × expert activation rate)
    - Monotonic DP search with non-increasing bit allocation constraint finds globally optimal assignment at target bpw
-   - Time complexity: $O(TWK^2)$ where T = micro-expert count, W = bit budget, K = candidate bitwidths
+   - Time complexity: O(TWK²) where T = micro-expert count, W = bit budget, K = candidate bitwidths
 
 4. **Seed Sensitivity Stabilization (Side Benefit)**
    - TurboQuant's random rotation introduces seed-dependent PPL fluctuation on some models
@@ -56,14 +56,14 @@ The central empirical finding is that quantization loss follows a quadratic form
 
 $$\log L_i(b) = p_i b^2 + q_i b + r_i$$
 
-where $b$ is bitwidth and $L_i(b)$ is the proxy loss of the $i$-th unit. This is not a mathematically exact identity but a **high-precision empirical approximation** — median $R^2$ values exceed 0.99 across all evaluated models and layers.
+where b is bitwidth and Lᵢ(b) is the proxy loss of the i-th unit. This is not a mathematically exact identity but a **high-precision empirical approximation** — median R² values exceed 0.99 across all evaluated models and layers.
 
-**Why it matters**: Extrapolating the quadratic curve to $b=0$ gives $\hat{L}_i(0) = \exp(r_i)$, placing pruning loss in the same continuous loss space as quantization. No manual pruning penalty coefficients are needed.
+**Why it matters**: Extrapolating the quadratic curve to b = 0 gives L̂ᵢ(0) = exp(rᵢ), placing pruning loss in the same continuous loss space as quantization. No manual pruning penalty coefficients are needed.
 
-**Robustness**: A small fraction of low-sensitivity units (<5% under TurboQuant, <0.01% under GPTQ) have unreliable extrapolations; a simple conservative clip with $\alpha=2.0$ ensures robustness. For details and validation against direct zeroing loss, see the paper.
+**Robustness**: A small fraction of low-sensitivity units (<5% under TurboQuant, <0.01% under GPTQ) have unreliable extrapolations; a simple conservative clip with α = 2.0 ensures robustness. For details and validation against direct zeroing loss, see the paper.
 
 <img src="figs/r2_comparison_all_models_all_experts.png" width="100%">
-<div align="center"><em>Goodness-of-fit $R^2$ of log-domain quadratic fitting across five MoE models (median near 0.99)</em></div>
+<div align="center"><em>Goodness-of-fit R² of log-domain quadratic fitting across five MoE models (median near 0.99)</em></div>
 
 <div style="clear: both;"></div>
 
@@ -175,7 +175,7 @@ We evaluate several method combinations. To avoid confusion, here is a concise n
 |-------|--------|------------|-----|--------|---------|---------|-------|-------|-------------|--------|-------------|--------|
 | DSMoEv1 | GPTQ-Origin | 132.710 | 566.143 | 0.351 | 0.261 | 0.257 | 0.503 | 0.378 | 0.526 | 0.355 | 0.257 | 0.269 |
 | DSMoEv1 | TQ-Origin | 663.677 | 723.955 | 0.350 | 0.246 | 0.266 | 0.517 | 0.378 | 0.531 | 0.355 | 0.258 | 0.250 |
-| DSMoEv1 | GEMQ | 61548916.0$^\dag$ | 139172736.0$^\dag$ | 0.380 | 0.266 | 0.248 | 0.508 | 0.621 | 0.515 | 0.355 | 0.267 | 0.263 |
+| DSMoEv1 | GEMQ | 61548916.0† | 139172736.0† | 0.380 | 0.266 | 0.248 | 0.508 | 0.621 | 0.515 | 0.355 | 0.267 | 0.263 |
 | DSMoEv1 | CAMERA-DP | 278.704 | 573.556 | 0.347 | 0.245 | 0.256 | 0.519 | 0.379 | 0.506 | 0.363 | 0.271 | 0.235 |
 | DSMoEv1 | GPTQ-DP | 10.878 | **18.561** | **0.523** | **0.375** | 0.650 | **0.693** | 0.629 | **0.622** | **0.400** | **0.552** | 0.266 |
 | DSMoEv1 | IPE-TQ-DP | **9.962** | 20.576 | 0.521 | 0.374 | **0.677** | 0.661 | **0.691** | 0.617 | **0.400** | 0.497 | 0.253 |
@@ -204,7 +204,7 @@ We evaluate several method combinations. To avoid confusion, here is a concise n
 | Qwen3 | GPTQ-DP | 982.384 | 1798.25 | 0.360 | 0.239 | 0.276 | 0.527 | 0.444 | 0.538 | 0.339 | 0.278 | 0.236 |
 | Qwen3 | IPE-TQ-DP | **28.180** | **48.203** | **0.539** | **0.385** | **0.659** | **0.637** | **0.712** | **0.568** | **0.496** | **0.422** | **0.432** |
 
-$^\dag$ *The GEMQ result on DSMoEv1 exhibits numerical divergence at this bitwidth due to position-dependent error accumulation from 1-bit expert quantization. Downstream tasks remain in a reasonable range because their short input contexts do not reach the divergence threshold. This is a boundary effect of operating at exactly 1 bpw with expert-level allocation and no intra-expert pruning — it disappears at 1.125 bpw. See the paper for detailed analysis.*
+† *The GEMQ result on DSMoEv1 exhibits numerical divergence at this bitwidth due to position-dependent error accumulation from 1-bit expert quantization. Downstream tasks remain in a reasonable range because their short input contexts do not reach the divergence threshold. This is a boundary effect of operating at exactly 1 bpw with expert-level allocation and no intra-expert pruning — it disappears at 1.125 bpw. See the paper for detailed analysis.*
 
 ### 1.5 bpw (raw weight bits)
 
@@ -357,16 +357,19 @@ This design maximizes hardware utilization under the mixed-bitwidth constraint. 
 The quantized models run through two real-quantization inference paths, sharing the **same packed checkpoint** (safetensors + meta.json, saved by `--save-quantized`):
 
 - **WxA16** — mixed-bit packed weights (1/2/4/8 bit per micro-expert) with FP16 activations and FP16 tensor cores. Dequantization and GEMM are fused in a single Triton kernel (group-first layout: indices-packed uint8 + codebook + norms, per-expert row/column slicing), with rotation hoisting (grouped QR rotation lifted out of the expert loop) and per-bit tile configuration tables.
-- **WxA8** — same packed weights with INT8 activations and INT8 tensor cores (IMMA). Activations are quantized per-token per-group by a fused rotate+quantize kernel (measured **18.75×** over the two-stage rotate-then-quantize path at realistic scales); the FP16 codebook is converted to INT8 at load time, with zero tensor copies between A16 and A8 (`--inference-quant-mode wxa8`).
+- **WxA8** — same packed weights with INT8 activations and INT8 tensor cores (IMMA). Activations are quantized per-token per-group by a fused rotate+quantize kernel (measured **18.75×** over the two-stage rotate-then-quantize path at realistic scales); the FP16 codebook is converted to INT8 at load time (expert codebook values remapped onto a uniform INT8 grid, `codebook[i] ≈ cb_i8[i] · step`; the 8-bit attention/shared experts are quantized with a uniform symmetric codebook so indices map directly to INT8 weights), with zero tensor copies between A16 and A8 (`--inference-quant-mode wxa8`).
 
-Kernel-level comparison on RTX 5090 (2 bpw, realistic eval shapes): WxA8 kernels are **1.52×** faster than WxA16 (gate_up 1.59× / down 1.40×, `test/test_wxa8_kernel.py`), with per-token-per-group activation quantization keeping PPL within ±0.005 of the A16 path.
+Kernel-level comparison on RTX 5090 (2 bpw, realistic eval shapes): WxA8 kernels are **1.52×** faster than WxA16 (gate_up 1.59× / down 1.40×, `test/test_wxa8_kernel.py`).
+
+**Uniform vs non-uniform codebooks**: the A16 path keeps the non-uniform (Lloyd-Max) expert codebooks in FP16, while the A8 path goes uniform — expert codebook values are remapped to a uniform INT8 grid at load, and the 8-bit attention/shared experts are quantized with a uniform symmetric codebook. Measured end-to-end across all five models × {1, 2} bpw, the two are indistinguishable: WikiText2 within ±0.04 and C4 within ±0.10 absolute (≤0.25% relative; worst cell Moonlight 1 bpw C4 40.17 vs 40.26). In this workload the uniform codebook — the enabler for direct index→INT8 mapping and INT8 tensor cores — costs no measurable quality.
 
 ### Speed Benchmarking
 
 End-to-end wall time and PPL are measured per model × inference mode with the same eval harness (wikitext2 + c4, sequential eval, 32-sample batches, RTX 5090):
 
 ```bash
-# 1. Quantize and save packed checkpoints (5 MoE models × 2 bpw)
+# 1. Quantize and save packed checkpoints (5 MoE models; target bpw is
+#    configurable via MOE_BPW, e.g. MOE_BPW=2 sh run.q.sh, fractional ok)
 sh run.q.sh
 # 2. Speed comparison: fp16 baseline vs wxa16 vs wxa8
 sh run.e.sh
@@ -382,9 +385,33 @@ sh run.e.sh
 
 Quantized PPL matches the quantization-time numbers to 3 decimals in every cell (e.g. Moonlight 8.6260 vs 8.6242, Qwen3-30B-A3B 9.2268 vs 9.2282).
 
-- All three modes use the same sequential-eval harness and batch granularity; the fp16 baseline is streamed layer-by-layer from CPU (`--standby-cpu`), while the quantized checkpoints (2.3–9.4 GB on disk) stream with a fraction of the transfer cost — the memory-footprint advantage is part of the measured speedup.
+- All three modes use the same sequential-eval harness and batch granularity; the fp16 baseline is streamed layer-by-layer from CPU (`--standby-cpu`), while the quantized checkpoints (1.6–9.4 GB on disk across 1/2 bpw) stream with a fraction of the transfer cost — the memory-footprint advantage is part of the measured speedup.
 - The first wxa8 run per model pays a one-time Triton JIT compilation cost (per expert shape); warm up the kernel cache with any single wxa8 eval before timing.
 - Moonlight's WxA16 c4 case (120s vs 90s fp16) is the one cell above baseline: c4 routing activates many more experts/bits per token than wikitext2, which is the current optimization target (see `roadmaps/ROADMAP-turboquant-wxa16-wxa8-port.md` for the per-model table and development log).
+
+**1 bpw vs 2 bpw** (same harness; PPL shown for the WxA16 load path — WxA8 stays within ±0.04 (wiki) / ±0.10 (c4) of WxA16, see the codebook note above):
+
+| Model | FP16 wiki / c4 | 2 bpw wiki / c4 | 1 bpw wiki / c4 | ckpt size 2 → 1 bpw |
+|---|---|---|---|---|
+| OLMoE-1B-7B | 9.555 / 12.763 | 12.644 / 17.966 | 23.046 / 41.234 | 2.3 → 1.6 GB |
+| DeepSeekMoE-16B | 6.506 / 9.039 | 7.410 / 11.795 | 10.540 / 21.620 | 5.5 → 3.8 GB |
+| DeepSeek-V2-Lite | 6.305 / 8.900 | 7.007 / 11.203 | 9.261 / 18.925 | 5.3 → 3.7 GB |
+| Moonlight-16B-A3B | 7.116 / 10.354 | 8.626 / 19.600 | 17.047 / 40.170 | 5.8 → 4.1 GB |
+| Qwen3-30B-A3B | 8.692 / 12.136 | 9.227 / 13.718 | 10.940 / 19.419 | 9.4 → 6.1 GB |
+
+Wall time (wikitext2 + c4, seconds):
+
+| Model | FP16 | 2 bpw WxA16 / WxA8 | 1 bpw WxA16 / WxA8 |
+|---|---|---|---|
+| OLMoE-1B-7B | 97.5 | 81.1 / 74.1 | 76.6 / 70.6 |
+| DeepSeekMoE-16B | 180.2 | 147.1 / 128.0 | 141.2 / 125.1 |
+| DeepSeek-V2-Lite | 257.2 | 195.2 / 163.6 | 195.5 / 173.9 |
+| Moonlight-16B-A3B | 178.7 | 188.2 / 158.7 | 181.4 / 154.9 |
+| Qwen3-30B-A3B | 377.5 | 256.0 / 225.2 | 244.0 / 217.6 |
+
+- 1 bpw keeps the packed path's inference speed (0-bit pruning removes whole micro-experts from the compute path) while cutting checkpoint size by ~30% versus 2 bpw; FP16 wall time varies a few seconds between runs.
+- Quantization-time vs load-time PPL agreement to 3 decimals also holds at 1 bpw (e.g. DSv2-Lite 9.2610 vs 9.2612, Moonlight 17.0465 vs 17.0474).
+- Moonlight stays the outlier at both bitrates: 1 bpw WxA16 c4 (112s) remains above the FP16 baseline (88s), consistent with its dispersed c4 routing — same optimization target as above.
 
 ---
 
@@ -418,7 +445,7 @@ conda activate dartmoq
 
 ### Hardware
 
-- **GPU**: NVIDIA RTX 5090 (48GB VRAM) or equivalent
+- **GPU**: NVIDIA RTX 5090 (32GB VRAM) or equivalent
 - Qwen3-30B-A3B quantization: ~2.5 hours on a single RTX 5090
 - Layer-wise quantization with intermediate memory release enables large models on consumer GPUs
 

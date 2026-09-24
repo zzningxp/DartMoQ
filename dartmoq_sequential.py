@@ -458,30 +458,42 @@ def dartmoq_sequential(model, tokenizer, dataloader, args, test_ppl=True):
     time_quant = tick_quant_end - tick_quant_start
     print(f"Runtime of quantization only: {time_quant:.2f}")
 
+    # for name, param in model.named_parameters():
+    #     print(f"{name:<40} → {param.device}")
+
+    # print('Training_free_ppl:')
+    # PPL 验证抽为 run_wiki_c4_ppl（见文件末尾）：run_dartmoq 主流程改为
+    # 量化 → save → eval，eval 阶段崩溃不再丢失量化成果
+    if test_ppl:
+        run_wiki_c4_ppl(model, tokenizer, args)
+
+    return model
+
+
+def run_wiki_c4_ppl(model, tokenizer, args):
+    """wikitext2/c4 PPL 验证（原 dartmoq_sequential 尾部 eval 块抽出）。
+
+    run_dartmoq 主流程的调用顺序为 量化 → save → 本函数：eval 崩溃时
+    checkpoint 已落盘（save_quantized_model 只做 CPU 拷贝，不改模型状态，
+    save 后再 eval 结果不受影响）。
+    """
     # args.sequential_eval defaults to False, not bound to args.standby_layer_cpu
     if getattr(args, 'sequential_eval', False):
         print("Will use sequential PPL evaluation (layers stay on CPU)")
     else:
         print("Will use normal PPL evaluation")
 
-    # for name, param in model.named_parameters():
-    #     print(f"{name:<40} → {param.device}")
-
-    # print('Training_free_ppl:')
-    if test_ppl:
-        tick_ppl_start = time.time()
-        pre_ppl = []
-        datasets = ['wikitext2', 'c4']
-        for dataset in datasets:
-            dataloader, testloader = get_loaders(
-                dataset, seed=args.seed, tokenizer=tokenizer, seqlen=model.seqlen
-            )
-            print(dataset)
-            eval_set = dataset
-            ppl_i = cmoe_ppl_eval(model, testloader, eval_set, args)
-            pre_ppl.append(f"{dataset}: {ppl_i}")
-        tick_ppl_end = time.time()
-        time_ppl = tick_ppl_end - tick_ppl_start
-        print(f"Runtime of wiki/c4 validation: {time_ppl:.2f}")
-
-    return model
+    tick_ppl_start = time.time()
+    pre_ppl = []
+    datasets = ['wikitext2', 'c4']
+    for dataset in datasets:
+        dataloader, testloader = get_loaders(
+            dataset, seed=args.seed, tokenizer=tokenizer, seqlen=model.seqlen
+        )
+        print(dataset)
+        eval_set = dataset
+        ppl_i = cmoe_ppl_eval(model, testloader, eval_set, args)
+        pre_ppl.append(f"{dataset}: {ppl_i}")
+    tick_ppl_end = time.time()
+    print(f"Runtime of wiki/c4 validation: {tick_ppl_end - tick_ppl_start:.2f}")
+    return pre_ppl
