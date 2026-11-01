@@ -2,6 +2,7 @@ import time
 import torch
 import torch.nn as nn
 import os
+import re
 import time
 import gc
 import numpy as np
@@ -10,6 +11,7 @@ from dartmoq_utils import construct_experts_by_rates
 from dartmoq_utils import analyze_neuron_activations
 from dartmoq_utils import analyze_gptq_quant_outlier
 from dartmoq_utils import analyze_turboquant_outlier_activation_aware
+from dartmoq_utils import analyze_pruning_scores
 from camera_utils import analyze_expert_energy
 from dp_utils import enum_optimal_m_scheme_separate_fast
 from dp_utils import enum_optimal_m_scheme_global_fast
@@ -111,17 +113,37 @@ def reconstruct_moe_from_existing(model, layer, layer_idx, inps,
         turboquant_outlier_mode = turboquant_outlier_modes.get(args.rank_mode, "")
 
         q_rates = {}
+        # 0-bit candidate loss source for the DP search:
+        #   extrapolate: log-quadratic fit of the 1-4 bit proxy losses (legacy _b0.pt)
+        #   direct:      reconstruction set to zero, measured in the same
+        #                proxy-loss space as b = 1..4 (cached as _b0direct.pt)
+        #   direct-scaleN: direct loss multiplied by N (N<1 cheaper / N>1 pricier)
+        #                — L0 magnitude sweep on the measured values; reuses the
+        #                _b0direct.pt cache, the coefficient is applied in memory
+        #                only (never cached)
+        #   magnitude / activation: standard pruning scores as the 0-bit
+        #                candidate loss (_b0magnitude.pt / _b0activation.pt)
+        #   none:        no 0-bit candidate (--disable-0bit-prune forces this)
+        zero_bit_source = getattr(args, 'zero_bit_source', 'extrapolate')
+        # direct-scaleN -> base source 'direct' + runtime multiplier
+        zero_bit_scale = 1.0
+        scale_match = re.fullmatch(r'direct-scale([\d.]+)', zero_bit_source)
+        if scale_match is not None:
+            zero_bit_scale = float(scale_match.group(1))
+            zero_bit_source = 'direct'
+        if getattr(args, 'disable_0bit_prune', False):
+            zero_bit_source = 'none'
         if 'target_bpw' not in qscheme:
             outlier_bits = {probe_bit}
         else:
-            if getattr(args, 'disable_0bit_prune', False):
+            if zero_bit_source == 'none':
                 outlier_bits = {1, 2, 3, 4}
             else:
                 outlier_bits = {0, 1, 2, 3, 4}
             if packed_mode:
                 outlier_bits = outlier_bits & PACKED_SUPPORTED_BITS
         outlier_label = args.rank_mode if turboquant_outlier_mode else quantmode
-        print(f"simulate {outlier_label} outlier_bits {outlier_bits}")
+        print(f"simulate {outlier_label} outlier_bits {outlier_bits} zero_bit_source {zero_bit_source}")
 
         cache_root = os.path.join(INTERMEDIATE_RESULT_DIR, f"quant_outlier_{quantmode}")
         cache_dir = os.path.join(cache_root, args.rank_mode, model.model_id)
@@ -129,19 +151,57 @@ def reconstruct_moe_from_existing(model, layer, layer_idx, inps,
         os.makedirs(cache_dir, exist_ok=True)
 
         for x in sorted(outlier_bits, reverse=True):
-            cache_path = os.path.join(cache_dir, f"{model.model_id}_L{layer_idx}_b{x}.pt")
+            # 0-bit cache file name is source-tagged so different
+            # instantiations never overwrite each other: _b0.pt stays the
+            # extrapolated values, _b0direct.pt holds the direct measurements
+            if x == 0 and zero_bit_source != 'extrapolate':
+                zero_bit_cache = f"_b0{zero_bit_source}.pt"
+            else:
+                zero_bit_cache = f"_b{x}.pt"
+            cache_path = os.path.join(cache_dir, f"{model.model_id}_L{layer_idx}{zero_bit_cache}")
             if os.path.exists(cache_path):
                 try:
                     cached_data = torch.load(cache_path, map_location=device)
-                    print(f"Loading cached {outlier_label} outlier data for layer {layer_idx}, wbits={x}", flush=True)
+                    print(f"Loading cached {outlier_label} outlier data for layer {layer_idx}, wbits={x} ({zero_bit_cache})", flush=True)
                     q_rates[x] = cached_data
                     continue
                 except Exception as e:
                     print(f"Failed to load cached data {e}")
             if x == 0:
-                print(f"Computing extrapolate 0 bit loss for layer {layer_idx}")
-                q_rates[0] = extrapolate_0bit_loss_fix(q_rates, quant_type=outlier_label)
-                q_rates[0] = [torch.from_numpy(q_rates[0][i]).to(device) for i in range(len(q_rates[0]))]
+                if zero_bit_source == 'direct':
+                    if not turboquant_outlier_mode:
+                        raise NotImplementedError(
+                            "direct 0-bit source is wired for turboquant backends only "
+                            "for now (gptq backend pending)")
+                    print(f"Computing direct 0 bit loss for layer {layer_idx}")
+                    q_rates[0] = analyze_turboquant_outlier_activation_aware(
+                        layer,
+                        layer_idx,
+                        inps,
+                        ori_expert_num,
+                        wbits=0,
+                        mode=turboquant_outlier_mode,
+                        save_path=None,
+                        use_activation_hooks=not args.rank_mode.endswith("_fea"),
+                        seed=args.seed,
+                        direct_zero=True,
+                    )
+                elif zero_bit_source in ('magnitude', 'activation'):
+                    # reviewer (d): standard pruning score used as the 0-bit
+                    # candidate loss; backend-agnostic (weights + activations)
+                    print(f"Computing {zero_bit_source} pruning score as 0 bit loss for layer {layer_idx}")
+                    q_rates[0] = analyze_pruning_scores(
+                        layer,
+                        layer_idx,
+                        inps,
+                        ori_expert_num,
+                        score=zero_bit_source,
+                        use_activation_hooks=not args.rank_mode.endswith("_fea"),
+                    )
+                else:
+                    print(f"Computing extrapolate 0 bit loss for layer {layer_idx}")
+                    q_rates[0] = extrapolate_0bit_loss_fix(q_rates, quant_type=outlier_label)
+                    q_rates[0] = [torch.from_numpy(q_rates[0][i]).to(device) for i in range(len(q_rates[0]))]
             else:
                 print(f"Computing {outlier_label} outlier for layer {layer_idx}, wbits={x}, with inps shape {inps.shape}")
                 if turboquant_outlier_mode:
@@ -164,6 +224,13 @@ def reconstruct_moe_from_existing(model, layer, layer_idx, inps,
             print(f"Saved {outlier_label} outlier data to {cache_path}")
             # print(f"sleep 20s")
             # time.sleep(20)
+
+        # L0 price sweep: multiply the 0-bit candidate loss after cache
+        # load/compute, so unscaled values stay cached and the sweep never
+        # pollutes _b0direct.pt
+        if 0 in q_rates and zero_bit_scale != 1.0:
+            print(f"Scaling 0-bit loss by {zero_bit_scale} for layer {layer_idx} (direct-scale)")
+            q_rates[0] = [rates * zero_bit_scale for rates in q_rates[0]]
 
         if 'target_bpw' not in qscheme:
             all_rates = q_rates[probe_bit]

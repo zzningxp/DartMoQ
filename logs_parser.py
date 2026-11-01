@@ -43,7 +43,7 @@ TASK_FIELDS = [
 
 FIELDNAMES = [
     "git_hash", "model_name", "slices", "quant_scheme", "rank_mode",
-    "moe_struct", "quantmode", "disable_0bit_prune", "standby_layer_cpu",
+    "moe_struct", "quantmode", "zero_bit_source", "disable_0bit_prune", "standby_layer_cpu",
     "quant_layers", "wxa16_real_quant", "bpw", "ppl_wikitext2", "ppl_c4",
     *TASK_FIELDS,
     "status", "runtime_ppl", "runtime_quant", "runtime_ppl_eval",
@@ -84,6 +84,7 @@ NEW_MOE_STRUCT_RE = re.compile(r"^MOE struct:\s+(?P<moe_struct>\S+)")
 NEW_QUANTMODE_RE = re.compile(r"^Quant mode:\s+(?P<quantmode>\S+)")
 NEW_STANDBY_CPU_RE = re.compile(r"^CPU standby:\s+(?P<standby_layer_cpu>\S+)")
 NEW_WXA16_REAL_QUANT_RE = re.compile(r"^WxA16 real quantization:\s+(?P<wxa16_real_quant>\S+)")
+NEW_ZB_SOURCE_RE = re.compile(r"^Zero-bit source:\s+(?P<zero_bit_source>\S+)")
 NEW_START_TIME_RE = re.compile(r"^Current time:\s*(?P<value>.+)")
 NEW_FINISH_TIME_RE = re.compile(r"^Finish time:\s*(?P<value>.+)")
 NEW_PPL_RE = re.compile(r"ppl on (?P<dataset>wikitext2|c4)(?:\s+\([^)]+\))?:\s*(?P<value>[-+0-9.eE]+|nan|inf)(?:\s+time:\s*(?P<time_value>[-+0-9.eE]+))?")
@@ -124,6 +125,7 @@ class RunRecord:
     rank_mode: str = ""
     moe_struct: str = ""
     quantmode: str = ""
+    zero_bit_source: str = ""
     disable_0bit_prune: str = ""
     standby_layer_cpu: str = ""
     quant_layers: str = ""
@@ -435,6 +437,11 @@ def parse_log(path: str) -> list[RunRecord]:
                     current.wxa16_real_quant = wxa16_real_quant_match.group("wxa16_real_quant")
                     continue
 
+                zb_source_match = NEW_ZB_SOURCE_RE.search(line)
+                if zb_source_match:
+                    current.zero_bit_source = zb_source_match.group("zero_bit_source")
+                    continue
+
                 start_time_match = NEW_START_TIME_RE.search(line)
                 if start_time_match:
                     current.start_time = start_time_match.group("value").strip()
@@ -574,7 +581,7 @@ def write_csv(records: list[RunRecord], out) -> None:
 
 DISPLAY_FIELDS = [
     "git_hash", "model_name", "slices", "quant_scheme", "rank_mode", "moe_struct", "quantmode",
-    "quant_layers", "wxa16_real_quant", "bpw",
+    "zero_bit_source", "quant_layers", "wxa16_real_quant", "bpw",
     "ppl_wikitext2", "ppl_c4",
     "status",
     "runtime_ppl", "runtime_quant", "runtime_ppl_eval",
@@ -588,6 +595,7 @@ PLAIN_HEADERS = {
     "rank_mode": "rank",
     "moe_struct": "moe",
     "quantmode": "qmode",
+    "zero_bit_source": "zbsrc",
     "disable_0bit_prune": "no0prune",
     "standby_layer_cpu": "stdbycpu",
     "quant_layers": "qlayers",
@@ -613,6 +621,7 @@ EXPORT_HEADERS = {
     "rank_mode": "rank_mode",
     "moe_struct": "moe_struct",
     "quantmode": "quantmode",
+    "zero_bit_source": "zero_bit_source",
     "disable_0bit_prune": "disable_0bit_prune",
     "standby_layer_cpu": "standby_layer_cpu",
     "quant_layers": "quant_layers",

@@ -232,13 +232,11 @@ class WxA16Linear(nn.Module):
             out: (batch_size, seq_len, out_features) 或 (batch_size, out_features)
         """
         orig_shape = x.shape
-        batch_size = None
-        seq_len = None
 
-        # Reshape if needed
-        if x.dim() == 3:
-            batch_size, seq_len, in_features = x.shape
-            x = x.reshape(batch_size * seq_len, in_features)
+        # Reshape if needed（任意 rank ≥ 2 拍平：原生 MLA 的 kv_b_proj 吃
+        # (B, heads, seq, dim) 4D 输入，旧自定义 modeling 只给 3D）
+        if x.dim() != 2:
+            x = x.reshape(-1, orig_shape[-1])
 
         # Ensure codebook is on the correct device
         codebook = self.codebook.to(x.device)
@@ -254,8 +252,8 @@ class WxA16Linear(nn.Module):
             out = out + self.bias.to(out.dtype)
 
         # Reshape back if needed
-        if batch_size is not None and seq_len is not None:
-            out = out.reshape(batch_size, seq_len, self.out_features)
+        if len(orig_shape) != 2:
+            out = out.reshape(*orig_shape[:-1], self.out_features)
 
         return out.to(x.dtype)
 

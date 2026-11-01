@@ -24,14 +24,19 @@
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 
 from quantization.wxa16.bit_partitioned_moe import WxA16BitPartitionedGroupMoE
 from turboquant_utils.rotation import generate_batch_rotation_matrices
 from turboquant_utils.triton_kernels_a8 import (
     build_int8_codebook,
+    get_wxa8_config,
     rotate_quantize_fused,
+    rotate_quantize_fused_pooled,
     wxa8_matmul_grouped_slice_in_features_gf,
     wxa8_matmul_grouped_slice_rows_gf,
+    wxa8_matmul_merged_in_features_gf_static,
+    wxa8_matmul_merged_rows_gf_static,
 )
 
 
@@ -52,6 +57,9 @@ class WxA8BitPartitionedGroupMoE(WxA16BitPartitionedGroupMoE):
         # bit context 需要重建（要追加 int8 码本）
         moe._bit_ctx_cache = None
         moe._a8_ctx_ready = None
+        # 类切换后已构建的静态派发状态（若有人提前触发过）与新 kernel 语义
+        # 不再匹配，作废重建
+        moe._static_decode_state = None
         return moe
 
     # ---------------------------------------------------------------- context
@@ -218,3 +226,56 @@ class WxA8BitPartitionedGroupMoE(WxA16BitPartitionedGroupMoE):
         if down_out.dtype != ctx["act_dtype"]:
             down_out = down_out.to(ctx["act_dtype"])
         return down_out
+
+    # ------------------------------------------------- 静态派发（graph decode）
+
+    _STATIC_DISPATCH_READY = True
+
+    @staticmethod
+    def _static_cfg_getter(bit):
+        def getter(direction, B):
+            return get_wxa8_config(bit, direction=direction, B=B)
+        return getter
+
+    def _static_pool_compute(self, ps, x, tokens_c, weights_c, mask_rows,
+                             final_hidden_states):
+        """单个 bit 池的静态计算（int8 语义，自 DartMoQ-Qwen3.5 移植）。
+
+        gate_up：全量 token 一次融合旋转+量化（每池旋转统一，行内容与
+        gather 顺序无关）；down：池缓冲逐成员融合旋转+量化（pooled kernel，
+        行段与旋转矩阵基序号由 kernel 运行时读 expert_info）。padding 行
+        在 silu×up 之后置零（int8 量化前的零是精确零，down 输出恒零
+        × 零权重 = 恒等加零）。两方向 kernel 输出恒 fp16。
+        """
+        src = x if x.dtype == torch.float16 else x.half()
+        x_i8_all, x_s_all = rotate_quantize_fused(
+            src, ps.rot_gu, ps.gs_gu, ps.in_f // ps.gs_gu,
+            extra_scale=ps.cb_step_gu)
+        x_pool = x_i8_all.index_select(0, tokens_c)
+        xs_pool = x_s_all.index_select(0, tokens_c)
+        del x_i8_all, x_s_all
+        gu = wxa8_matmul_merged_rows_gf_static(
+            x_pool, xs_pool, ps.idx_gu_gf, ps.cb_gu_i8, ps.norms_gu_gf,
+            ps.expert_info_gu, ps.block_info_gu, ps.n_slice, ps.n_limit,
+            ps.gs_gu, ps.in_f, bit_width=ps.bit,
+            norms_prescaled=ps.prescaled_gu, cfg=ps.cfg_gu)
+        del x_pool, xs_pool
+        act = F.silu(gu[:, :ps.inter]) * gu[:, ps.inter:]
+        del gu
+        act = act * mask_rows.unsqueeze(1).to(act.dtype)
+        act16 = act if act.dtype == torch.float16 else act.half()
+        a_i8, a_s = rotate_quantize_fused_pooled(
+            act16, ps.rot_bank, ps.expert_info_dn, ps.block_info_b32,
+            ps.gs_dn, ps.g_count, extra_scale=ps.cb_step_dn)
+        del act16
+        dn = wxa8_matmul_merged_in_features_gf_static(
+            a_i8, a_s, ps.idx_dn_gf, ps.cb_dn_i8, ps.norms_dn_gf,
+            ps.expert_info_dn, ps.block_info_dn, ps.gs_dn, ps.g_count,
+            bit_width=ps.bit, norms_prescaled=ps.prescaled_dn, cfg=ps.cfg_dn)
+        del a_i8, a_s
+        if dn.dtype != x.dtype:
+            dn = dn.to(x.dtype)
+        # padding 行显式清零再乘零权重（防 0×inf/NaN，见基类 _static_scatter_tail）
+        self._static_scatter_tail(dn, tokens_c, weights_c, mask_rows,
+                                  final_hidden_states)
+        del dn, act

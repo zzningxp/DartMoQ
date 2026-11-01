@@ -75,6 +75,9 @@ def _dummy_cb(device):
 class WxA8Linear(WxA16Linear):
     """WxA8 attention linear（8-bit 均匀码本 + INT8 激活）。"""
 
+    # 码本步长缓存（_ensure_gf 一次性计算；None 表示尚未计算）
+    _cb_step = None
+
     @classmethod
     def from_wxa16(cls, linear: WxA16Linear) -> "WxA8Linear":
         """把 WxA16Linear 原地切到 WxA8（零拷贝，与 MoE 的 from_wxa16 同理）。
@@ -107,6 +110,12 @@ class WxA8Linear(WxA16Linear):
         self._indices_gf = indices_gf.to(device).contiguous()
         self._norms_gf = (norms_gf.to(device) / math.sqrt(self.group_size)
                           ).half().contiguous()
+        # 码本步长是加载期常量：原先每 forward 在 GPU 上重算并 float(step)
+        # 读回 host，引入一次 D2H 同步（eager 下每个 attention linear 一次；
+        # CUDA graph capture 下直接非法——capture 期 kernel 不执行、无数据
+        # 可读）。这里随 gf 布局一次性算好缓存为 Python float，forward 作为
+        # kernel 标量传入（capture 时按常量固化，数值不变）。
+        self._cb_step = uniform_codebook_step(self.codebook.to(device))
         # 原始 buffer 移到 CPU 释放显存（与 MoE 的 offload_original_to_cpu 一致）
         self.packed_indices = self.packed_indices.cpu()
         self.norms = self.norms.cpu()
@@ -130,9 +139,8 @@ class WxA8Linear(WxA16Linear):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """INT8 激活推理：旋转+量化（融合）→ INT8 matmul → bias → 原 dtype。"""
         orig_shape = x.shape
-        batch_size = seq_len = None
-        if x.dim() == 3:
-            batch_size, seq_len, _ = x.shape
+        if x.dim() != 2:
+            # 任意 rank ≥ 2 拍平（原生 MLA 的 kv_b_proj 吃 4D 输入）
             x = x.reshape(-1, self.in_features)
 
         self._ensure_gf(x.device)
@@ -142,9 +150,9 @@ class WxA8Linear(WxA16Linear):
         G = self.in_features // gs
         rot = generate_batch_rotation_matrices(
             gs, self.seed, G, stride=gs, device=src.device, dtype=torch.float16)
+        # _cb_step 由 _ensure_gf 缓存（forward 前已调用），kernel 标量直传
         x_i8, x_scale = rotate_quantize_fused(
-            src, rot, gs, G,
-            extra_scale=uniform_codebook_step(self.codebook.to(x.device)))
+            src, rot, gs, G, extra_scale=self._cb_step)
 
         out = wxa8_matmul_grouped_gf(
             x_i8, x_scale, self._indices_gf, _dummy_cb(x.device), self._norms_gf,
@@ -154,6 +162,6 @@ class WxA8Linear(WxA16Linear):
         if self.bias is not None:
             out = out + self.bias.to(x.device, out.dtype)
 
-        if batch_size is not None and seq_len is not None:
-            out = out.reshape(batch_size, seq_len, self.out_features)
+        if len(orig_shape) != 2:
+            out = out.reshape(*orig_shape[:-1], self.out_features)
         return out.to(x.dtype)

@@ -83,6 +83,26 @@ if __name__ == '__main__':
         default=False,
         help='Disable 0bit in DP search: only use 1-4 bits for bit allocation'
     )
+    parser.add_argument(
+        '--zero-bit-source',
+        type=str, default='extrapolate',
+        choices=['extrapolate', 'direct', 'direct-scale0.1', 'direct-scale1.6',
+                 'direct-scale10', 'direct-scale100', 'magnitude', 'activation',
+                 'none'],
+        help='0-bit candidate loss source in the DP search:\n' \
+        '  - extrapolate: log-quadratic fit of the 1-4 bit proxy losses (default, cached as _b0.pt)\n' \
+        '  - direct: directly measured 0-bit proxy loss, reconstruction set to zero in the\n' \
+        '            same proxy-loss space as positive bits (cached as _b0direct.pt)\n' \
+        '  - direct-scaleN (N=0.1/1.6/10/100): direct 0-bit loss multiplied by N,\n' \
+        '            an L0 magnitude sweep — reuses the _b0direct.pt cache, coefficient\n' \
+        '            applied in memory only. N>1 = 0-bit looks pricier (less pruning);\n' \
+        '            N<1 = cheaper (more aggressive pruning). 1.6 = median\n' \
+        '            L0_extrap/L0_direct inflation of the log-quad form (uniform\n' \
+        '            factor, vs extrap which inflates per-layer)\n' \
+        '  - magnitude / activation: standard pruning scores as the 0-bit candidate loss\n' \
+        '            (cached as _b0magnitude.pt / _b0activation.pt)\n' \
+        '  - none: no 0-bit candidate, equivalent to --disable-0bit-prune'
+    )
     parser.add_argument(        '--standby-layer-cpu', action='store_true', default=False,
         help='Whether to move quant layers to CPU before and after quantization.'
     )
@@ -119,6 +139,7 @@ if __name__ == '__main__':
     print(f"Slices per expert: {args.slices}")
     print(f"MOE struct: {'hybrid' if args.use_hybrid_moe else 'origin'}")
     print(f"Quant mode: {args.quantmode}")
+    print(f"Zero-bit source: {args.zero_bit_source}")
     print(f"WxA16 real quantization: {'Yes' if (args.wxa16 or args.save_quantized) else 'No (fake quant)'}")
     print(f"CPU standby: {'Yes' if args.standby_layer_cpu else 'No'}")
     if args.save_quantized:

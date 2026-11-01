@@ -112,7 +112,7 @@ def calculate_quant_overhead(groupsize: int, quant_type: str = "gptq") -> float:
     # for future extensibility
     if quant_type not in ["gptq", "turboquant"]:
         raise ValueError(f"Unknown quant_type: {quant_type}, must be 'gptq' or 'turboquant'")
-    
+
     return (groupsize * 32) / 128.0
 
 def enum_optimal_m_scheme_global_fast_with_0bit_compensation(

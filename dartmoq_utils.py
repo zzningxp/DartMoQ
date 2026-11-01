@@ -19,6 +19,7 @@ from gptq_utils import GPTQ, Quantizer, find_layers
 from turboquant_utils.dartmoq_backend import collect_expert_activation_inputs
 from turboquant_utils.dartmoq_backend import turbo_fake_quant_linear
 from turboquant_utils.dartmoq_backend import turboquant_outlier_activation_aware_rates
+from turboquant_utils.dartmoq_backend import pruning_score_rates
 
 QBATCH = 256
 GROUPSIZE = 128
@@ -424,8 +425,10 @@ def analyze_turboquant_outlier_activation_aware(
     save_path=None,
     use_activation_hooks=False,
     seed=42,
+    direct_zero=False,
 ):
-    print(f"analyze_turboquant_outlier_{mode} layer: {layer_idx} with {wbits} bits")
+    print(f"analyze_turboquant_outlier_{mode} layer: {layer_idx} with {wbits} bits"
+          + (" (direct zero reconstruction)" if direct_zero else ""))
     assert mode in ("innerproduct", "diagonal", "hessian", "qjl_sensitivity", "iipl", "mse"), f"Unknown TurboQuant outlier mode: {mode}"
 
     groupsize = GROUPSIZE
@@ -459,6 +462,7 @@ def analyze_turboquant_outlier_activation_aware(
             hessian_samples=hidden_states.shape[0] if mode == "hessian" else None,
             activation_inputs=expert_inputs[expert_idx] if expert_inputs is not None else None,
             activation_sample_counts=expert_inputs[expert_idx]["sample_counts"] if expert_inputs is not None else None,
+            direct_zero=direct_zero,
         )
 
         all_rates.append(rates)
@@ -483,6 +487,64 @@ def analyze_turboquant_outlier_activation_aware(
         plt.tight_layout()
         plt.savefig(save_path)
         plt.close()
+
+    del flat_states, expert_inputs
+    torch.cuda.empty_cache()
+    gc.collect()
+
+    return all_rates
+
+def analyze_pruning_scores(
+    layer,
+    layer_idx,
+    hidden_states,
+    ori_expert_num,
+    score="magnitude",
+    if_dense=False,
+    use_activation_hooks=False,
+):
+    """Per-neuron standard pruning scores for all experts of one layer.
+
+    Used as the 0-bit candidate loss when --zero-bit-source is magnitude or
+    activation (reviewer (d) baselines); cached as _b0{score}.pt by the caller.
+    """
+    assert score in ("magnitude", "activation"), f"Unknown pruning score: {score}"
+    print(f"analyze_pruning_scores({score}) layer: {layer_idx}")
+
+    flat_states = hidden_states.reshape(-1, hidden_states.shape[-1]).float()
+
+    all_rates = []
+    if if_dense:
+        assert ori_expert_num == 1, "dense model n == 1"
+
+    # magnitude is weights-only: no activation capture needed
+    expert_inputs = (
+        collect_expert_activation_inputs(layer, hidden_states, ori_expert_num, if_dense=if_dense)
+        if use_activation_hooks and score == "activation"
+        else None
+    )
+
+    for expert_idx in range(ori_expert_num):
+        tick0 = time.time()
+        if ori_expert_num == 1:
+            expert = layer.mlp
+        else:
+            expert = layer.mlp.experts[expert_idx]
+
+        rates = pruning_score_rates(
+            expert,
+            flat_states,
+            score=score,
+            activation_inputs=expert_inputs[expert_idx] if expert_inputs is not None else None,
+        )
+
+        all_rates.append(rates)
+        tick1 = time.time()
+        print(
+            f"pruning score {score}, layer {layer_idx} expert {expert_idx} "
+            f"time: {tick1 - tick0:.4f}",
+            flush=True,
+        )
 
     del flat_states, expert_inputs
     torch.cuda.empty_cache()

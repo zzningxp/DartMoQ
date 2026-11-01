@@ -388,7 +388,15 @@ def _materialize_meta_buffers(model) -> list:
         parent_name, _, buf_name = name.rpartition(".")
         parent = model.get_submodule(parent_name) if parent_name else model
         if buf_name in ("inv_freq", "original_inv_freq") and hasattr(parent, "compute_default_rope_parameters"):
-            inv_freq, _ = parent.compute_default_rope_parameters(parent.config, None)
+            try:
+                inv_freq, _ = parent.compute_default_rope_parameters(parent.config, None)
+            except TypeError:
+                # transformers 5.20 原生 rotary（llama/qwen3_moe/deepseek_v2 族）：
+                # compute_default_rope_parameters 是 staticmethod(config, **kwargs)，
+                # 不收第二个位置参。yarn 等 rope_type 的分派在 __init__ 内完成，
+                # 重建一个同 config 的模块借它的 init 结果（inv_freq 只依赖 config）
+                fresh = type(parent)(parent.config)
+                inv_freq = fresh.inv_freq
             parent.register_buffer("inv_freq", inv_freq, persistent=False)
             parent.register_buffer("original_inv_freq", inv_freq.clone(), persistent=False)
             handled.append(name)
@@ -535,7 +543,8 @@ def convert_model_to_wxa8(model):
 
 def load_quantized_model(base_model_path: str = None, quant_dir: str = None,
                          standby_cpu: bool = False, seqlen: int = 2048,
-                         inference_quant_mode: str = "wxa16"):
+                         inference_quant_mode: str = "wxa16",
+                         trust_remote_code: bool = True):
     """Load a quantized checkpoint, skipping calibration and in-place quantization.
 
     Args:
@@ -550,6 +559,11 @@ def load_quantized_model(base_model_path: str = None, quant_dir: str = None,
         inference_quant_mode: "wxa16" (default) or "wxa8". wxa8 switches the
             MoE to the INT8-activation path in place after restore (the
             checkpoint itself is unchanged)
+        trust_remote_code: use the checkpoint's custom modeling files. Pass
+            False to force transformers' native modeling — dsv2 graph decode
+            needs this (the old custom modeling_deepseek is incompatible with
+            the transformers 5.20 Cache API; native module names match the
+            saved sd keys so strict load still passes)
     """
     if base_model_path is None:
         # Prefer the base_model path recorded in meta.json (also covers old
@@ -567,7 +581,8 @@ def load_quantized_model(base_model_path: str = None, quant_dir: str = None,
     print(f"Base model path (config/tokenizer/remote code): {base_model_path}")
     tick0 = time.time()
 
-    tokenizer = AutoTokenizer.from_pretrained(base_model_path, trust_remote_code=True)
+    tokenizer = AutoTokenizer.from_pretrained(base_model_path,
+                                              trust_remote_code=trust_remote_code)
 
     print("Building model structure on meta device (no weights loaded)...")
     model = AutoModelForCausalLM.from_pretrained(
@@ -575,7 +590,7 @@ def load_quantized_model(base_model_path: str = None, quant_dir: str = None,
         device_map="meta",
         dtype=torch.bfloat16,
         low_cpu_mem_usage=True,
-        trust_remote_code=True,
+        trust_remote_code=trust_remote_code,
     )
     print(f"Meta structure built in {time.time() - tick0:.2f}s")
 

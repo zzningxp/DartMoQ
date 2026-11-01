@@ -78,9 +78,16 @@ def router_forward(gate, hidden_states_3d, x_2d, mode, top_k):
     gate_output = gate(hidden_states_3d)
 
     if mode == "deepseek_tuple3":
-        # (topk_idx, topk_weight, aux_loss)
-        topk_indices, topk_weights, _ = gate_output
-        router_logits = None
+        a, b, c = gate_output
+        if a.is_floating_point():
+            # transformers 5.20 原生 DeepseekV2TopkRouter 顺序：
+            # (router_logits, topk_weights, topk_indices)
+            topk_indices, topk_weights = c, b
+            router_logits = a
+        else:
+            # 旧自定义 modeling 顺序：(topk_idx, topk_weight, aux_loss)
+            topk_indices, topk_weights = a, b
+            router_logits = None
     elif mode == "deepseek_tuple2":
         topk_indices, topk_weights = gate_output
         router_logits = None
@@ -95,9 +102,20 @@ def router_forward(gate, hidden_states_3d, x_2d, mode, top_k):
             topk_weights, topk_indices = router_probs.topk(top_k, dim=-1)
             topk_weights = topk_weights / topk_weights.sum(dim=-1, keepdim=True)
     else:  # "softmax_topk" (olmoe and generic)
-        router_logits = gate_output
-        router_probs = gate_output.softmax(dim=-1)
-        topk_weights, topk_indices = router_probs.topk(top_k, dim=-1)
+        if isinstance(gate_output, tuple) and len(gate_output) == 3:
+            # transformers 5.20 OlmoeTopKRouter 返回
+            # (router_logits, router_scores, router_indices)：scores/indices
+            # 已做过 softmax+topk，且 norm_topk_prob=True 时已 renorm
+            # （OLMoE 原生训练行为），直接采用，避免重复 topk
+            router_logits, topk_weights, topk_indices = gate_output
+        elif isinstance(gate_output, tuple):
+            router_logits, router_probs = gate_output
+            topk_weights, topk_indices = router_probs.topk(top_k, dim=-1)
+        else:
+            # 旧路径: nn.Linear logits, 自行 softmax + topk
+            router_logits = gate_output
+            router_probs = gate_output.softmax(dim=-1)
+            topk_weights, topk_indices = router_probs.topk(top_k, dim=-1)
 
     return topk_weights, topk_indices, router_logits
 

@@ -236,6 +236,44 @@ def _stream_linear_sq_mean(
 
 
 @torch.no_grad()
+def pruning_score_rates(
+    expert: nn.Module,
+    flat_states: torch.Tensor,
+    score: str,
+    activation_inputs: dict[str, torch.Tensor] | None = None,
+    activation_sample_counts: dict[str, int] | None = None,
+) -> torch.Tensor:
+    """Standard pruning scores used as the 0-bit candidate loss (reviewer (d)).
+
+    magnitude:  ||gate_row||^2 + ||up_row||^2 + ||down_col||^2   (weights only)
+    activation: E[z_i^2], neuron activation energy over the expert's routed
+                calibration tokens (activation_inputs hook path) or over all
+                flat_states tokens. This is E[z_w^2], i.e. the direct 0-bit
+                innerproduct loss without the ||down_col||^2 factor.
+    """
+
+    up_w = expert.up_proj.weight.data.float()
+    gate_w = expert.gate_proj.weight.data.float()
+    down_w = expert.down_proj.weight.data.float()
+
+    if score == "magnitude":
+        return gate_w.pow(2).sum(dim=1) + up_w.pow(2).sum(dim=1) + down_w.pow(2).sum(dim=0)
+
+    if score == "activation":
+        if activation_inputs is not None:
+            z_sq, z_count = _stream_sum_sq(activation_inputs["down_proj"], down_w.device, down_w.shape[1])
+            if z_count == 0:
+                return torch.zeros(up_w.shape[0], device=up_w.device, dtype=up_w.dtype)
+            return z_sq / z_count
+        z_w = expert.act_fn(F.linear(flat_states, gate_w)) * F.linear(flat_states, up_w)
+        if z_w.numel() == 0:
+            return torch.zeros(up_w.shape[0], device=up_w.device, dtype=up_w.dtype)
+        return z_w.pow(2).mean(dim=0)
+
+    raise ValueError(f"unknown pruning score {score!r}")
+
+
+@torch.no_grad()
 def turboquant_outlier_activation_aware_rates(
     expert: nn.Module,
     flat_states: torch.Tensor,
@@ -248,13 +286,24 @@ def turboquant_outlier_activation_aware_rates(
     sketch_dim: int = 64,
     activation_inputs: dict[str, torch.Tensor] | None = None,
     activation_sample_counts: dict[str, int] | None = None,
+    direct_zero: bool = False,
 ) -> torch.Tensor:
-    """Compute per-neuron TurboQuant outlier scores for one MoE expert."""
+    """Compute per-neuron TurboQuant outlier scores for one MoE expert.
+
+    With ``direct_zero=True`` the reconstruction is set to zero (up_q / gate_q /
+    down_q are zero matrices) and the same per-neuron metric is evaluated,
+    yielding the directly measured 0-bit loss in the same proxy-loss space as
+    the b = 1..4 measurements. For the innerproduct mode this reduces to
+    E[z_w^2] * ||down_col||^2 (the energy-style pruning score); no clipping
+    safeguard is applied here.
+    """
 
     if mode not in ("iipl", "innerproduct", "diagonal", "hessian", "qjl_sensitivity", "mse"):
         raise ValueError(f"unknown TurboQuant outlier mode: {mode!r}")
     if sketch_dim <= 0:
         raise ValueError("sketch_dim must be > 0")
+    if direct_zero and bit_width != 0:
+        raise ValueError("direct_zero evaluates the 0-bit reconstruction, bit_width must be 0")
 
     up_w = expert.up_proj.weight.data.float()
     gate_w = expert.gate_proj.weight.data.float()
@@ -272,27 +321,35 @@ def turboquant_outlier_activation_aware_rates(
     if _activation_numel(up_inputs) == 0 or _activation_numel(gate_inputs) == 0:
         return torch.zeros(up_w.shape[0], device=up_w.device, dtype=up_w.dtype)
 
-    up_q = turboquant_quantize(
-        up_w,
-        bit_width=bit_width,
-        group_size=group_size,
-        seed=seed,
-        rotation=rotation,
-    ).float()
-    gate_q = turboquant_quantize(
-        gate_w,
-        bit_width=bit_width,
-        group_size=group_size,
-        seed=seed,
-        rotation=rotation,
-    ).float()
-    down_q = turboquant_quantize(
-        down_w,
-        bit_width=bit_width,
-        group_size=group_size,
-        seed=seed,
-        rotation=rotation,
-    ).float()
+    if direct_zero:
+        # 0-bit reconstruction: W_hat = 0. Evaluating the unchanged metric
+        # formulas below with zeroed quantized weights guarantees the result
+        # lives in the same proxy-loss space as the b = 1..4 losses.
+        up_q = torch.zeros_like(up_w)
+        gate_q = torch.zeros_like(gate_w)
+        down_q = torch.zeros_like(down_w)
+    else:
+        up_q = turboquant_quantize(
+            up_w,
+            bit_width=bit_width,
+            group_size=group_size,
+            seed=seed,
+            rotation=rotation,
+        ).float()
+        gate_q = turboquant_quantize(
+            gate_w,
+            bit_width=bit_width,
+            group_size=group_size,
+            seed=seed,
+            rotation=rotation,
+        ).float()
+        down_q = turboquant_quantize(
+            down_w,
+            bit_width=bit_width,
+            group_size=group_size,
+            seed=seed,
+            rotation=rotation,
+        ).float()
 
     up_loss = (up_w - up_q).pow(2)
     gate_loss = (gate_w - gate_q).pow(2)

@@ -8,7 +8,7 @@ logs/
 intermediate_result/
 dartmoq-qwen3.5/
 
-run.*.sh
+# run.*.sh
 *.out
 # run.sh
 *.json
@@ -16,3 +16,4 @@ run.*.sh
 models
 CLAUDE.md
 quant_ckpt/**
+papers/*.txt

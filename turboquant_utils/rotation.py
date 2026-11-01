@@ -43,6 +43,21 @@ _MAX_BATCH_CACHE_SIZE = 512
 # ~1032 个 key（256 experts × 4 groups 等），128 不够会导致每 forward 抖动、
 # QR 反复重算。调到 2048 避免抖动，稳态后不再重算。CPU+GPU 各约 66MB 常驻。
 
+# CUDA graph 捕获期钉住列表：capture 进行中查到的 GPU 旋转张量会被烤进图
+# （triton/bmm kernel 参数持有其指针）。两个缓存都是 FIFO 淘汰——del 掉
+# 字典条目即释放张量，地址被后续 eager 分配复用后，重放读到别人的内存
+# （graph decode 全模型重放垃圾输出、且重放间不确定的根因；eager 路径
+# 每次 forward 重新查缓存拿新指针故不受影响）。钉住 = 额外持一份强引用，
+# 淘汰后张量不释放、指针稳定；代价仅为捕获期工作集常驻（数量有限）。
+_GRAPH_PINNED_ROTATIONS: list[torch.Tensor] = []
+
+
+def _pin_if_capturing(t: torch.Tensor) -> torch.Tensor:
+    """捕获期把 GPU 旋转张量钉住（防 FIFO 淘汰释放后被图重放悬空读）。"""
+    if t.is_cuda and torch.cuda.is_current_stream_capturing():
+        _GRAPH_PINNED_ROTATIONS.append(t)
+    return t
+
 
 # ---------------------------------------------------------------------------
 # QR分解法随机旋转（Haar分布）
@@ -105,7 +120,7 @@ def generate_rotation_matrix(d: int, seed: int = 42, device: Optional[torch.devi
     # 后续调用直接返回，消除每前向的 CPU→GPU 重拷（实验 6 拆出的隐藏开销）。
     dev_key = (d, seed, str(device))
     if dev_key in _ROTATION_CACHE_DEV:
-        return _ROTATION_CACHE_DEV[dev_key]
+        return _pin_if_capturing(_ROTATION_CACHE_DEV[dev_key])
 
     if len(_ROTATION_CACHE_DEV) >= _MAX_CACHE_SIZE:
         first_key = next(iter(_ROTATION_CACHE_DEV.keys()))
@@ -113,7 +128,7 @@ def generate_rotation_matrix(d: int, seed: int = 42, device: Optional[torch.devi
 
     Qd = base.to(device)
     _ROTATION_CACHE_DEV[dev_key] = Qd
-    return Qd
+    return _pin_if_capturing(Qd)
 
 
 def clear_rotation_cache() -> None:
@@ -122,6 +137,8 @@ def clear_rotation_cache() -> None:
     _ROTATION_CACHE.clear()
     _ROTATION_CACHE_DEV.clear()
     _BATCH_ROTATION_CACHE.clear()
+    # 钉住列表随之清空：调用方负责保证此时没有存活的重放图还引用这些
+    # 张量（换模型/释放显存前应先弃图）
 
 
 def generate_batch_rotation_matrices(
@@ -154,7 +171,7 @@ def generate_batch_rotation_matrices(
 
     key = (d, seed_base, num_groups, stride, str(device), str(dtype))
     if key in _BATCH_ROTATION_CACHE:
-        return _BATCH_ROTATION_CACHE[key]
+        return _pin_if_capturing(_BATCH_ROTATION_CACHE[key])
 
     # 逐个生成并堆叠（复用 generate_rotation_matrix 的 L1 缓存）
     mats = []
@@ -170,7 +187,7 @@ def generate_batch_rotation_matrices(
         del _BATCH_ROTATION_CACHE[first_key]
 
     _BATCH_ROTATION_CACHE[key] = P_batch
-    return P_batch
+    return _pin_if_capturing(P_batch)
 
 
 def batch_rotate_input(
