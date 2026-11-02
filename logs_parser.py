@@ -5,6 +5,12 @@ The parser scans each log sequentially and starts a new row at every
 "Loading model: (ppl) ..." line. Metrics that are missing because a run crashed
 or skipped downstream evaluation are left empty instead of being shifted onto a
 neighboring row.
+
+Also parses bench_throughput.py logs (driven by run.bench.sh, see
+papers/inference_bench_1031.md): one row per bench cell, with the storage
+breakdown / eff bpw / VRAM peaks / prefill+decode grid / MoE-stage split /
+consistency check. Bench logs are auto-detected per file, so a mixed list of
+quantization and bench logs works.
 """
 
 from __future__ import annotations
@@ -555,6 +561,347 @@ def parse_logs(paths: Iterable[str]) -> list[RunRecord]:
     return records
 
 
+# ===========================================================================
+# Bench logs (bench_throughput.py, driven by run.bench.sh)
+# ===========================================================================
+BENCH_CELL_RE = re.compile(r"^bench: ckpt=(?P<ckpt_tag>\S+) mode=(?P<mode>\S+)$")
+BENCH_SKIP_RE = re.compile(r"^=== skip \(marker exists\): (?P<mtag>\S+) ===$")
+BENCH_START_TIME_RE = re.compile(r"^start: (?P<value>.+)$")
+BENCH_MODEL_RE = re.compile(r"^\[model\] (?P<model>\S+) on (?P<device>\S+) \| mode: (?P<mode>\S+)$")
+BENCH_CKPT_RE = re.compile(
+    r"^\[ckpt\] file (?P<ckpt_file_gb>[\d.]+) GB \| tensors (?P<ckpt_tensors_gb>[\d.]+) GB "
+    r"\| params (?P<params_total_b>[\d.]+) B \| eff bpw (?P<eff_bpw>[\d.]+)$")
+BENCH_OUT_RE = re.compile(r"^\[out\] saved to (?P<path>\S+)$")
+BENCH_SUMMARY_HDR_RE = re.compile(r"^Prefill/Decode Throughput Benchmark$")
+BENCH_SUMMARY_META_RE = re.compile(
+    r"^model: (?P<model>\S+) \| mode: (?P<mode>\S+) \| device: (?P<device>\S+) "
+    r"\| dataset: (?P<dataset>\S+)$")
+BENCH_SUMMARY_CKPT_RE = re.compile(r"^checkpoint: (?P<ckpt_dir>\S+)$")
+BENCH_SUMMARY_MISC_RE = re.compile(
+    r"^prompt_len: (?P<prompt_len>\d+) \| decode_tokens: (?P<decode_tokens>[\d,]+) "
+    r"\| batch_sizes: (?P<batch_sizes>[\d,]+) \| git: (?P<git_hash>\S+)$")
+BENCH_STORAGE_RES = [
+    ("attn_shared_gb", re.compile(r"^Attn/Shared packed .*?: ([\d.]+) GB$")),
+    ("moe_packed_gb", re.compile(r"^MoE packed \(bit_weights\): ([\d.]+) GB$")),
+    ("fp16_rem_gb", re.compile(r"^fp16 remaining params: ([\d.]+) GB$")),
+    ("qmeta_gb", re.compile(r"^meta scalars \(qmeta\): ([\d.]+) GB$")),
+]
+BENCH_PARAMS_RE = re.compile(
+    r"^params total: [\d.]+ B \(quantized (?P<params_quant_b>[\d.]+) B "
+    r"\+ unquantized (?P<params_unquant_b>[\d.]+) B\)$")
+BENCH_VRAM_RE = re.compile(r"^(?P<phase>\S+)\s+alloc=[\d.]+ peak=(?P<peak>[\d.]+) reserved=[\d.]+$")
+BENCH_VRAM_PEAK_RE = re.compile(r"^overall peak allocated: (?P<peak>[\d.]+) GB$")
+BENCH_PREFILL_RE = re.compile(
+    r"^len=(?P<length>\d+)\s+batch=(?P<batch>\d+)\s+latency=(?P<lat>[\d.]+)s\s+tok/s=(?P<tps>[\d.]+)")
+BENCH_DECODE_RE = re.compile(
+    r"^tokens=(?P<tokens>\d+)\s+batch=(?P<batch>\d+)\s+wall tok/s = (?P<tps>[\d.]+) "
+    r"\(\d+ tokens / [\d.]+s, excl\. prefill\) \| event tok/s = (?P<ev_tps>[\d.]+) "
+    r"\| per-step wall mean/p50/p99 = [\d.]+/(?P<p50>[\d.]+)/[\d.]+ ms$")
+BENCH_TTFT_RE = re.compile(r"^TTFT \(batch=1 tier\) = (?P<ttft>[\d.]+)s \(prefill [\d.]+s \+ step1 [\d.]+s\)$")
+BENCH_MOE_HDR_RE = re.compile(r"^MoE stage \(mean per decode step, all layers, s\):")
+BENCH_MOE_ROW_RE = re.compile(r"^(?P<stage>\S+)\s+(?P<value>[\d.]+)$")
+BENCH_CHECK_RE = re.compile(
+    r"^Consistency check: (?P<check_status>PASS|FAIL) "
+    r"\(max logits diff (?P<check_max_diff>[\d.eE+-]+) [<>=]+ [\d.]+, "
+    r"argmax agree (?P<check_argmax>\d+/\d+)")
+BENCH_RESULTS_RE = re.compile(r"^Results: (?P<path>\S+)$")
+BENCH_EXC_RE = re.compile(r"^(?P<name>[A-Za-z_.]+(?:Error|Exception|Interrupt)): (?P<msg>.+)$")
+
+# run.bench.sh 的固定网格（PREFILL_LENS=16,128,2048 × BATCH=1,4；
+# DECODE_TOKENS=128,256 × BATCH=1,4）。其它网格的日志也能解析，
+# 未出现在下列字段的组合只进 json（metrics 全量导出）。
+PREFILL_GRID = [(16, 1), (16, 4), (128, 1), (128, 4), (2048, 1), (2048, 4)]
+DECODE_GRID = [(128, 1), (128, 4), (256, 1), (256, 4)]
+PREFILL_FIELDS = [f"pf_l{L}_b{B}_{kind}" for L, B in PREFILL_GRID for kind in ("lat_s", "tps")]
+DECODE_FIELDS = [f"dec_t{T}_b{B}_{kind}" for T, B in DECODE_GRID for kind in ("tps", "ev_tps", "p50_ms")]
+MOE_STAGES = ["total", "init", "shared", "router", "sort_scatter_prep", "compute",
+              "triton", "dequant", "gemm", "cleanup_reshape"]
+MOE_FIELDS = [f"moe_{s}_s" for s in MOE_STAGES]
+
+BENCH_CORE_FIELDS = [
+    "source", "run_idx", "status", "start_time", "ckpt_tag", "mode", "model",
+    "device", "dataset", "git_hash", "prompt_len", "ckpt_dir",
+    "ckpt_file_gb", "ckpt_tensors_gb", "attn_shared_gb", "moe_packed_gb",
+    "fp16_rem_gb", "qmeta_gb", "params_total_b", "params_quant_b",
+    "params_unquant_b", "eff_bpw",
+    "vram_after_load_gb", "vram_prefill_peak_gb", "vram_peak_gb",
+    *PREFILL_FIELDS, *DECODE_FIELDS, "ttft_s", *MOE_FIELDS,
+    "check_status", "check_max_diff", "check_argmax", "results_json", "error",
+]
+BENCH_FIELDNAMES = BENCH_CORE_FIELDS
+
+BENCH_DISPLAY_FIELDS = [
+    "ckpt_tag", "mode", "eff_bpw", "ckpt_file_gb", "vram_peak_gb",
+    "pf_l2048_b1_tps", "pf_l2048_b4_tps",
+    "dec_t128_b1_tps", "dec_t128_b1_p50_ms", "dec_t256_b4_tps",
+    "ttft_s", "moe_total_s", "check_status", "status", "error",
+]
+BENCH_PLAIN_HEADERS = {
+    "ckpt_tag": "ckpt", "mode": "mode", "model": "model", "eff_bpw": "bpw",
+    "ckpt_file_gb": "ckptGB", "vram_peak_gb": "vrPK",
+    "pf_l2048_b1_tps": "pf2048x1", "pf_l2048_b4_tps": "pf2048x4",
+    "dec_t128_b1_tps": "dec128x1", "dec_t128_b1_p50_ms": "p50ms",
+    "dec_t256_b4_tps": "dec256x4", "ttft_s": "ttft",
+    "moe_total_s": "moe_s", "check_status": "check", "status": "status",
+    "error": "err",
+}
+
+
+@dataclass
+class BenchRecord:
+    source: str
+    run_idx: int
+    start_line: int
+    end_line: int = 0
+    status: str = "incomplete"
+    start_time: str = ""
+    ckpt_tag: str = ""
+    mode: str = ""
+    model: str = ""
+    device: str = ""
+    dataset: str = ""
+    git_hash: str = ""
+    prompt_len: str = ""
+    ckpt_dir: str = ""
+    ckpt_file_gb: str = ""
+    ckpt_tensors_gb: str = ""
+    attn_shared_gb: str = ""
+    moe_packed_gb: str = ""
+    fp16_rem_gb: str = ""
+    qmeta_gb: str = ""
+    params_total_b: str = ""
+    params_quant_b: str = ""
+    params_unquant_b: str = ""
+    eff_bpw: str = ""
+    vram_after_load_gb: str = ""
+    vram_prefill_peak_gb: str = ""
+    vram_peak_gb: str = ""
+    ttft_s: str = ""
+    check_status: str = ""
+    check_max_diff: str = ""
+    check_argmax: str = ""
+    results_json: str = ""
+    error: str = ""
+    _fatal: bool = field(default=False, repr=False)
+    _saw_summary: bool = field(default=False, repr=False)
+    # 网格值（pf_* / dec_* / moe_*），public_dict 时摊平
+    metrics: dict = field(default_factory=dict, repr=False)
+
+    def finalize(self, end_line: int) -> None:
+        self.end_line = end_line
+        if self._fatal:
+            self.status = "failed"
+        elif self.check_status == "PASS" and self.results_json:
+            self.status = "ok"
+        elif self.check_status or self.metrics or self.results_json:
+            self.status = "partial"
+        else:
+            self.status = "incomplete"
+
+    def public_dict(self) -> dict[str, str | int]:
+        row = asdict(self)
+        row.pop("_fatal", None)
+        row.pop("_saw_summary", None)
+        row.pop("metrics", None)
+        row.update(self.metrics)
+        return row
+
+
+def _new_bench_record(records: list[BenchRecord], current: BenchRecord | None,
+                      line_no: int, source: str, **kwargs) -> BenchRecord:
+    if current is not None:
+        current.finalize(line_no - 1)
+        records.append(current)
+    return BenchRecord(source=source, run_idx=len(records) + 1,
+                       start_line=line_no, **kwargs)
+
+
+def parse_bench_log(path: str) -> list[BenchRecord]:
+    records: list[BenchRecord] = []
+    current: BenchRecord | None = None
+    source = os.path.basename(path)
+    last_line_no = 0
+    in_moe_stage = False
+
+    with open(path, "r", encoding="utf-8", errors="replace") as f:
+        for line_no, raw_line in enumerate(f, 1):
+            last_line_no = line_no
+            line = _clean_line(raw_line)
+            if not line:
+                in_moe_stage = False
+                continue
+
+            # run.bench.sh 驱动的 cell 头（python 直跑 bench 无此行，靠汇总头开行）
+            cell_match = BENCH_CELL_RE.search(line)
+            if cell_match:
+                current = _new_bench_record(
+                    records, current, line_no, source,
+                    ckpt_tag=cell_match.group("ckpt_tag"),
+                    mode=cell_match.group("mode"))
+                in_moe_stage = False
+                continue
+
+            skip_match = BENCH_SKIP_RE.search(line)
+            if skip_match:
+                mtag = skip_match.group("mtag")
+                ckpt_tag, _, mode = mtag.rpartition("_")
+                current = _new_bench_record(records, current, line_no, source,
+                                            ckpt_tag=ckpt_tag, mode=mode)
+                current.status = "skipped"
+                records.append(current)
+                current = None
+                continue
+
+            # 汇总块头：python 直跑时的开行；run.bench.sh 驱动时归并进当前 cell
+            if BENCH_SUMMARY_HDR_RE.search(line):
+                if current is None or current._saw_summary:
+                    current = _new_bench_record(records, current, line_no, source)
+                current._saw_summary = True
+                in_moe_stage = False
+                continue
+            if current is None:
+                continue
+
+            start_time_match = BENCH_START_TIME_RE.search(line)
+            if start_time_match and not current.start_time:
+                current.start_time = start_time_match.group("value").strip()
+                continue
+
+            model_match = BENCH_MODEL_RE.search(line)
+            if model_match:
+                current.model = model_match.group("model")
+                current.device = model_match.group("device")
+                if not current.mode:
+                    current.mode = model_match.group("mode")
+                continue
+
+            ckpt_match = BENCH_CKPT_RE.search(line)
+            if ckpt_match:
+                for key, value in ckpt_match.groupdict().items():
+                    setattr(current, key, value)
+                continue
+
+            out_match = BENCH_OUT_RE.search(line)
+            if out_match:
+                current.results_json = out_match.group("path")
+                continue
+
+            meta_match = BENCH_SUMMARY_META_RE.search(line)
+            if meta_match:
+                current.model = meta_match.group("model")
+                current.mode = meta_match.group("mode")
+                current.device = meta_match.group("device")
+                current.dataset = meta_match.group("dataset")
+                continue
+
+            summary_ckpt_match = BENCH_SUMMARY_CKPT_RE.search(line)
+            if summary_ckpt_match:
+                current.ckpt_dir = summary_ckpt_match.group("ckpt_dir")
+                continue
+
+            misc_match = BENCH_SUMMARY_MISC_RE.search(line)
+            if misc_match:
+                current.prompt_len = misc_match.group("prompt_len")
+                current.git_hash = misc_match.group("git_hash")
+                continue
+
+            for field_name, rx in BENCH_STORAGE_RES:
+                m = rx.search(line)
+                if m:
+                    setattr(current, field_name, m.group(1))
+                    break
+            else:
+                params_match = BENCH_PARAMS_RE.search(line)
+                if params_match:
+                    current.params_quant_b = params_match.group("params_quant_b")
+                    current.params_unquant_b = params_match.group("params_unquant_b")
+                    continue
+
+                vram_match = BENCH_VRAM_RE.search(line)
+                if vram_match:
+                    phase = vram_match.group("phase")
+                    if phase == "after_load":
+                        current.vram_after_load_gb = vram_match.group("peak")
+                    elif phase == "prefill":
+                        current.vram_prefill_peak_gb = vram_match.group("peak")
+                    continue
+
+                vram_peak_match = BENCH_VRAM_PEAK_RE.search(line)
+                if vram_peak_match:
+                    current.vram_peak_gb = vram_peak_match.group("peak")
+                    continue
+
+                prefill_match = BENCH_PREFILL_RE.search(line)
+                if prefill_match:
+                    L = prefill_match.group("length")
+                    B = prefill_match.group("batch")
+                    current.metrics[f"pf_l{L}_b{B}_lat_s"] = prefill_match.group("lat")
+                    current.metrics[f"pf_l{L}_b{B}_tps"] = prefill_match.group("tps")
+                    continue
+
+                decode_match = BENCH_DECODE_RE.search(line)
+                if decode_match:
+                    T = decode_match.group("tokens")
+                    B = decode_match.group("batch")
+                    current.metrics[f"dec_t{T}_b{B}_tps"] = decode_match.group("tps")
+                    current.metrics[f"dec_t{T}_b{B}_ev_tps"] = decode_match.group("ev_tps")
+                    current.metrics[f"dec_t{T}_b{B}_p50_ms"] = decode_match.group("p50")
+                    continue
+
+                ttft_match = BENCH_TTFT_RE.search(line)
+                if ttft_match:
+                    current.ttft_s = ttft_match.group("ttft")
+                    continue
+
+                if in_moe_stage:
+                    moe_match = BENCH_MOE_ROW_RE.search(line)
+                    if moe_match:
+                        current.metrics[f"moe_{moe_match.group('stage')}_s"] = moe_match.group("value")
+                        continue
+
+                if BENCH_MOE_HDR_RE.search(line):
+                    in_moe_stage = True
+                    continue
+
+                check_match = BENCH_CHECK_RE.search(line)
+                if check_match:
+                    current.check_status = check_match.group("check_status")
+                    current.check_max_diff = check_match.group("check_max_diff")
+                    current.check_argmax = check_match.group("check_argmax")
+                    continue
+
+                results_match = BENCH_RESULTS_RE.search(line)
+                if results_match:
+                    current.results_json = results_match.group("path")
+                    continue
+
+                exc_match = BENCH_EXC_RE.search(line)
+                if exc_match:
+                    _append_error(current, line[:200])
+                    current._fatal = True
+                    continue
+
+                if FATAL_RE.search(line):
+                    current._fatal = True
+
+    if current is not None:
+        current.finalize(last_line_no)
+        records.append(current)
+    return records
+
+
+def is_bench_log(path: str) -> bool:
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                if BENCH_CELL_RE.search(line.replace("\r", "").strip()) \
+                        or BENCH_SUMMARY_HDR_RE.search(line.replace("\r", "").strip()):
+                    return True
+    except OSError:
+        pass
+    return False
+
+
 def _format_row(record: RunRecord, fields: list[str]) -> dict[str, str]:
     row = record.public_dict()
     return {field: _format_value(field, row.get(field, "")) for field in fields}
@@ -677,14 +1024,20 @@ def _format_plain_value(record: RunRecord, field: str, value) -> str:
     return _format_value(field, value)
 
 
-def write_plain(records: list[RunRecord], out) -> None:
-    rows: list[list[str]] = []
-    rows.append([PLAIN_HEADERS[field] for field in DISPLAY_FIELDS])
-    for record in records:
-        row = record.public_dict()
-        rows.append([_format_plain_value(record, col, row.get(col, "")) for col in DISPLAY_FIELDS])
+def _format_bench_plain_value(record: BenchRecord, field: str, value) -> str:
+    if field == "error":
+        # bench 的 error 是单行异常消息（如 "KeyError: 'type'"），plain 表里
+        # 直接展示（截断），不像量化表那样清空
+        text = str(value).replace("\t", " ")
+        return text[:60] + "..." if len(text) > 60 else text
+    if record.status in ("failed", "partial", "incomplete", "skipped"):
+        if field != "status" and value == "":
+            return "----"
+    return _format_value(field, value)
 
-    widths = [max(len(row[i]) for row in rows) for i in range(len(DISPLAY_FIELDS))]
+
+def _render_plain(rows: list[list[str]], out) -> None:
+    widths = [max(len(row[i]) for row in rows) for i in range(len(rows[0]))]
     for row in rows:
         pieces = []
         for i, value in enumerate(row):
@@ -695,24 +1048,55 @@ def write_plain(records: list[RunRecord], out) -> None:
         print("".join(pieces), file=out)
 
 
-def write_markdown(records: list[RunRecord], out) -> None:
+def write_plain(records: list[RunRecord], out) -> None:
+    rows: list[list[str]] = []
+    rows.append([PLAIN_HEADERS[field] for field in DISPLAY_FIELDS])
+    for record in records:
+        row = record.public_dict()
+        rows.append([_format_plain_value(record, col, row.get(col, "")) for col in DISPLAY_FIELDS])
+    _render_plain(rows, out)
+
+
+def write_bench_plain(records: list[BenchRecord], out) -> None:
+    rows: list[list[str]] = []
+    rows.append([BENCH_PLAIN_HEADERS.get(f, f) for f in BENCH_DISPLAY_FIELDS])
+    for record in records:
+        row = record.public_dict()
+        rows.append([_format_bench_plain_value(record, col, row.get(col, "")) for col in BENCH_DISPLAY_FIELDS])
+    _render_plain(rows, out)
+
+
+def _render_markdown(fields: list[str], headers: dict[str, str],
+                     records: list[RunRecord] | list[BenchRecord], out,
+                     plain: bool = False) -> None:
     print("<table>", file=out)
     print("  <thead>", file=out)
     print("    <tr>", file=out)
-    for field in FIELDNAMES:
-        print(f"      <th>{html.escape(EXPORT_HEADERS[field])}</th>", file=out)
+    for field in fields:
+        print(f"      <th>{html.escape(headers.get(field, field))}</th>", file=out)
     print("    </tr>", file=out)
     print("  </thead>", file=out)
     print("  <tbody>", file=out)
     for record in records:
         row = record.public_dict()
         print("    <tr>", file=out)
-        for field in FIELDNAMES:
-            value = _format_plain_value(record, field, row.get(field, ""))
+        for field in fields:
+            if plain:
+                value = _format_plain_value(record, field, row.get(field, ""))  # type: ignore[arg-type]
+            else:
+                value = _format_value(field, row.get(field, ""))
             print(f"      <td>{html.escape(value)}</td>", file=out)
         print("    </tr>", file=out)
     print("  </tbody>", file=out)
     print("</table>", file=out)
+
+
+def write_markdown(records: list[RunRecord], out) -> None:
+    _render_markdown(FIELDNAMES, EXPORT_HEADERS, records, out, plain=True)
+
+
+def write_bench_markdown(records: list[BenchRecord], out) -> None:
+    _render_markdown(BENCH_FIELDNAMES, {f: f for f in BENCH_FIELDNAMES}, records, out)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -731,14 +1115,27 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.format == "plain":
-        records = parse_logs(args.logs)
+        # bench 日志与量化/eval 日志逐文件自动识别，两类各渲一张表
+        bench_records: list[BenchRecord] = []
+        run_records: list[RunRecord] = []
+        for log_path in args.logs:
+            if is_bench_log(log_path):
+                bench_records.extend(parse_bench_log(log_path))
+            else:
+                run_records.extend(parse_log(log_path))
         if args.complete_only:
-            records = [record for record in records if record.status == "ok"]
-        write_plain(records, sys.stdout)
+            bench_records = [r for r in bench_records if r.status == "ok"]
+            run_records = [r for r in run_records if r.status == "ok"]
+        if bench_records:
+            write_bench_plain(bench_records, sys.stdout)
+            print()
+        if run_records:
+            write_plain(run_records, sys.stdout)
         return 0
 
     for log_path in args.logs:
-        records = parse_log(log_path)
+        bench_mode = is_bench_log(log_path)
+        records = parse_bench_log(log_path) if bench_mode else parse_log(log_path)
         total_records = len(records)
         if args.complete_only:
             records = [record for record in records if record.status == "ok"]
@@ -747,15 +1144,28 @@ def main(argv: list[str] | None = None) -> int:
         output_path = f"{log_path}.{args.format}"
         with open(output_path, "w", newline="", encoding="utf-8") as out:
             if args.format == "json":
-                json.dump([_format_export_row(record) for record in records], out, indent=2, ensure_ascii=False)
+                if bench_mode:
+                    json.dump([r.public_dict() for r in records], out, indent=2, ensure_ascii=False)
+                else:
+                    json.dump([_format_export_row(record) for record in records], out, indent=2, ensure_ascii=False)
                 print(file=out)
             elif args.format == "md":
-                write_markdown(records, out)
+                if bench_mode:
+                    write_bench_markdown(records, out)
+                else:
+                    write_markdown(records, out)
             else:
-                write_csv(records, out)
+                if bench_mode:
+                    rows = [r.public_dict() for r in records]
+                    out.write(",".join([_csv_escape(f) for f in BENCH_FIELDNAMES]) + "\n")
+                    for row in rows:
+                        out.write(",".join([_csv_escape(_format_value(f, row.get(f, "")))
+                                            for f in BENCH_FIELDNAMES]) + "\n")
+                else:
+                    write_csv(records, out)
 
         # Print output log
-        print(f"[LOG] Parsed: {log_path}")
+        print(f"[LOG] Parsed: {log_path}" + (" (bench)" if bench_mode else ""))
         print(f"[LOG] Output: {output_path}")
         print(f"[LOG] Total runs: {total_records}")
         if args.complete_only:

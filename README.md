@@ -413,6 +413,19 @@ Wall time (wikitext2 + c4, seconds):
 - Quantization-time vs load-time PPL agreement to 3 decimals also holds at 1 bpw (e.g. DSv2-Lite 9.2610 vs 9.2612, Moonlight 17.0465 vs 17.0474).
 - Moonlight stays the outlier at both bitrates: 1 bpw WxA16 c4 (112s) remains above the FP16 baseline (88s), consistent with its dispersed c4 routing — same optimization target as above.
 
+### Generation Throughput, VRAM & CUDA Graph Decode
+
+`run.bench.sh` (→ `bench_throughput.py`) measures reviewer-grade generation metrics per checkpoint × mode with a logits-consistency guard: checkpoint size in GiB with category breakdown (MoE packed / attn+shared packed / fp16 residual), effective bpw including all quantization metadata, per-phase peak VRAM (after-load / warmup / prefill / decode), and a prefill (L∈{16,128,2048} × B∈{1,4}) + decode (128/256 tokens × B∈{1,4}) latency/throughput grid, plus a per-stage MoE timing breakdown. Progressively resumable via markers in `logs/bench_done/`. Full tables: `papers/inference_bench_1031.md`. Highlights (RTX 5090, transformers 5.20 native modeling):
+
+| ckpt | ckpt GiB | eff. bpw (incl. metadata) | peak VRAM | decode B1 (wxa8) |
+|---|---|---|---|---|
+| Qwen3-30B-A3B 1 bpw | 6.03 | 1.695 | 7.89 GiB | 78.8 ms/step, 12.7 tok/s |
+| Qwen3-30B-A3B 2 bpw | 9.34 | 2.626 | 11.48 GiB | 82.6 ms/step, 12.1 tok/s |
+| DSv2-Lite 1 bpw | 3.58 | 1.960 | 4.77 GiB | 41.8 ms/step, 23.9 tok/s |
+
+The eager numbers above use the default host-orchestrated dispatch. `run.graph.sh` (→ `graph_decode.py`) additionally captures one decode step as a CUDA graph via the device-side static dispatch (`DARTMOQ_STATIC_DISPATCH=1`, WxA8 only), with closed-loop token-match and a bf16-ulp tie-flip divergence gate: DeepSeek-V2-Lite 48.6→17.4 ms (2.78×, 57.2 tok/s), Qwen3-30B-A3B 1 bpw 79.1→28.4 ms (2.79×, 35.2 tok/s). `run.profile.sh` (→ `profile_graph_decode.py`) wraps the replay in `torch.profiler` for per-kernel attribution (kernel-efficiency vs kernel-count tuning decisions).
+
+
 ---
 
 ## Visualization and Analysis

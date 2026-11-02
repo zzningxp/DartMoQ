@@ -91,6 +91,60 @@
 - [ ] moon wxa16 c4 场景优化（活跃专家/bit 多、内核启动密集；CudaStageProfiler 定位 + 配置重调）
 - [ ] 遗留：_build_hoisted_rotations 上游原版有结果被覆盖的死循环已删；packed 字典缓存跨设备移动的陈旧引用与上游同构（load 路径 cache=None 惰性重建，安全）
 
+## 阶段 5：CUDA graph decode、rebuttal 测速与 kernel 调优（2026-10 下旬起）
+
+> 评审要口径：checkpoint GB、含 metadata/mask 的 effective bpw、峰值推理显存、
+> prefill/decode 延迟、tokens/s、不同 batch/seq 吞吐；并回应"MoE 只访问
+> routed experts、不规则调度、负载不均可能抵消带宽节省"。数据记录与证据链
+> 统一放 `papers/inference_bench_1031.md`（以此为准确认口径）。
+
+### 已完成
+
+- [x] **CUDA graph decode 移植**（graph_decode.py + run.graph.sh）：wxa8 静态
+  派发（DARTMOQ_STATIC_DISPATCH=1，设备端定形池 + whole 单步图）；transformers
+  5.20 原生 modeling + StaticCache；mask native/buffer 双模式（native 失败自动
+  换 buffer）；正确性三重门：闭环 greedy token 对拍（硬判据）+ teacher-forced
+  logits 对拍（软判据）+ B2 分叉诊断
+- [x] graph 结果（5090）：dsv2 48.6→17.4 ms（2.78×，57.2 tok/s，token 全等）；
+  qwen3-1bpw 79.1→28.4 ms（2.79×，35.2 tok/s，DIFF@42 判定为 bf16 平局翻转：
+  eager top-2 gap 严格 0，graph 1 ulp=0.1875 打破，无 NaN、prefill 逐位一致）
+- [x] **B2 tie-flip 判据修正**（2026-11-01）：绝对阈值 1e-2 在大幅度 logits 下
+  永不可达 → 参考 top-1 幅度下 bf16 ulp 的 4 倍（div 记 eager_top1_exp，旧
+  JSON 无键回落旧判据）；判定抽成 classify_b2_divergence，测试
+  test/test_graph_b2_verdict.py 四组 PASS（nextafter 实测 bf16 间距锚定公式）
+- [x] **rebuttal 测速 bench**（bench_throughput.py + run.bench.sh）：ckpt GiB
+  分类分解 / eff bpw 含全部 metadata / 分相位峰值 VRAM / prefill L{16,128,2048}
+  ×B{1,4} / decode 128/256 tok / MoE 分阶段耗时 / logits 一致性门；
+  marker 断点续跑；已完成 8/20 格（dsv2×4、qwen3×4，全 PASS）
+- [x] MoE 阶段分解回应调度质疑：dsv2 sort/scatter+router 仅占 step ~10%，
+  瓶颈是 dequant-GEMM kernel 本身；p99/mean 抖动 <15%（负载不均影响有限）
+- [x] **transformers 5.20 router 适配修复**：OlmoeTopKRouter 返回 3 元组
+  (logits, scores, indices)（scores 已 topk+renorm 直接采用），adapters.py
+  softmax_topk 分支三级兼容；测试 test/test_router_adapters.py 三项 PASS
+- [x] run.bench.sh 加第三列 flags：dsv1/moon 带 --trust-remote-code
+  （DeepseekForCausalLM 无 5.20 原生支持）
+- [x] 仓库清理：e4_alloc_baselines.py 移 viz/（root 路径插入 + REPO 提升，
+  run.e4.sh 同步；selftest ALL OK）
+
+### 待办（调优路径，按性价比排）
+
+- [ ] **P0：graph replay 逐 kernel profile**（profile_graph_decode.py +
+  run.profile.sh，已就绪待跑）：qwen3 28.4ms 里 triton MoE / attention /
+  杂项占比 + kernel 间隙；qwen3 vs dsv2 对比（效率标尺：dsv2 有效 241 GFLOPS
+  vs qwen3 162，追平则 ~52 tok/s）→ 决定走 kernel 效率（768 维 shape 的
+  triton 配置没为 qwen3 调过）还是 kernel 数量（3 bit-pool 合 launch、
+  gu/dn 融合）
+- [ ] P0：bench 剩余 12 格续跑（olmoe×4 / dsv1×2 / moon×2 × 双模式，
+  bash run.bench.sh，marker 续跑）
+- [ ] P1：baseline 对标格（bf16 原模型双卡 57GiB 可跑、单卡放不下本身是
+  卖点；NF4 需装 bitsandbytes——5090=sm_120 要新版）；bench_throughput.py
+  加 --baseline 加载分支（未写）
+- [ ] P1：graph 数字扩展（2bpw 档；GRAPH=1 bash run.bench.sh 或
+  run.graph.sh CKPTS 加行）
+- [ ] P2：Qwen3.5 fork 55 tps 口径核对（模型/GPU/GDN 线性注意力差异）
+- [ ] 继承：autotune 驱动、moon wxa16 c4 优化（阶段 4 遗留，见上）
+
+
 ## 修复记录（2026-09-19/20）
 
 1. **convert_to_group_first 单 group norms 形状 bug**（上游同源 bug，qwen3.5 模型形状下从未触发）：
