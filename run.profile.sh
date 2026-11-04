@@ -5,10 +5,12 @@
 # 效率还是 kernel 数量（见 papers/inference_bench_1031.md 的调优路径）。
 #
 # 与 run.graph.sh 的差别：不跑 eager 参考与 token 对拍，纯测时 + CUPTI
-# profile；单卡 0（<8GB）。marker 在 logs/profile_done/（删 marker 强制重跑）。
+# profile；单卡 0（<8GB）。marker 在 logs/profile_done/。
 #
 # 用法：
 #   nohup bash run.profile.sh > logs/1101.profile_qwen3.log 2>&1 &
+#   FRESH=1 nohup bash run.profile.sh > logs/<new>.log 2>&1 &
+#   （FRESH=1 先清空全部 marker 从头重跑；内核/静态派发改动后重测用这个）
 
 . /home/daodao/anaconda3/etc/profile.d/conda.sh
 conda activate dart312
@@ -23,6 +25,11 @@ dsv2-1bpw|quant_ckpt/dsv2-1bpw-s1|
 "
 
 mkdir -p logs/profile_done
+FRESH=${FRESH:-0}
+if [ "$FRESH" = "1" ]; then
+    echo "=== FRESH=1: clearing all profile_done markers (full rerun) ==="
+    rm -f logs/profile_done/*
+fi
 total_fail=0
 
 for entry in $CKPTS; do

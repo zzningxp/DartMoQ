@@ -151,15 +151,26 @@
   55 不作为 qwen3-30b 目标口径，同栈标尺 dsv2 graph 57.2–62.6；
   qwen3 路径量化：胶水 12.08→~4ms + triton 调优 → 18–20ms ≈ 50–55 tok/s。
   详录 papers/inference_bench_1031.md
+- [x] **P0 kernel 数量优化 A+B 段**（2026-11-04）：qwen3 graph
+  **35.2→50.9 tok/s**（18.66ms/step，4.0× eager）。静态派发 MoE 每层
+  ~217→29 kernel：A 段 silu×mul×mask / 加权散射尾融合、池簿记/清零/散写
+  三连 kernel（LUT 自计数取代层级 counts 链）、x16 每层一次 hoist；B 段
+  norms 1/sqrt(gs) 入 GEMM kernel（NORM_INV，免 host cast+mul）、gate_up
+  gather 内联进 GEMM（GATHER_X，免两笔 index_select 物化）。对拍
+  （parity 1.3e-3）/fidelity（双路由 bitwise）/毒注 A/B/守卫全过
+  （test_moe_static_dispatch：小测 kernel 247→55，replay 0.300→0.068ms）；
+  GPU 主流程 1104.2 重测：胶水 12.08→4.37ms、gap 2.9→1.45ms，DIFF 均判
+  tie-flip benign。工具：logs_parser.py 增 graph 日志解析、
+  run.graph.sh/run.profile.sh 增 FRESH=1 清 marker
 
 ### 待办（调优路径，按性价比排）
 
-- [ ] **P0：kernel 数量优化**（2026-11-04 开工）：bit-pool 合 launch、
-  gu/dn 融合，目标 qwen3 胶水 12.08→~4ms（graph 35.2→~50 tok/s），dsv2
-  同吃（6.47ms）；按 CLAUDE.md cuda/triton 流程先写主流程对齐测试 +
-  GPU 填充度/SM 分析
-- [ ] P1：triton 768 维 shape 配置调优（qwen3 162 vs dsv2 241 GFLOPS，
-  追平估 +~15 tok/s；test/test_p53_tune.py、test_wxa8_tune.py 就绪）
+- [ ] **P0-C：三池合 launch**（A+B 段已闭环，2026-11-04）：簿记/清零/
+  散写每层 9→3 launch（拼接 expert_info + 常驻缓冲并段 + K3 二维 grid），
+  估 gap 1.45→~1.0ms；收益递减，排在 P1 调优之后
+- [ ] P1：triton 768 维 shape 配置调优（other 桶 8.19ms 主体
+  _wxa8_merged_kernel_gf，qwen3 162 vs dsv2 241 GFLOPS，追平估
+  +~10 tok/s；test/test_p53_tune.py、test_wxa8_tune.py 就绪）
 - [ ] P1：baseline 对标格（bf16 原模型双卡 57GiB 可跑、单卡放不下本身是
   卖点；NF4 需装 bitsandbytes——5090=sm_120 要新版）；bench_throughput.py
   加 --baseline 加载分支（未写）

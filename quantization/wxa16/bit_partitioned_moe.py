@@ -21,6 +21,10 @@ from quantization.common.adapters import (
     shared_forward,
 )
 from turboquant_utils.quantize import turboquant_quantize_packed_full
+from turboquant_utils.triton_kernels_a8 import (
+    static_pool_dispatch_fused,
+    weighted_scatter_add_fused,
+)
 from turboquant_utils.triton_kernels import (
     triton_fused_matmul_grouped_slice_rows,
     triton_fused_matmul_grouped_slice_in_features,
@@ -417,6 +421,10 @@ class _StaticPoolState:
         self.tokens_buf = torch.zeros(C + 1, dtype=torch.long, device=device)
         self.weights_buf = torch.zeros(C + 1, dtype=act_dtype, device=device)
         self.slot_local_buf = torch.zeros(C + 1, dtype=torch.long, device=device)
+        # P0 融合簿记/清零 kernel 的常驻缓冲（指针跨步稳定，capture 合法）：
+        # pool_total（int32 标量）与行掩码（bool，等价 arange_c < pool_total）
+        self.pool_total_buf = torch.zeros(1, dtype=torch.int32, device=device)
+        self.mask_buf = torch.zeros(C, dtype=torch.bool, device=device)
 
     def _worst_case_blocks(self, capacity, block_b, block_n, n_extent):
         """最坏情况调度表：(E × ceil(C/BLOCK_B) × ceil(N/BLOCK_N), 3) int32。"""
@@ -443,9 +451,6 @@ class _StaticDispatchState:
         self.pools = pools
         self.expert_bit = expert_bit      # (num_experts,) long：expert → 池序号
         self.expert_local = expert_local  # (num_experts,) long：expert → 池内成员序号
-        dev = expert_bit.device
-        self.ones_c = torch.ones(capacity, dtype=torch.int32, device=dev)
-        self.arange_c = torch.arange(capacity, dtype=torch.int64, device=dev)
 
 
 class WxA16BitPartitionedGroupMoE(nn.Module):
@@ -1010,61 +1015,32 @@ class WxA16BitPartitionedGroupMoE(nn.Module):
                                final_hidden_states):
         """设备端定形派发的 MoE 计算。
 
-        全部算子定形、无 host 读取：统计（index_add_）→ 池内游标（cumsum）
-        → 行位次（C×C 定形比较）→ 池缓冲散写（index_copy_，含丢弃槽）→
-        kernel（运行时读 expert_info 行段）→ 权重加权 scatter（index_add_）。
-        padding 行（容量上界与真实行数之差）输入置零、权重为零，对合法
-        token 恒等加零（bitwise 安全）。gate_up 旋转整批预提升（数学等价，
-        rotate(x)[idx] ≡ rotate(x[idx])）；down 逐行从旋转库按所属 expert
-        的 group 偏移选矩阵。
+        全部算子定形、无 host 读取：static_pool_dispatch_fused 三 kernel
+        （池簿记含 LUT 自计数/缓冲清零/行散写，先导计数在散写 kernel 内
+        O(R) 扫描）→ kernel（运行时读 expert_info 行段）→ 融合加权
+        scatter。padding 行（容量上界与真实行数之差）输入置零、权重为零，
+        对合法 token 恒等加零（bitwise 安全）。gate_up 旋转整批预提升
+        （数学等价，rotate(x)[idx] ≡ rotate(x[idx])）；down 逐行从旋转库
+        按所属 expert 的 group 偏移选矩阵。
         """
         st = self._static_decode_state
-        T = x.shape[0]
-        C = st.capacity
-        dev = x.device
 
         flat_e = topk_indices.reshape(-1).long()
         flat_w = topk_weights.reshape(-1).to(x.dtype)
-        flat_t = torch.arange(T, device=dev).repeat_interleave(self.top_k)
 
-        # 设备端统计 + 行内位次（同一 expert 的先前行数）
-        counts = torch.zeros(self.num_experts, dtype=torch.int32, device=dev)
-        counts.index_add_(0, flat_e, st.ones_c)
-        same = flat_e.unsqueeze(0) == flat_e.unsqueeze(1)
-        prior = same.long().tril(-1).sum(1)
-        pool_of_row = st.expert_bit.index_select(0, flat_e)
-        local_of_row = st.expert_local.index_select(0, flat_e)
+        # gate_up 方向激活整层一次转 fp16（原逐池 x.half() 每层拷 3 次）。
+        # 层级的 counts zeros+index_add_ 行计数已折入簿记 kernel 的 LUT
+        # 匹配（P0 kernel 数量优化），每池各自数自己的成员
+        x16 = x if x.dtype == torch.float16 else x.half()
 
         for bi, ps in enumerate(st.pools):
-            m_counts = counts.index_select(0, ps.member_ids)
-            cursors = m_counts.cumsum(0, dtype=torch.int32)
-            cursors = cursors - m_counts  # 排他前缀和 = 池内行游标
-            ps.expert_info_gu[:, 0].copy_(cursors)
-            ps.expert_info_gu[:, 1].copy_(m_counts)
-            ps.expert_info_dn[:, 0].copy_(cursors)
-            ps.expert_info_dn[:, 1].copy_(m_counts)
-
-            pool_total = m_counts.sum()
-            in_pool = pool_of_row == bi
-            # 非本池行的局部索引指向别的池（合法于彼池、可能越界于本池），
-            # clamp 到本池范围防 gather 越界；其行游标本就不参与 dst
-            # （torch.where 丢弃），仅保证索引合法
-            row_cursor = cursors.index_select(
-                0, local_of_row.clamp(0, ps.num_members - 1)).to(torch.long)
-            dst = torch.where(in_pool, row_cursor + prior, C)  # 丢弃槽 = C
-
-            ps.tokens_buf.zero_()
-            ps.tokens_buf.index_copy_(0, dst, flat_t)
-            ps.weights_buf.zero_()
-            ps.weights_buf.index_copy_(0, dst, flat_w)
-            ps.slot_local_buf.zero_()
-            ps.slot_local_buf.index_copy_(0, dst, local_of_row)
-            tokens_c = ps.tokens_buf[:C]
-            weights_c = ps.weights_buf[:C]
-            mask_rows = st.arange_c < pool_total
-
+            static_pool_dispatch_fused(flat_e, flat_w,
+                                       st.expert_bit, st.expert_local,
+                                       ps, bi, self.top_k)
             self._static_pool_compute(
-                ps, x, tokens_c, weights_c, mask_rows, final_hidden_states)
+                ps, x16, ps.tokens_buf[:ps.capacity],
+                ps.weights_buf[:ps.capacity], ps.mask_buf,
+                final_hidden_states)
 
         return final_hidden_states
 
@@ -1084,21 +1060,19 @@ class WxA16BitPartitionedGroupMoE(nn.Module):
     @staticmethod
     def _static_scatter_tail(dn, tokens_c, weights_c, mask_rows,
                              final_hidden_states):
-        """静态池 scatter 尾（各模式共用）：padding 行显式清零后加权累加。
+        """静态池 scatter 尾（各模式共用）：有效行加权原子累加（P0 融合版）。
 
         dn 的 padding 行（行号 ≥ pool_total）不属于任何成员的行段，GEMM
         kernel 的 store 掩码（rb < token_start + token_count）从不写入它们，
-        内容是 torch.empty 的分配器残留；weights_c 在 padding 行虽为 0，但
-        0 × inf/NaN = NaN——残留非有限时经 index_add_ 把 token 0 污染成
-        NaN（多池拆分必有 padding 行故显形；单池 pool_total=C 无 padding，
-        同一缺陷不触发。残留是否非有限取决于 prefill 的分配历史 → 呈实例
-        依赖；host 路径无 padding 行故从不触发）。
-        masked_fill_ 按掩码覆写（非算术），对任意残留安全；定形定形状、
-        设备端掩码，capture 合法。开销 = 每池每层一个小 fill 节点。
+        内容是 torch.empty 的分配器残留。旧三段尾（masked_fill_ 清零 →
+        mul_ 零权重 → index_add_）以"清零后加零"规避 0×inf/NaN=NaN 污染
+        token 0；融合 kernel（_weighted_scatter_add_kernel）对 mask=0 行
+        直接跳过——残留根本不进算术，数学等价（0 + x == x，含 ±0 符号差
+        异经 == 比较不可见），且免疫同一缺陷。w*dn 在 fp32 完成后单次舍入
+        到 x.dtype（旧链 .to + mul_ 两次舍入，精度不低于旧链）。
         """
-        dn.masked_fill_(~mask_rows.unsqueeze(1), 0)
-        dn.mul_(weights_c.unsqueeze(1))
-        final_hidden_states.index_add_(0, tokens_c, dn)
+        weighted_scatter_add_fused(dn, tokens_c, weights_c, mask_rows,
+                                   final_hidden_states)
 
     def forward(self, hidden_states):
         """

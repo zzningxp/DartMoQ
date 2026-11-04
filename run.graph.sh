@@ -9,11 +9,12 @@
 # graph_decode.py 文件头预案自动换 buffer 补跑一次（结果 JSON 的
 # meta.mask_mode 记录实际模式）。
 #
-# 单卡 0 即可（1bpw 峰值 <8GB）。marker 在 logs/graph_done/（删 marker
-# 强制重跑）。
+# 单卡 0 即可（1bpw 峰值 <8GB）。marker 在 logs/graph_done/。
 #
 # 用法：
-#   nohup bash run.graph.sh > logs/1031.graph_qwen3.log 2>&1 &
+#   nohup bash run.graph.sh > logs/1104.2.graph_qwen3.log 2>&1 &
+#   FRESH=1 nohup bash run.graph.sh > logs/<new>.log 2>&1 &
+#   （FRESH=1 先清空全部 marker 从头重跑；内核/静态派发改动后重测用这个）
 
 . /home/daodao/anaconda3/etc/profile.d/conda.sh
 conda activate dart312
@@ -27,6 +28,11 @@ qwen3-1bpw|quant_ckpt/qwen3-30b-a3b-1bpw-s1
 "
 
 mkdir -p logs/graph_done
+FRESH=${FRESH:-0}
+if [ "$FRESH" = "1" ]; then
+    echo "=== FRESH=1: clearing all graph_done markers (full rerun) ==="
+    rm -f logs/graph_done/*
+fi
 total_fail=0
 
 for entry in $CKPTS; do

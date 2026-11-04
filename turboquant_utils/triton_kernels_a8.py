@@ -623,6 +623,251 @@ def rotate_quantize_fused_pooled(x: torch.Tensor, rot_bank: torch.Tensor,
     return x_i8, x_scale
 
 
+@triton.jit
+def _silu_mul_mask_kernel(
+    gu_ptr,        # (C, 2*inter) fp16 —— 静态池 gate_up 输出（gate|up 拼接）
+    mask_ptr,      # (C,) bool —— 行有效掩码（行号 < pool_total）
+    out_ptr,       # (C, inter) fp16
+    INTER,
+    stride_gu, stride_out,
+    BLOCK: tl.constexpr,
+):
+    """gate_up 尾部融合：silu(gate)*up*rowmask 一个 kernel 写出 fp16。
+
+    替代 F.silu(gu[:, :inter]) * gu[:, inter:] 再乘 mask 的 3 个 PyTorch
+    elementwise（P0 kernel 数量优化）。silu/mul 在 fp32 内完成、单次舍入，
+    精度不低于原三段链（原链 silu 后、mul 后各舍入一次 fp16）。
+    """
+    pid = tl.program_id(0)
+    n_col = tl.cdiv(INTER, BLOCK)
+    row = pid // n_col
+    col = (pid % n_col) * BLOCK + tl.arange(0, BLOCK)
+    cm = col < INTER
+    gate = tl.load(gu_ptr + row * stride_gu + col,
+                   mask=cm, other=0.0).to(tl.float32)
+    up = tl.load(gu_ptr + row * stride_gu + INTER + col,
+                 mask=cm, other=0.0).to(tl.float32)
+    act = gate * tl.sigmoid(gate) * up
+    keep = tl.load(mask_ptr + row)
+    act = tl.where(keep != 0, act, 0.0)
+    tl.store(out_ptr + row * stride_out + col,
+             act.to(tl.float16), mask=cm)
+
+
+def silu_mul_mask_fused(gu: torch.Tensor, mask_rows: torch.Tensor,
+                        inter: int):
+    """_silu_mul_mask_kernel 的 python wrapper（静态池 A 融合）。
+
+    gu: (C, 2*inter) fp16（wxa8 merged kernel 输出恒 fp16）
+    mask_rows: (C,) bool；返回 (C, inter) fp16（padding 行恒零）。
+    """
+    C = gu.shape[0]
+    out = torch.empty((C, inter), dtype=torch.float16, device=gu.device)
+    BLOCK = 256
+    grid = (C * triton.cdiv(inter, BLOCK),)
+    _silu_mul_mask_kernel[grid](
+        gu, mask_rows, out, inter, gu.stride(0), out.stride(0),
+        BLOCK=BLOCK, num_warps=4,
+    )
+    return out
+
+
+@triton.jit
+def _weighted_scatter_add_kernel(
+    dn_ptr,        # (C, H) fp16 —— down 输出（padding 行为分配器残留，不读）
+    tokens_ptr,    # (C,) int64 —— 行 -> token 序号
+    weights_ptr,   # (C,) fp16/bf16 —— topk 权重（x.dtype）
+    mask_ptr,      # (C,) bool
+    out_ptr,       # (T, H) —— final_hidden_states（x.dtype）
+    H,
+    stride_dn, stride_out,
+    BLOCK: tl.constexpr,
+):
+    """scatter 尾融合：有效行 w*dn 原子累加到 final[tokens[r]]。
+
+    替代 masked_fill_ + mul_ + index_add_ 三 kernel（P0 kernel 数量优化）。
+    padding 行（mask=0）直接跳过——不读 dn 残留也不加零，与旧行为
+    （清零后加 0）数学等价（0 + x == x，含 ±0 符号差异经 == 比较不可见），
+    同时天然免疫 0×inf/NaN 残留问题（残留根本不进算术）。
+    w*dn 在 fp32 完成后单次舍入到 out dtype（旧链 .to(x.dtype) 与 mul_
+    各舍一次，精度不低于旧链）。
+    """
+    pid = tl.program_id(0)
+    n_col = tl.cdiv(H, BLOCK)
+    row = pid // n_col
+    col = (pid % n_col) * BLOCK + tl.arange(0, BLOCK)
+    keep = tl.load(mask_ptr + row)
+    if keep == 0:
+        return
+    cm = col < H
+    w = tl.load(weights_ptr + row).to(tl.float32)
+    v = tl.load(dn_ptr + row * stride_dn + col,
+                mask=cm, other=0.0).to(tl.float32)
+    tok = tl.load(tokens_ptr + row)
+    out_ty = out_ptr.dtype.element_ty
+    tl.atomic_add(out_ptr + tok * stride_out + col,
+                  (v * w).to(out_ty), mask=cm)
+
+
+def weighted_scatter_add_fused(dn: torch.Tensor, tokens: torch.Tensor,
+                               weights: torch.Tensor, mask_rows: torch.Tensor,
+                               out: torch.Tensor):
+    """_weighted_scatter_add_kernel 的 python wrapper（静态池 A 融合）。
+
+    dn: (C, H) fp16；tokens: (C,) int64；weights: (C,) 与 out 同 dtype；
+    mask_rows: (C,) bool；out: (T, H) 就地原子累加（= index_add_ 语义）。
+    """
+    C, H = dn.shape
+    BLOCK = 256
+    grid = (C * triton.cdiv(H, BLOCK),)
+    _weighted_scatter_add_kernel[grid](
+        dn, tokens, weights, mask_rows, out,
+        H, dn.stride(0), out.stride(0),
+        BLOCK=BLOCK, num_warps=4,
+    )
+
+
+@triton.jit
+def _pool_bookkeeping_kernel(
+    flat_e_ptr,     # (R,) int64 —— 路由 expert 序号（R = T*top_k）
+    expert_bit_ptr,     # (E,) int64 —— expert -> 池号
+    expert_local_ptr,   # (E,) int64 —— expert -> 池内成员序号
+    ei_gu_ptr,       # (M, 4) int32 —— 列 0/1 = token_start/token_count
+    ei_dn_ptr,       # (M, 4) int32
+    pool_total_ptr,  # (1,) int32 —— 本池有效行总数
+    pool_id, M, R,
+    BLOCK_M: tl.constexpr,
+    BLOCK_R: tl.constexpr,
+):
+    """池簿记融合（P0 kernel 数量优化）：成员计数（LUT 匹配 flat_e，替代
+    层级 zeros+index_add_ 的 counts 链）+ 排他前缀和 + expert_info 行段列
+    回写 + pool_total，单 CTA。每成员计数 = 本池内 local == m 的路由行数，
+    整数计数、无原子、结果确定。列 2/3（切片列）为常量不动。
+    """
+    ar = tl.arange(0, BLOCK_M)
+    m = ar < M
+    cnt = tl.zeros([BLOCK_M], dtype=tl.int32)
+    for j0 in range(0, R, BLOCK_R):
+        js = j0 + tl.arange(0, BLOCK_R)
+        jm = js < R
+        e = tl.load(flat_e_ptr + js, mask=jm, other=-1)
+        lut_ok = e >= 0
+        loc = tl.load(expert_local_ptr + e, mask=lut_ok, other=-1)
+        pol = tl.load(expert_bit_ptr + e, mask=lut_ok, other=-1)
+        hit = (pol == pool_id) & (loc[None, :] == ar[:, None]) & jm[None, :]
+        cnt += tl.sum(hit.to(tl.int32), 1)
+    cursor = tl.cumsum(cnt, 0) - cnt
+    tl.store(ei_gu_ptr + ar * 4 + 0, cursor, mask=m)
+    tl.store(ei_gu_ptr + ar * 4 + 1, cnt, mask=m)
+    tl.store(ei_dn_ptr + ar * 4 + 0, cursor, mask=m)
+    tl.store(ei_dn_ptr + ar * 4 + 1, cnt, mask=m)
+    tl.store(pool_total_ptr, tl.sum(cnt, 0))
+
+
+@triton.jit
+def _pool_buffer_zero_kernel(
+    tokens_ptr,      # (C+1,) int64
+    weights_ptr,     # (C+1,) act_dtype
+    slot_local_ptr,  # (C+1,) int64
+    mask_ptr,        # (C,) bool —— s < pool_total
+    pool_total_ptr,  # (1,) int32
+    C,
+    BLOCK: tl.constexpr,
+):
+    """池缓冲清零 + 行掩码融合（P0）：一个 kernel 清 tokens/weights/slot_local
+    三缓冲并写 mask_rows（arange < pool_total），替代 3×zero_ + lt 共 4 个
+    kernel。padding 槽必须为 0（tokens_c 的 padding 行 gather token 0，
+    结果确定性依赖 0 初值）。四段虚拟拼接 [0, 3*(C+1)+C)，lane 级区域掩码
+    （C 小于 BLOCK 时块内跨界，指针必须重定位到段内局部下标）。
+    """
+    pid = tl.program_id(0)
+    idx = pid * BLOCK + tl.arange(0, BLOCK)
+    CP1 = C + 1
+    base3 = 3 * CP1
+    k = idx // CP1
+    local = idx - k * CP1
+    in3 = idx < base3
+    tl.store(tokens_ptr + local, 0, mask=in3 & (k == 0))
+    tl.store(weights_ptr + local,
+             tl.zeros([BLOCK], dtype=weights_ptr.dtype.element_ty),
+             mask=in3 & (k == 1))
+    tl.store(slot_local_ptr + local, 0, mask=in3 & (k == 2))
+    s = idx - base3
+    pt = tl.load(pool_total_ptr)
+    tl.store(mask_ptr + s, s < pt, mask=(s >= 0) & (s < C))
+
+
+@triton.jit
+def _pool_scatter_rows_kernel(
+    flat_e_ptr,      # (R,) int64 —— 路由 expert 序号（R == C == T*top_k）
+    flat_w_ptr,      # (R,) act_dtype —— topk 权重
+    expert_bit_ptr,  # (E,) int64 —— expert -> 池号
+    expert_local_ptr,  # (E,) int64 —— expert -> 池内成员序号
+    ei_gu_ptr,       # (M, 4) int32 —— 列 0 = 排他游标（bookkeeping 已写）
+    tokens_ptr, weights_ptr, slot_local_ptr,   # (C+1,) 目标缓冲
+    pool_id,         # 本池编号（int32）
+    C, TOP_K, R,
+    BLOCK_R: tl.constexpr,
+):
+    """行散写融合（P0）：每行算 dst（本池游标 + 同 expert 先前行数；非本池
+    行写丢弃槽 C）并散写三缓冲。替代层级的 same/tril/sum 先导计数链与
+    池内 in_pool/clamp/index_select/where + 3×index_copy_ 共 ~12 kernel；
+    先导计数（prior）改为 kernel 内 O(R) 扫描（R = T*top_k，decode 下 ≤ 64）。
+    token 序号 = r // TOP_K（替代 arange+repeat_interleave）。
+    """
+    r = tl.program_id(0)
+    e = tl.load(flat_e_ptr + r)
+    # prior：j < r 且 flat_e[j] == e 的行数（同 expert 第几行）
+    prior = 0
+    for j0 in range(0, R, BLOCK_R):
+        js = j0 + tl.arange(0, BLOCK_R)
+        jm = js < R
+        ej = tl.load(flat_e_ptr + js, mask=jm, other=-1)
+        prior += tl.sum(((js < r) & (ej == e)).to(tl.int32), 0)
+    pool = tl.load(expert_bit_ptr + e)
+    local = tl.load(expert_local_ptr + e)
+    cursor = tl.load(ei_gu_ptr + local * 4 + 0)
+    in_pool = pool == pool_id
+    dst = tl.where(in_pool, cursor + prior, C).to(tl.int64)
+    tl.store(tokens_ptr + dst, (r // TOP_K).to(tl.int64))
+    w = tl.load(flat_w_ptr + r)
+    tl.store(weights_ptr + dst, w)
+    tl.store(slot_local_ptr + dst, local)
+
+
+def static_pool_dispatch_fused(flat_e, flat_w, expert_bit,
+                               expert_local, ps, pool_id, top_k):
+    """静态派发簿记 + 缓冲准备三连（P0 kernel 数量优化）。
+
+    替代 _forward_static_decode 层级的 counts zeros+index_add_（2 kernel）
+    + 池循环里的 8 kernel 簿记（m_counts/cumsum/expert_info×4/pool_total）
+    + 4 kernel 清零掩码 + 12 kernel 行散写链 = 3 个 kernel。成员计数在
+    簿记 kernel 内用 expert_bit/local LUT 匹配 flat_e 直接数出。行/掩码
+    缓冲为池状态常驻张量（指针跨步稳定，capture 合法）。R == C
+    （容量 = T*top_k）。
+    """
+    R = flat_e.shape[0]
+    M = ps.num_members
+    _pool_bookkeeping_kernel[(1,)](
+        flat_e, expert_bit, expert_local,
+        ps.expert_info_gu, ps.expert_info_dn, ps.pool_total_buf,
+        pool_id, M, R,
+        BLOCK_M=triton.next_power_of_2(max(M, 2)),
+        BLOCK_R=triton.next_power_of_2(max(R, 2)), num_warps=1,
+    )
+    n_blk = triton.cdiv(3 * (ps.capacity + 1) + ps.capacity, 256)
+    _pool_buffer_zero_kernel[(n_blk,)](
+        ps.tokens_buf, ps.weights_buf, ps.slot_local_buf, ps.mask_buf,
+        ps.pool_total_buf, ps.capacity, BLOCK=256, num_warps=1,
+    )
+    _pool_scatter_rows_kernel[(R,)](
+        flat_e, flat_w, expert_bit, expert_local, ps.expert_info_gu,
+        ps.tokens_buf, ps.weights_buf, ps.slot_local_buf,
+        pool_id, ps.capacity, top_k, R,
+        BLOCK_R=triton.next_power_of_2(max(R, 2)), num_warps=1,
+    )
+
+
 def build_int8_codebook(codebook: torch.Tensor):
     """把 fp16 码本转成 int8，返回 (cb_i8, cb_step)。
 
@@ -924,12 +1169,13 @@ def wxa8_matmul_grouped_gf(
 @triton.jit
 def _wxa8_merged_kernel_gf(
     # Input
-    x_ptr,            # (B_total, K_total) int8 —— gather 后扁平连续
-    xs_ptr,           # (B_total, NUM_GROUPS) fp32 —— 行与 x 对齐
+    x_ptr,            # (B_src, K_total) int8 —— GATHER_X=0 时行序即池行序
+    xs_ptr,           # (B_src, NUM_GROUPS) fp32 —— 行与 x 对齐
+    tokens_ptr,       # (B_total,) int64 —— GATHER_X=1 时的池行→源行索引
     # Quantized weight (group-first 布局，本 bit 池共享)
     indices_ptr,      # (NUM_GROUPS_TOTAL, N_total, PACKED_PER_GROUP) uint8
     codebook_ptr,     # (n_levels,) int8
-    norms_ptr,        # (NUM_GROUPS_TOTAL, N_total) fp16（1/sqrt(gs) 已预乘）
+    norms_ptr,        # (NUM_GROUPS_TOTAL, N_total) fp16（预乘态见 NORMS_PRESCALED）
     # Expert / block 布局
     expert_info_ptr,  # (E, 4) int32: [token_start, token_count, slice_start, slice_count]
     block_info_ptr,   # (num_blocks, 3) int32: [expert_idx, block_b, block_n]
@@ -938,11 +1184,14 @@ def _wxa8_merged_kernel_gf(
     # Shape / strides
     B_total, K_total, N_LIMIT,
     INDICES_G0_STRIDE, NORMS_G0_STRIDE, XS_ROW_STRIDE, OUT_ROW_STRIDE,
+    NORM_INV,       # fp32 1/sqrt(gs)：NORMS_PRESCALED=False 时折入 norm
     # Constexpr config
     GROUP_SIZE: tl.constexpr,
     NUM_GROUPS: tl.constexpr,     # 本 expert 的有效 group 数
     BIT_WIDTH: tl.constexpr,
     N_LEVELS: tl.constexpr,
+    NORMS_PRESCALED: tl.constexpr = True,
+    GATHER_X: tl.constexpr = False,
     SLICE_IS_GROUPS: tl.constexpr = False,
     BLOCK_B: tl.constexpr = 64,
     BLOCK_N: tl.constexpr = 32,
@@ -982,6 +1231,13 @@ def _wxa8_merged_kernel_gf(
     rb = token_start + blk_b * BLOCK_B + tl.arange(0, BLOCK_B)
     mask_b = rb < token_start + token_count
 
+    # GATHER_X=1：x/xs 按 tokens 索引取源行（免 host 侧 index_select 物化），
+    # 输出行序仍是池行序 rb（padding 行 tokens=0，且被 mask_b 屏蔽不读）
+    if GATHER_X:
+        rb_x = tl.load(tokens_ptr + rb, mask=mask_b, other=0)
+    else:
+        rb_x = rb
+
     if SLICE_IS_GROUPS:
         # down：N 维完整（从 0 起），group 维按 slice_start 偏移
         rn = blk_n * BLOCK_N + tl.arange(0, BLOCK_N)
@@ -1003,7 +1259,12 @@ def _wxa8_merged_kernel_gf(
 
         norm_g = tl.load(norms_ptr + g_global * NORMS_G0_STRIDE + rn,
                          mask=mask_n, other=0.0)
-        xs_g = tl.load(xs_ptr + rb * XS_ROW_STRIDE + g, mask=mask_b, other=0.0)
+        if not NORMS_PRESCALED:
+            # norms 未预乘 1/sqrt(gs)：kernel 内 fp32 乘倒数（与 host 侧
+            # norms.float()/sqrt(gs) 同值——PyTorch 的标量除法在 CUDA 上
+            # 就是乘 float 倒数），省掉每步 2 个 elementwise kernel
+            norm_g = norm_g.to(tl.float32) * NORM_INV
+        xs_g = tl.load(xs_ptr + rb_x * XS_ROW_STRIDE + g, mask=mask_b, other=0.0)
 
         acc_i = tl.zeros((BLOCK_B, BLOCK_N), dtype=tl.int32)
 
@@ -1011,7 +1272,7 @@ def _wxa8_merged_kernel_gf(
             rk = k_start + tl.arange(0, BLOCK_K)
             mask_k = rk < GROUP_SIZE
 
-            inp_off = rb[:, None] * K_total + (g_start + rk)[None, :]
+            inp_off = rb_x[:, None] * K_total + (g_start + rk)[None, :]
             x_tile = tl.load(x_ptr + inp_off,
                              mask=mask_b[:, None] & mask_k[None, :], other=0)
 
@@ -1066,22 +1327,31 @@ def _launch_wxa8_merged_gf(
     x_i8, x_scale, indices_packed_gf, codebook_i8, norms_used,
     expert_info_dev, block_info, out, n_extent,
     group_size, num_groups, bit_width, slice_is_groups, cfg,
+    norms_prescaled=True, tokens=None,
 ):
     """wxa8 merged kernel 统一发射入口（host 编排路径与静态派发路径共用）。
 
     参数序与 _wxa8_merged_kernel_gf 形参一一对应；expert_info_dev 必须是
     (E,4) int32 设备张量（kernel 运行时读行段/列段，行段可由设备端每步
-    重写）；SLICE_IS_GROUPS 两模式语义见 kernel docstring。
+    重写）；SLICE_IS_GROUPS 两模式语义见 kernel docstring。norms_prescaled
+    =False 时 norms_used 直接传 fp16 原始 norms，1/sqrt(gs) 由 kernel 内
+    乘 NORM_INV 折入（host 侧零 elementwise）。tokens 非 None 时 GATHER_X=1
+    （x/xs 的源行由 tokens 索引，out 行数取 tokens 长度——静态 gate_up
+    方向免两笔 index_select 物化）。
     """
     BLOCK_B, BLOCK_N, BLOCK_K, num_warps, num_stages = cfg
     _wxa8_merged_kernel_gf[(block_info.shape[0],)](
-        x_i8, x_scale, indices_packed_gf, codebook_i8, norms_used,
+        x_i8, x_scale, tokens if tokens is not None else x_i8,
+        indices_packed_gf, codebook_i8, norms_used,
         expert_info_dev, block_info, out,
         out.shape[0], x_i8.shape[1], n_extent,
         indices_packed_gf.stride(0), norms_used.stride(0), x_scale.stride(0),
         out.stride(0),
+        1.0 / math.sqrt(group_size) if not norms_prescaled else 1.0,
         GROUP_SIZE=group_size, NUM_GROUPS=num_groups,
         BIT_WIDTH=bit_width, N_LEVELS=codebook_i8.shape[0],
+        NORMS_PRESCALED=norms_prescaled,
+        GATHER_X=tokens is not None,
         SLICE_IS_GROUPS=slice_is_groups,
         BLOCK_B=BLOCK_B, BLOCK_N=BLOCK_N, BLOCK_K=BLOCK_K,
         num_warps=num_warps, num_stages=num_stages,
@@ -1191,26 +1461,30 @@ def wxa8_matmul_merged_rows_gf_static(
     x_i8, x_scale, indices_packed_gf, codebook_i8, norms_gf,
     expert_info_dev, block_info, n_slice, n_limit,
     group_size, in_features, bit_width: int = 2,
-    norms_prescaled: bool = True, cfg=None,
+    norms_prescaled: bool = True, cfg=None, tokens=None,
 ):
     """gate_up 合并版·静态派发（CUDA graph decode 用）。
 
     与 wxa8_matmul_merged_rows_gf 同一 kernel、同一 tile 数学；差别仅在
     编排来源：expert_info（(E,4) int32，行段列每步设备端重写、列切片列
     为加载期常量）与 block_info（最坏情况静态调度表）均为设备常驻张量。
-    函数内零 host 读、零 H2D、零形状变化——capture 期合法。
+    函数内零 host 读、零 H2D、零形状变化——capture 期合法。norms 直传
+    fp16 原始值（不预乘 1/sqrt(gs)），缩放由 kernel 内 NORM_INV 折入，
+    消掉 host 侧 cast+mul 两个 elementwise kernel。tokens 非 None 时
+    GATHER_X=1：x_i8/x_scale 传全量 token 旋转量化结果，池内源行由
+    tokens 索引（免 index_select 物化），输出仍按池行序 (C, n_slice)。
     """
-    norms_full = norms_gf if norms_prescaled else (
-        norms_gf.float() / math.sqrt(group_size))
-    out = torch.empty(x_i8.shape[0], n_slice, dtype=torch.float16,
+    out_rows = tokens.shape[0] if tokens is not None else x_i8.shape[0]
+    out = torch.empty(out_rows, n_slice, dtype=torch.float16,
                       device=x_i8.device)
     if cfg is None:
-        cfg = get_wxa8_config(bit_width, direction="gate_up", B=x_i8.shape[0])
+        cfg = get_wxa8_config(bit_width, direction="gate_up", B=out_rows)
     _launch_wxa8_merged_gf(
-        x_i8, x_scale, indices_packed_gf, codebook_i8, norms_full,
+        x_i8, x_scale, indices_packed_gf, codebook_i8, norms_gf,
         expert_info_dev, block_info, out, n_limit,
         group_size, in_features // group_size, bit_width,
-        slice_is_groups=False, cfg=cfg)
+        slice_is_groups=False, cfg=cfg,
+        norms_prescaled=norms_prescaled, tokens=tokens)
     return out
 
 
@@ -1222,17 +1496,17 @@ def wxa8_matmul_merged_in_features_gf_static(
     """down 合并版·静态派发（CUDA graph decode 用），契约同 rows 静态版。
 
     N（完整输出列数）取 norms_gf.shape[1]（静态形状）；g_count 为池内
-    group 切片计数（静态常量，kernel 的 NUM_GROUPS）。
+    group 切片计数（静态常量，kernel 的 NUM_GROUPS）。norms 直传 fp16
+    原始值（同 rows 静态版，缩放入 kernel）。
     """
-    norms_slice = norms_gf if norms_prescaled else (
-        norms_gf.float() / math.sqrt(group_size))
-    N = norms_slice.shape[1]
+    N = norms_gf.shape[1]
     out = torch.empty(x_i8.shape[0], N, dtype=torch.float16,
                       device=x_i8.device)
     if cfg is None:
         cfg = get_wxa8_config(bit_width, direction="down", B=x_i8.shape[0])
     _launch_wxa8_merged_gf(
-        x_i8, x_scale, indices_packed_gf, codebook_i8, norms_slice,
+        x_i8, x_scale, indices_packed_gf, codebook_i8, norms_gf,
         expert_info_dev, block_info, out, N,
-        group_size, g_count, bit_width, slice_is_groups=True, cfg=cfg)
+        group_size, g_count, bit_width, slice_is_groups=True, cfg=cfg,
+        norms_prescaled=norms_prescaled)
     return out

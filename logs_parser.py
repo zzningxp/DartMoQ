@@ -902,6 +902,204 @@ def is_bench_log(path: str) -> bool:
     return False
 
 
+# ===========================================================================
+# Graph decode logs (graph_decode.py, driven by run.graph.sh)
+# ===========================================================================
+# 每 ckpt 一段：header（ckpt/mode/mask）→ 网格表（plen×steps 一行）→
+# gate diag（prefill/闭环 parity + 分歧定性）→ teacher-forced parity →
+# saved json。bench 日志里 GRAPH=1 混入的 graph 段不在此解析（优先 bench 表）。
+GRAPH_CKPT_RE = re.compile(
+    r"^graph_decode: ckpt=(?P<ckpt_tag>\S+) mode=(?P<mode>\S+) mask=(?P<mask>\S+)$")
+GRAPH_ROW_RE = re.compile(
+    r"^\s*(?P<plen>\d+)\s+(?P<steps>\d+)\s+(?P<eager_ms>[\d.]+)ms\s+"
+    r"(?P<graph_ms>[\d.]+)ms\s+(?P<speedup>[\d.]+)x\s+"
+    r"(?P<replay_ms>[\d.]+)ms\s+(?P<tok_s>[\d.]+)\s+(?P<tokens>\S.*)$")
+GRAPH_DIAG_RE = re.compile(
+    r"^\[graph\] gate diag plen=(?P<plen>\d+) steps=(?P<steps>\d+): "
+    r"prefill_parity=(?P<pf_parity>\S+) prefill_tok_match=(?P<pf_match>\S+) "
+    r"closed_loop_parity=(?P<cl_parity>\S+) rerun_diff@(?P<div_step>\d+) "
+    r"-> (?P<verdict>.+)$")
+GRAPH_PARITY_RE = re.compile(
+    r"^logits parity \(teacher-forced, plen=(?P<plen>\d+), "
+    r"(?P<steps>\d+) steps\): max_abs=(?P<max_abs>\S+)$")
+GRAPH_SAVED_RE = re.compile(r"^\[graph\] saved: (?P<path>\S+)$")
+GRAPH_EXC_RE = re.compile(
+    r"^(?P<name>[A-Za-z_.]+(?:Error|Exception|Interrupt)): (?P<msg>.+)$")
+
+GRAPH_FIELDNAMES = [
+    "source", "run_idx", "status", "ckpt_tag", "mode", "mask_mode",
+    "plen", "steps", "eager_ms", "graph_ms", "speedup", "replay_ms",
+    "graph_tok_s", "tokens", "prefill_parity", "prefill_tok_match",
+    "closed_loop_parity", "div_step", "gate_verdict", "tf_parity_max_abs",
+    "saved_json", "error",
+]
+GRAPH_DISPLAY_FIELDS = [
+    "ckpt_tag", "mode", "mask_mode", "plen", "steps", "eager_ms", "graph_ms",
+    "speedup", "graph_tok_s", "tokens", "prefill_parity",
+    "prefill_tok_match", "closed_loop_parity", "gate_verdict",
+    "tf_parity_max_abs", "status",
+]
+GRAPH_PLAIN_HEADERS = {
+    "ckpt_tag": "ckpt", "mode": "mode", "mask_mode": "mask", "plen": "plen",
+    "steps": "steps", "eager_ms": "eager", "graph_ms": "graph",
+    "speedup": "spdup", "replay_ms": "replay", "graph_tok_s": "tok/s",
+    "tokens": "tokens", "prefill_parity": "pf-par", "prefill_tok_match": "pf-match",
+    "closed_loop_parity": "cl-par", "div_step": "div@", "gate_verdict": "verdict",
+    "tf_parity_max_abs": "tf-par", "status": "status",
+}
+
+
+@dataclass
+class GraphRecord:
+    source: str
+    run_idx: int
+    start_line: int
+    end_line: int = 0
+    status: str = "incomplete"
+    ckpt_tag: str = ""
+    mode: str = ""
+    mask_mode: str = ""
+    plen: str = ""
+    steps: str = ""
+    eager_ms: str = ""
+    graph_ms: str = ""
+    speedup: str = ""
+    replay_ms: str = ""
+    graph_tok_s: str = ""
+    tokens: str = ""
+    prefill_parity: str = ""
+    prefill_tok_match: str = ""
+    closed_loop_parity: str = ""
+    div_step: str = ""
+    gate_verdict: str = ""
+    tf_parity_max_abs: str = ""
+    saved_json: str = ""
+    error: str = ""
+
+    def finalize(self, end_line: int) -> None:
+        self.end_line = end_line
+        if self.error:
+            self.status = "failed"
+        elif self.graph_tok_s:
+            self.status = "ok"
+
+    def public_dict(self) -> dict[str, str | int]:
+        return asdict(self)
+
+
+def parse_graph_log(path: str) -> list[GraphRecord]:
+    """解析 graph_decode 日志：每 (ckpt, plen, steps) 一行。
+
+    gate diag / teacher-forced parity / saved json 在网格表之后出现，按
+    (ckpt, plen, steps) 回填到对应行；diag 早于表行的异常顺序也能容错
+    （先暂存后补）。
+    """
+    records: list[GraphRecord] = []
+    ctx = {"ckpt_tag": "", "mode": "", "mask": ""}
+    by_key: dict[tuple, GraphRecord] = {}
+    pending: dict[tuple, dict] = {}
+
+    def _key(plen: str, steps: str) -> tuple:
+        return (ctx["ckpt_tag"], plen, steps)
+
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            for line_no, raw in enumerate(f, 1):
+                line = raw.replace("\r", "").strip()
+                m = GRAPH_CKPT_RE.search(line)
+                if m:
+                    ctx["ckpt_tag"] = m.group("ckpt_tag")
+                    ctx["mode"] = m.group("mode")
+                    ctx["mask"] = m.group("mask")
+                    continue
+                m = GRAPH_ROW_RE.search(line)
+                if m:
+                    rec = GraphRecord(
+                        source=path, run_idx=len(records) + 1,
+                        start_line=line_no, ckpt_tag=ctx["ckpt_tag"],
+                        mode=ctx["mode"], mask_mode=ctx["mask"],
+                        plen=m.group("plen"), steps=m.group("steps"),
+                        eager_ms=m.group("eager_ms"), graph_ms=m.group("graph_ms"),
+                        speedup=m.group("speedup"), replay_ms=m.group("replay_ms"),
+                        graph_tok_s=m.group("tok_s"), tokens=m.group("tokens"))
+                    records.append(rec)
+                    key = _key(rec.plen, rec.steps)
+                    by_key[key] = rec
+                    if key in pending:
+                        for k, v in pending.pop(key).items():
+                            setattr(rec, k, v)
+                    continue
+                m = GRAPH_DIAG_RE.search(line)
+                if m:
+                    fields = {
+                        "prefill_parity": m.group("pf_parity"),
+                        "prefill_tok_match": m.group("pf_match"),
+                        "closed_loop_parity": m.group("cl_parity"),
+                        "div_step": m.group("div_step"),
+                        "gate_verdict": m.group("verdict"),
+                    }
+                    key = _key(m.group("plen"), m.group("steps"))
+                    rec = by_key.get(key)
+                    if rec is not None:
+                        for k, v in fields.items():
+                            setattr(rec, k, v)
+                    else:
+                        pending.setdefault(key, {}).update(fields)
+                    continue
+                m = GRAPH_PARITY_RE.search(line)
+                if m:
+                    key = _key(m.group("plen"), m.group("steps"))
+                    rec = by_key.get(key)
+                    if rec is not None:
+                        rec.tf_parity_max_abs = m.group("max_abs")
+                    else:
+                        pending.setdefault(key, {})["tf_parity_max_abs"] = \
+                            m.group("max_abs")
+                    continue
+                m = GRAPH_SAVED_RE.search(line)
+                if m:
+                    for rec in records:
+                        if rec.ckpt_tag == ctx["ckpt_tag"] and not rec.saved_json:
+                            rec.saved_json = m.group("path")
+                    continue
+                m = GRAPH_EXC_RE.search(line)
+                if m and records and records[-1].ckpt_tag == ctx["ckpt_tag"]:
+                    records[-1].error = f"{m.group('name')}: {m.group('msg')}"
+    except OSError:
+        pass
+    for rec in records:
+        rec.finalize(rec.end_line or rec.start_line)
+    return records
+
+
+def is_graph_log(path: str) -> bool:
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                stripped = line.replace("\r", "").strip()
+                if GRAPH_CKPT_RE.search(stripped) \
+                        or stripped.startswith("===== graph decode"):
+                    return True
+    except OSError:
+        pass
+    return False
+
+
+def write_graph_plain(records: list[GraphRecord], out) -> None:
+    rows: list[list[str]] = []
+    rows.append([GRAPH_PLAIN_HEADERS.get(f, f) for f in GRAPH_DISPLAY_FIELDS])
+    for record in records:
+        row = record.public_dict()
+        rows.append([_format_value(col, row.get(col, ""))
+                     for col in GRAPH_DISPLAY_FIELDS])
+    _render_plain(rows, out)
+
+
+def write_graph_markdown(records: list[GraphRecord], out) -> None:
+    _render_markdown(GRAPH_FIELDNAMES, {f: f for f in GRAPH_FIELDNAMES},
+                     records, out)  # type: ignore[arg-type]
+
+
 def _format_row(record: RunRecord, fields: list[str]) -> dict[str, str]:
     row = record.public_dict()
     return {field: _format_value(field, row.get(field, "")) for field in fields}
@@ -1115,19 +1313,26 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.format == "plain":
-        # bench 日志与量化/eval 日志逐文件自动识别，两类各渲一张表
+        # bench / graph / 量化 eval 日志逐文件自动识别，各类各渲一张表
         bench_records: list[BenchRecord] = []
+        graph_records: list[GraphRecord] = []
         run_records: list[RunRecord] = []
         for log_path in args.logs:
             if is_bench_log(log_path):
                 bench_records.extend(parse_bench_log(log_path))
+            elif is_graph_log(log_path):
+                graph_records.extend(parse_graph_log(log_path))
             else:
                 run_records.extend(parse_log(log_path))
         if args.complete_only:
             bench_records = [r for r in bench_records if r.status == "ok"]
+            graph_records = [r for r in graph_records if r.status == "ok"]
             run_records = [r for r in run_records if r.status == "ok"]
         if bench_records:
             write_bench_plain(bench_records, sys.stdout)
+            print()
+        if graph_records:
+            write_graph_plain(graph_records, sys.stdout)
             print()
         if run_records:
             write_plain(run_records, sys.stdout)
@@ -1135,7 +1340,13 @@ def main(argv: list[str] | None = None) -> int:
 
     for log_path in args.logs:
         bench_mode = is_bench_log(log_path)
-        records = parse_bench_log(log_path) if bench_mode else parse_log(log_path)
+        graph_mode = (not bench_mode) and is_graph_log(log_path)
+        if bench_mode:
+            records = parse_bench_log(log_path)
+        elif graph_mode:
+            records = parse_graph_log(log_path)
+        else:
+            records = parse_log(log_path)
         total_records = len(records)
         if args.complete_only:
             records = [record for record in records if record.status == "ok"]
@@ -1144,7 +1355,7 @@ def main(argv: list[str] | None = None) -> int:
         output_path = f"{log_path}.{args.format}"
         with open(output_path, "w", newline="", encoding="utf-8") as out:
             if args.format == "json":
-                if bench_mode:
+                if bench_mode or graph_mode:
                     json.dump([r.public_dict() for r in records], out, indent=2, ensure_ascii=False)
                 else:
                     json.dump([_format_export_row(record) for record in records], out, indent=2, ensure_ascii=False)
@@ -1152,6 +1363,8 @@ def main(argv: list[str] | None = None) -> int:
             elif args.format == "md":
                 if bench_mode:
                     write_bench_markdown(records, out)
+                elif graph_mode:
+                    write_graph_markdown(records, out)
                 else:
                     write_markdown(records, out)
             else:
@@ -1161,11 +1374,18 @@ def main(argv: list[str] | None = None) -> int:
                     for row in rows:
                         out.write(",".join([_csv_escape(_format_value(f, row.get(f, "")))
                                             for f in BENCH_FIELDNAMES]) + "\n")
+                elif graph_mode:
+                    rows = [r.public_dict() for r in records]
+                    out.write(",".join([_csv_escape(f) for f in GRAPH_FIELDNAMES]) + "\n")
+                    for row in rows:
+                        out.write(",".join([_csv_escape(_format_value(f, row.get(f, "")))
+                                            for f in GRAPH_FIELDNAMES]) + "\n")
                 else:
                     write_csv(records, out)
 
         # Print output log
-        print(f"[LOG] Parsed: {log_path}" + (" (bench)" if bench_mode else ""))
+        kind = " (bench)" if bench_mode else (" (graph)" if graph_mode else "")
+        print(f"[LOG] Parsed: {log_path}{kind}")
         print(f"[LOG] Output: {output_path}")
         print(f"[LOG] Total runs: {total_records}")
         if args.complete_only:

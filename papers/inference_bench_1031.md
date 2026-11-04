@@ -10,15 +10,17 @@
     `results/throughput_*.json`；此前分轮 `logs/1031.e4b2_bench.log`（8 格）、
     `logs/1102.1.bench.log`（三轮修复，见 roadmap 阶段 5）。marker
     `logs/bench_done/`，入口 `run.bench.sh`（`FRESH=1` 清 marker 全量重跑）；
-    `logs_parser.py` 自动识别 bench 日志出表（csv/json/md）
-  - graph：`logs/1031.graph_qwen3.log` +
-    `results/graph_decode_qwen3-30b-a3b_wxa8_5d6b6e2+_261031_233129.json`，
-    入口 `run.graph.sh`（`graph_decode.py`）
+    `logs_parser.py` 自动识别 bench/graph 日志出表（csv/json/md）
+  - graph：`logs/1104.2.graph_qwen3.log`（P0 后，50.9 tok/s）+
+    `results/graph_decode_qwen3-30b-a3b_wxa8_9496c4b+_261104_154540.json`；
+    此前 `logs/1031.graph_qwen3.log`（P0 前 35.2）。入口 `run.graph.sh`
+    （`graph_decode.py`，`FRESH=1` 清 marker 重跑）
   - profile：`run.profile.sh`（`profile_graph_decode.py`）→
     `results/profile_graph_{qwen3-30b-a3b,deepseek-v2-lite}_wxa8_1101_*.json`
+    （P0 前）+ `profile_graph_qwen3-30b-a3b_wxa8_1104_155112.json`（P0 后）
 - 状态（2026-11-04）：bench **20/20 格全 PASS**（1104 全量重跑，一致性检查
-  全过）；graph decode 见下表；graph 逐 kernel profile 完成，调优主线定为
-  kernel 数量（见下）；fork 55 tps 口径已对账关闭
+  全过）；graph decode：qwen3 **50.9 tok/s**（P0 kernel 数量优化后，1104.2；
+  P0 前为 35.2）；fork 55 tps 口径已对账关闭
 
 ## bench 全量 20 格（1104.1 FRESH 重跑，全 PASS）
 
@@ -87,8 +89,10 @@ wxa8 长序列 prefill 比 wxa16 快 26–40%（B4 档放大最明显）。
 | ckpt | eager | graph replay | 加速 | tok/s | token_match |
 |---|---|---|---|---|---|
 | dsv2 wxa8（1030，128×64） | 48.6 ms/step | 17.4 ms/step | 2.78× | 57.2 | true |
-| qwen3-1bpw wxa8（1031，128×128） | 79.1 ms/step | 28.4 ms/step | 2.79× | **35.22** | **false, DIFF@42** |
-| qwen3-1bpw wxa8（1031，128×256） | 77.5 ms/step | 28.4 ms/step | 2.73× | 35.23 | false, DIFF@42 |
+| qwen3-1bpw wxa8（1031 P0 前，128×128） | 79.1 ms/step | 28.4 ms/step | 2.79× | 35.22 | false, DIFF@42 |
+| qwen3-1bpw wxa8（1031 P0 前，128×256） | 77.5 ms/step | 28.4 ms/step | 2.73× | 35.23 | false, DIFF@42 |
+| **qwen3-1bpw wxa8（1104.2 P0 后，128×128）** | 79.3 ms/step | 19.7 ms/step | **4.03×** | **50.87** | false, DIFF@18 → tie-flip benign |
+| **qwen3-1bpw wxa8（1104.2 P0 后，128×256）** | 77.7 ms/step | 19.6 ms/step | **3.96×** | **50.96** | false, DIFF@42 → tie-flip benign |
 
 ### DIFF@42 定性（benign tie-flip，证据链）
 
@@ -100,27 +104,29 @@ wxa8 长序列 prefill 比 wxa16 快 26–40%（B4 档放大最明显）。
 - teacher-forced logits 对拍 max_abs = 4.9（dsv2 为 1.4）：48 层 × 256 步上
   静态派发 vs host 编排两种 kernel 排序的 bf16 累积噪声，软判据、无 NaN
 
-## graph replay 逐 kernel profile（1101）
+## graph replay 逐 kernel profile（1101 P0 前 / 1104.2 P0 后）
 
 `profile_graph_decode.py`（torch profiler，graph replay 内 32 步平均），
 qwen3-1bpw / dsv2-1bpw，wxa8：
 
-| 桶 | qwen3-30b-a3b | deepseek-v2-lite |
-|---|---|---|
-| wall ms/step | 27.4（36.5 tok/s） | 16.0（62.6 tok/s） |
-| kernel 合计 | 24.5 | 14.1 |
-| elementwise 胶水 | **12.08（49%，8521 次/步）** | 6.47（46%，4729 次/步） |
-| other（triton MoE 计算等） | 7.62（1301 次） | 3.97 |
-| gemm | 3.69 | 3.18 |
-| attention | 0.89 | 0.38 |
-| memcpy | 0.19 | 0.09 |
-| in-graph gap | 2.9（11%） | 1.9（12%） |
+| 桶 | qwen3（1101，P0 前） | **qwen3（1104.2，P0 后）** | deepseek-v2-lite（1101） |
+|---|---|---|---|
+| wall ms/step | 27.4（36.5 tok/s） | **18.66（50.9 tok/s）** | 16.0（62.6 tok/s） |
+| kernel 合计 | 24.5 | 17.2 | 14.1 |
+| elementwise 胶水 | 12.08（49%，8521 次/步） | **4.37（3245 次/步）** | 6.47（46%，4729 次/步） |
+| other（triton MoE 计算等） | 7.62（1301 次） | 8.19（融合 kernel 接手原胶水的有效功） | 3.97 |
+| gemm | 3.69 | 3.68 | 3.18 |
+| attention | 0.89 | 0.89 | 0.38 |
+| memcpy | 0.19 | 0.07 | 0.09 |
+| in-graph gap | 2.9（11%） | 1.45 | 1.9（12%） |
 
-- qwen3 每步 ~10,403 kernel（每层 ~217）：graph 只消除 launch 间隙，胶水
-  kernel 本体仍在跑 → **调优主线 = kernel 数量**（bit-pool 合 launch、
-  gu/dn 融合），次线 triton 768 维配置（有效 162 GFLOPS vs dsv2 调过的
-  241）
-- 胶水占比两模型同为 46–49%：bit-partition 实现通病，合并优化五模型通吃
+- P0 kernel 数量优化（1104 落地）：MoE 静态派发每层 ~217 → 29 kernel
+  （3 池 × 9：簿记自计数/清零/散写/旋转/GEMM 内联 gather/silu/pooled
+  旋转/GEMM/散射尾 + x16 + final zero），胶水 12.08→4.37ms、gap
+  2.9→1.45ms，graph 35.2→**50.9 tok/s**（eager 不变 ~78ms，launch 墙）
+- 胶水占比两模型同为 46–49%（P0 前）：bit-partition 实现通病；本项目
+  已消 MoE 侧（wxa8 静态派发），dsv2 同栈待重测；剩余 elementwise 大头
+  是 attention/残差侧原生算子（rmsnorm/rope/router），非 MoE 范围
 - b1 decode 每 token 仅读 top-8 激活专家（~3.3B 参 × ~1.7bit ≈ 0.7GB，
   5090 带宽下 ≪18ms）——无 memory 墙，纯 kernel 工程问题
 
@@ -147,18 +153,20 @@ prompt 128 × 256 步、graph replay 18.0 ms/step）。与本项目 qwen3-30b-a3
 
 ## 后边优化 TODO
 
-1. **P0 kernel 数量优化**（2026-11-04 开工）：bit-pool 合 launch + gu/dn
-   融合，目标 qwen3 胶水 12.08→~4ms（graph 35.2→~50 tok/s），dsv2 同吃
-   （6.47ms）；按 cuda/triton 流程先写主流程对齐测试 + GPU 填充度/SM 分析
-2. （次线）triton 768 维 shape 配置调优：162→241 GFLOPS 追平 dsv2 已调
-   配置，估 +~15 tok/s；`test/test_p53_tune.py`、`test_wxa8_tune.py` 就绪
+1. **P0 kernel 数量优化**（2026-11-04 完成 A+B 段）：qwen3 graph
+   35.2→**50.9 tok/s**（胶水 12.08→4.37ms，MoE 每层 217→29 kernel，
+   对拍/毒注/守卫全过，见 roadmap 阶段 5）。剩 C 段：三池簿记/清零/散写
+   合 launch（每层 9→3），估 gap 1.45→~1.0ms，收益递减，次优先
+2. **（次线）triton 768 维 shape 配置调优**：other 桶 8.19ms 主体是
+   `_wxa8_merged_kernel_gf`，有效 162 GFLOPS vs dsv2 调过的 241；
+   `test/test_p53_tune.py`、`test_wxa8_tune.py` 就绪，估 +~10 tok/s
 3. **对标基线格**：bf16 原模型（qwen3 57GiB 双卡可跑、单卡放不下——显存
    卖点句；prefill 2048×4 有 OOM 风险）；NF4 需 bitsandbytes 新版
    （sm_120）。`bench_throughput.py --baseline` 分支（未写）
 4. **graph 数字扩展**：2bpw 档 + 其余模型（`GRAPH=1 bash run.bench.sh` 或
    run.graph.sh CKPTS 加行）
-5. （可选）qwen3 teacher-forced parity 4.9 的 kernel 排序对齐观察项；
-   B2 tie-flip 判据已修（1101），重跑 run.graph.sh 可出带新判定的存档
+5. （可选）qwen3 teacher-forced parity 6.5 的 kernel 排序对齐观察项
+   （P0 后 1104.2 实测）；tie-flip 判据已修，DIFF 判定均为 benign
 
 
 ## 其它事实备查

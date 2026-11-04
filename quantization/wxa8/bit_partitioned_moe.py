@@ -33,6 +33,8 @@ from turboquant_utils.triton_kernels_a8 import (
     get_wxa8_config,
     rotate_quantize_fused,
     rotate_quantize_fused_pooled,
+    silu_mul_mask_fused,
+    weighted_scatter_add_fused,
     wxa8_matmul_grouped_slice_in_features_gf,
     wxa8_matmul_grouped_slice_rows_gf,
     wxa8_matmul_merged_in_features_gf_static,
@@ -251,19 +253,16 @@ class WxA8BitPartitionedGroupMoE(WxA16BitPartitionedGroupMoE):
         x_i8_all, x_s_all = rotate_quantize_fused(
             src, ps.rot_gu, ps.gs_gu, ps.in_f // ps.gs_gu,
             extra_scale=ps.cb_step_gu)
-        x_pool = x_i8_all.index_select(0, tokens_c)
-        xs_pool = x_s_all.index_select(0, tokens_c)
-        del x_i8_all, x_s_all
+        # tokens 直传 GEMM kernel 内联 gather（免 x_pool/xs_pool 两笔
+        # index_select 物化，P0 kernel 数量优化）
         gu = wxa8_matmul_merged_rows_gf_static(
-            x_pool, xs_pool, ps.idx_gu_gf, ps.cb_gu_i8, ps.norms_gu_gf,
+            x_i8_all, x_s_all, ps.idx_gu_gf, ps.cb_gu_i8, ps.norms_gu_gf,
             ps.expert_info_gu, ps.block_info_gu, ps.n_slice, ps.n_limit,
             ps.gs_gu, ps.in_f, bit_width=ps.bit,
-            norms_prescaled=ps.prescaled_gu, cfg=ps.cfg_gu)
-        del x_pool, xs_pool
-        act = F.silu(gu[:, :ps.inter]) * gu[:, ps.inter:]
+            norms_prescaled=ps.prescaled_gu, cfg=ps.cfg_gu, tokens=tokens_c)
+        del x_i8_all, x_s_all
+        act16 = silu_mul_mask_fused(gu, mask_rows, ps.inter)
         del gu
-        act = act * mask_rows.unsqueeze(1).to(act.dtype)
-        act16 = act if act.dtype == torch.float16 else act.half()
         a_i8, a_s = rotate_quantize_fused_pooled(
             act16, ps.rot_bank, ps.expert_info_dn, ps.block_info_b32,
             ps.gs_dn, ps.g_count, extra_scale=ps.cb_step_dn)
@@ -273,9 +272,8 @@ class WxA8BitPartitionedGroupMoE(WxA16BitPartitionedGroupMoE):
             ps.expert_info_dn, ps.block_info_dn, ps.gs_dn, ps.g_count,
             bit_width=ps.bit, norms_prescaled=ps.prescaled_dn, cfg=ps.cfg_dn)
         del a_i8, a_s
-        if dn.dtype != x.dtype:
-            dn = dn.to(x.dtype)
-        # padding 行显式清零再乘零权重（防 0×inf/NaN，见基类 _static_scatter_tail）
+        # 融合 scatter 尾直接吃 fp16 dn（kernel 内 fp32 加权后单次舍入到
+        # x.dtype），原 dn.to(x.dtype) 转换 kernel 省掉
         self._static_scatter_tail(dn, tokens_c, weights_c, mask_rows,
                                   final_hidden_states)
-        del dn, act
+        del dn
