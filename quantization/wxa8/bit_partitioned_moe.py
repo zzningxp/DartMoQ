@@ -30,7 +30,7 @@ from quantization.wxa16.bit_partitioned_moe import WxA16BitPartitionedGroupMoE
 from turboquant_utils.rotation import generate_batch_rotation_matrices
 from turboquant_utils.triton_kernels_a8 import (
     build_int8_codebook,
-    get_wxa8_config,
+    get_wxa8_static_config,
     rotate_quantize_fused,
     rotate_quantize_fused_pooled,
     silu_mul_mask_fused,
@@ -236,7 +236,7 @@ class WxA8BitPartitionedGroupMoE(WxA16BitPartitionedGroupMoE):
     @staticmethod
     def _static_cfg_getter(bit):
         def getter(direction, B):
-            return get_wxa8_config(bit, direction=direction, B=B)
+            return get_wxa8_static_config(bit, direction=direction, B=B)
         return getter
 
     def _static_pool_compute(self, ps, x, tokens_c, weights_c, mask_rows,

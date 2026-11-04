@@ -329,6 +329,38 @@ _WXA8_CONFIG_ATTN = {
 # B 自适应阈值，与 WxA16 保持一致（triton_kernels.py:_B_THRESHOLD_SMALL）
 _B_THRESHOLD_SMALL = 256
 
+# ---------------------------------------------------------------------------
+# 静态派发（CUDA graph decode）专用配置：_wxa8_merged_kernel_gf 在 qwen3
+# decode 形状（hidden=2048, inter=768, gs=128, capacity=T*top_k=8，worst-case
+# 调度表 + GATHER_X + fp16 norms）下的最优 tile。与上面的 eager 表分开存：
+# 两边 kernel 不同（merged vs 逐 expert）、形状不同，混用会互相回退。
+# 搜索：test/test_wxa8_static_tune.py（bit2=43/4=9/1=9 成员取自 qwen3-1bpw
+# 代表层；bitwise 自检保证换配置不改数值）。bit4 gate_up 用 BB=32、其余
+# BB=16；down 统一 BB=16，BN 按 bit 分 128/32。
+_WXA8_STATIC_CONFIG_GATE_UP = {   # capacity=8（B1 decode, T×top_k）下搜索
+    2: (16, 32, 128, 4, 3),   # 34.9us（现行 small 档 49.9us，1.43x）
+    4: (32, 32, 128, 4, 2),   # 50.6us（65.1us，1.29x）
+    1: (16, 32, 128, 4, 3),   # 27.6us（41.3us，1.50x）
+}
+_WXA8_STATIC_CONFIG_DOWN = {      # 同上，down 方向（K=768 N=2048）
+    2: (16, 128, 128, 4, 4),   # 18.5us（24.6us，1.33x）
+    4: (16, 128, 128, 4, 4),   # 24.7us（32.4us，1.31x）
+    1: (16, 32, 128, 4, 4),    # 15.1us（20.5us，1.36x）
+}
+
+
+def get_wxa8_static_config(bit_width: int, direction: str = "gate_up",
+                           B: int | None = None):
+    """静态派发池的 tile 配置（merged kernel, graph decode 形状）。
+
+    表在 capacity=8（B1 decode）下搜索；其它 capacity（如 B4 的 32）暂
+    沿用同表（同为 skinny-B 区间，比 eager small 档更贴近），未覆盖的
+    bit 回退 get_wxa8_config。
+    """
+    table = (_WXA8_STATIC_CONFIG_DOWN if direction == "down"
+             else _WXA8_STATIC_CONFIG_GATE_UP)
+    return table.get(bit_width) or get_wxa8_config(bit_width, direction, B)
+
 # 调优表未覆盖时的默认（取观测到的通用最优形状：BLOCK_K=128 一次吃掉整个
 # group，BLOCK_N=32 切窄）。注意 bit=8 尚未调优 —— 8-bit 权重不 packing，
 # 权重 tile 是 2-bit 的 4 倍大，最优点大概率不同，走 attention 路径前要补扫。
