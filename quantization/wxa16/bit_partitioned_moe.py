@@ -15,7 +15,11 @@ import gc
 import numpy as np
 
 from .linear import WxA16Linear
-from quantization.common.adapters import router_forward, shared_forward
+from quantization.common.adapters import (
+    mlp_returns_tuple_from_meta,
+    router_forward,
+    shared_forward,
+)
 from turboquant_utils.quantize import turboquant_quantize_packed_full
 from turboquant_utils.triton_kernels import (
     triton_fused_matmul_grouped_slice_rows,
@@ -664,7 +668,10 @@ class WxA16BitPartitionedGroupMoE(nn.Module):
             shared_experts=shared_experts,
             router_mode=meta.get("router_mode", "softmax_topk"),
             shared_mode=meta.get("shared_mode", "gated" if shared_expert is not None else "none"),
-            mlp_returns_tuple=meta.get("mlp_returns_tuple", False),
+            # meta 里的 mlp_returns_tuple 记录的是量化时宿主（transformers<5
+            # olmoe 解包 2 元组）的约定；按当前 transformers 版本重判（5.x 起
+            # DecoderLayer 直接赋值纯 tensor），见 adapters.mlp_returns_tuple
+            mlp_returns_tuple=mlp_returns_tuple_from_meta(meta),
         )
 
         moe.bit_list = list(meta["bit_list"])

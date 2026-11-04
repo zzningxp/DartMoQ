@@ -28,7 +28,7 @@ import time
 import torch
 
 from safetensors.torch import load_file, save_file
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
 from quantization.wxa16.bit_partitioned_moe import WxA16BitPartitionedGroupMoE, WxA16Weights
 from quantization.wxa8.linear import is_uniform_codebook
@@ -541,6 +541,61 @@ def convert_model_to_wxa8(model):
     return model
 
 
+def _patch_legacy_rope_scaling(config):
+    """transformers 5.x 下老 remote modeling 的 rope_scaling 兼容（dsv1）。
+
+    老 remote 代码按 4.x 约定消费 config.rope_scaling：判 `is not None` 后读
+    `["type"]`。5.x 的 AutoConfig 会把 None 物化成
+    {'rope_type': 'default', 'rope_theta': ...}（dsv1 原始 config 即 None，
+    1102 bench 实测 KeyError: 'type'）。还原 4.x 语义：default 物化值置回
+    None；真有 scaling（rope_type != 'default'）的补 "type" 键供老代码读取。
+    """
+    rs = getattr(config, "rope_scaling", None)
+    if not isinstance(rs, dict):
+        return config
+    if rs.get("rope_type", "default") == "default" \
+            and set(rs.keys()) <= {"rope_type", "rope_theta"}:
+        config.rope_scaling = None
+    elif "type" not in rs and "rope_type" in rs:
+        rs["type"] = rs["rope_type"]
+    return config
+
+
+def _patch_legacy_cache_api():
+    """transformers 5.x 移除了 DynamicCache 与 legacy tuple cache 的互转 API。
+
+    dsv1 的 4.37 时代 remote modeling 三处调用（model.forward 入口
+    from_legacy_cache、出口 to_legacy_cache、attention 里 get_usable_length），
+    缺失即 AttributeError（1102 bench 实测 from_legacy_cache）。按 5.x 内部
+    结构（layers[i].keys/.values，update(key, value, layer_idx) 顺序不变）
+    补齐等价实现；仅补缺失方法，已存在则不动。
+    """
+    from transformers.cache_utils import DynamicCache
+    if hasattr(DynamicCache, "from_legacy_cache"):
+        return
+
+    def _from_legacy_cache(past_key_values=None):
+        cache = DynamicCache()
+        if past_key_values is not None:
+            for layer_idx, (key_states, value_states) in enumerate(past_key_values):
+                cache.update(key_states, value_states, layer_idx)
+        return cache
+
+    def _to_legacy_cache(self):
+        legacy_cache = ()
+        for layer in self.layers:
+            legacy_cache += ((layer.keys, layer.values),)
+        return legacy_cache
+
+    def _get_usable_length(self, new_seq_length, layer_idx=0):
+        # DynamicCache 无静态形状上限，可复用长度即该层已见 token 数
+        return self.get_seq_length(layer_idx)
+
+    DynamicCache.from_legacy_cache = staticmethod(_from_legacy_cache)
+    DynamicCache.to_legacy_cache = _to_legacy_cache
+    DynamicCache.get_usable_length = _get_usable_length
+
+
 def load_quantized_model(base_model_path: str = None, quant_dir: str = None,
                          standby_cpu: bool = False, seqlen: int = 2048,
                          inference_quant_mode: str = "wxa16",
@@ -581,12 +636,32 @@ def load_quantized_model(base_model_path: str = None, quant_dir: str = None,
     print(f"Base model path (config/tokenizer/remote code): {base_model_path}")
     tick0 = time.time()
 
+    # transformers 5.x 移除了 is_torch_fx_available；deepseek-moe-16b（dsv1）等
+    # remote-code modeling 文件顶层 `from transformers.utils.import_utils
+    # import is_torch_fx_available`，动态模块执行直接 ImportError。注入等价
+    # stub（调用点只在 fx-trace 分支，推理路径不会走到）；moonlight 的
+    # DeepSeek 系 remote code 同源同样受益。仅补缺失名字，已存在则不动。
+    if trust_remote_code:
+        import transformers.utils.import_utils as _iu
+        if not hasattr(_iu, "is_torch_fx_available"):
+            _iu.is_torch_fx_available = lambda *a, **k: False
+        # DynamicCache legacy 互转 API 补齐（见 _patch_legacy_cache_api），
+        # 仅 remote-code 老 modeling 需要；原生 modeling 不受影响
+        _patch_legacy_cache_api()
+
     tokenizer = AutoTokenizer.from_pretrained(base_model_path,
                                               trust_remote_code=trust_remote_code)
 
     print("Building model structure on meta device (no weights loaded)...")
+    config = AutoConfig.from_pretrained(base_model_path,
+                                        trust_remote_code=trust_remote_code)
+    if trust_remote_code:
+        # 老 remote modeling 的 rope_scaling 兼容（见 _patch_legacy_rope_scaling），
+        # 原生 modeling 不动（dsv2/qwen3/olmoe 已实测通过物化 dict 路径）
+        _patch_legacy_rope_scaling(config)
     model = AutoModelForCausalLM.from_pretrained(
         base_model_path,
+        config=config,
         device_map="meta",
         dtype=torch.bfloat16,
         low_cpu_mem_usage=True,

@@ -6,7 +6,10 @@ Different model families return different values from their MoE gates
 
   - deepseek / deepseek_v2 (dsv1/dsv2): gate returns a 3-tuple
     (topk_idx, topk_weight, aux_loss)
-  - deepseek_v3 (moonlight): gate returns a 2-tuple (topk_idx, topk_weight)
+  - deepseek_v3 (moonlight): with transformers 4.57 (quantization host) the
+    gate returns a 2-tuple (topk_idx, topk_weight); with transformers 5.x
+    native DeepseekV3TopkRouter it returns a 3-tuple
+    (router_logits, topk_weights, topk_indices) — same order as deepseek_v2
   - qwen3_moe: with transformers 4.57 the gate is an nn.Linear returning
     logits (softmax + topk, then weight renormalization); with transformers
     5.x it returns a 3-tuple (router_logits, router_scores, router_indices)
@@ -42,6 +45,8 @@ MODEL_CONVENTIONS = {
 # (hidden_states, router_logits) 2-tuple (olmoe unpacks the tuple to compute
 # its aux loss; every other supported model assigns the plain tensor).
 # This convention controls the packed MoE forward's return type.
+# 仅对 transformers < 5 成立：5.x 起 OlmoeSparseMoeBlock 也只返回纯 tensor
+# （router logits 由 output_capturing 另路收集），见 mlp_returns_tuple。
 MLP_RETURNS_TUPLE = {
     "olmoe": True,
 }
@@ -57,10 +62,32 @@ def detect_conventions(config):
     return MODEL_CONVENTIONS.get(mt, ("softmax_topk", "none"))
 
 
+def _transformers_major():
+    """当前安装的 transformers 主版本号（加载侧判定返回约定的依据）。"""
+    import transformers
+    return int(transformers.__version__.split(".")[0])
+
+
 def mlp_returns_tuple(config):
-    """Whether the DecoderLayer expects the mlp to return a 2-tuple."""
+    """Whether the host DecoderLayer expects the mlp to return a 2-tuple.
+
+    这是宿主 modeling 代码的约定而非 checkpoint 的属性，必须按当前安装的
+    transformers 判定：< 5 的 OlmoeDecoderLayer 解包 (hidden, router_logits)
+    2 元组；>= 5 的 OlmoeSparseMoeBlock 只返回纯 tensor，DecoderLayer 直接
+    赋值（residual + tuple 会 TypeError）。
+    """
     mt = getattr(config, "model_type", "")
-    return MLP_RETURNS_TUPLE.get(mt, False)
+    return MLP_RETURNS_TUPLE.get(mt, False) and _transformers_major() < 5
+
+
+def mlp_returns_tuple_from_meta(meta):
+    """加载侧（from_metadata 没有 config）按 meta 存值 + 版本门控等价重判。
+
+    旧 checkpoint 量化于 transformers 4.57（cmoe311），meta 里 olmoe 存 True；
+    在 5.x 宿主下加载必须压回 False，否则 DecoderLayer 收到 tuple 报
+    `unsupported operand type(s) for +: 'Tensor' and 'tuple'`。
+    """
+    return bool(meta.get("mlp_returns_tuple", False)) and _transformers_major() < 5
 
 
 def router_forward(gate, hidden_states_3d, x_2d, mode, top_k):
@@ -89,8 +116,15 @@ def router_forward(gate, hidden_states_3d, x_2d, mode, top_k):
             topk_indices, topk_weights = a, b
             router_logits = None
     elif mode == "deepseek_tuple2":
-        topk_indices, topk_weights = gate_output
-        router_logits = None
+        if isinstance(gate_output, tuple) and len(gate_output) == 3:
+            # transformers 5.20 原生 DeepseekV3TopkRouter（moon 原生路径）顺序
+            # 与 V2 相同：(router_logits, topk_weights, topk_indices)，sigmoid +
+            # e_score_correction_bias + group topk + renorm 在 router 内完成
+            router_logits, topk_weights, topk_indices = gate_output
+        else:
+            # 旧 Moonlight 自定义 modeling（量化宿主 4.57）：(topk_idx, topk_weight)
+            topk_indices, topk_weights = gate_output
+            router_logits = None
     elif mode == "qwen3_moe":
         if isinstance(gate_output, tuple):
             # transformers 5.x: (router_logits, router_scores, router_indices)
