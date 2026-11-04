@@ -122,26 +122,49 @@
   (logits, scores, indices)（scores 已 topk+renorm 直接采用），adapters.py
   softmax_topk 分支三级兼容；测试 test/test_router_adapters.py 三项 PASS
 - [x] run.bench.sh 加第三列 flags：dsv1/moon 带 --trust-remote-code
-  （DeepseekForCausalLM 无 5.20 原生支持）
+  （DeepseekForCausalLM 无 5.20 原生支持；1102 更新：moon 改走 5.20 原生
+  deepseek_v3 去掉该 flag，见下）
 - [x] 仓库清理：e4_alloc_baselines.py 移 viz/（root 路径插入 + REPO 提升，
   run.e4.sh 同步；selftest ALL OK）
+- [x] **graph replay 逐 kernel profile**（2026-11-01，run.profile.sh）：
+  qwen3 27.4ms/step（elementwise 胶水 12.08ms/49%，8521 launch/步，全步
+  ~10,403 kernel）vs dsv2 16.0ms（6.47ms/46%，4729 次）；in-graph gap
+  11–12%。结论：主线 kernel 数量（bit-pool 合 launch、gu/dn 融合——胶水
+  是 bit-partition 实现通病，两模型同为 46–49%，五模型通吃），次线 triton
+  768 维 shape 配置（qwen3 有效 162 vs dsv2 调过的 241 GFLOPS）
+- [x] **bench 20/20 全 PASS**（1102 三轮修复 → 1104.1 FRESH 全量重跑，
+  `FRESH=1 bash run.bench.sh` 清 marker 全量重测；logs_parser.py 新增 bench
+  日志解析，自动识别出表/csv/json/md）。1102 修复三连：
+  ① olmoe `mlp_returns_tuple` 版本门控——meta 存值是 4.57 宿主约定非
+  checkpoint 属性，5.x 宿主下按安装版本重判（adapters.py
+  mlp_returns_tuple / mlp_returns_tuple_from_meta，test_mlp_returns_tuple
+  10 项过）；② dsv1 `_patch_legacy_rope_scaling`（5.x AutoConfig 把 None
+  物化成 dict，老 remote 读 ["type"] 崩）+ `_patch_legacy_cache_api`
+  （from/to_legacy_cache、get_usable_length 三方法按 5.x layers 结构补齐，
+  CPU 探针 bench 同款路径验证：tuple cache 回传 + mask 增长 + no-cache
+  前向）；③ moon deepseek_tuple2 长度分发（5.20 原生 DeepseekV3TopkRouter
+  3 元组 vs 旧 remote 2 元组，test_router_adapters 5/5）
+- [x] **fork 55tps 口径核对**（P2 关闭，2026-11-04）：55.2 tok/s =
+  Qwen3.5-35B-A3B graph 18.0ms/step（40 层=30 GDN 线性+10 full、moe_inter
+  512 → MoE FLOPs/token 1.34G，本项目 qwen3 2.41G 为其 1.8×）；eager 两边
+  一致 ~77ms（~10⁴ kernel/步 launch 墙掩盖模型差异，port 无退化）；
+  55 不作为 qwen3-30b 目标口径，同栈标尺 dsv2 graph 57.2–62.6；
+  qwen3 路径量化：胶水 12.08→~4ms + triton 调优 → 18–20ms ≈ 50–55 tok/s。
+  详录 papers/inference_bench_1031.md
 
 ### 待办（调优路径，按性价比排）
 
-- [ ] **P0：graph replay 逐 kernel profile**（profile_graph_decode.py +
-  run.profile.sh，已就绪待跑）：qwen3 28.4ms 里 triton MoE / attention /
-  杂项占比 + kernel 间隙；qwen3 vs dsv2 对比（效率标尺：dsv2 有效 241 GFLOPS
-  vs qwen3 162，追平则 ~52 tok/s）→ 决定走 kernel 效率（768 维 shape 的
-  triton 配置没为 qwen3 调过）还是 kernel 数量（3 bit-pool 合 launch、
-  gu/dn 融合）
-- [ ] P0：bench 剩余 12 格续跑（olmoe×4 / dsv1×2 / moon×2 × 双模式，
-  bash run.bench.sh，marker 续跑）
+- [ ] **P0：kernel 数量优化**（2026-11-04 开工）：bit-pool 合 launch、
+  gu/dn 融合，目标 qwen3 胶水 12.08→~4ms（graph 35.2→~50 tok/s），dsv2
+  同吃（6.47ms）；按 CLAUDE.md cuda/triton 流程先写主流程对齐测试 +
+  GPU 填充度/SM 分析
+- [ ] P1：triton 768 维 shape 配置调优（qwen3 162 vs dsv2 241 GFLOPS，
+  追平估 +~15 tok/s；test/test_p53_tune.py、test_wxa8_tune.py 就绪）
 - [ ] P1：baseline 对标格（bf16 原模型双卡 57GiB 可跑、单卡放不下本身是
   卖点；NF4 需装 bitsandbytes——5090=sm_120 要新版）；bench_throughput.py
   加 --baseline 加载分支（未写）
 - [ ] P1：graph 数字扩展（2bpw 档；GRAPH=1 bash run.bench.sh 或
   run.graph.sh CKPTS 加行）
-- [ ] P2：Qwen3.5 fork 55 tps 口径核对（模型/GPU/GDN 线性注意力差异）
 - [ ] 继承：autotune 驱动、moon wxa16 c4 优化（阶段 4 遗留，见上）
 
 
